@@ -1,0 +1,62 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: prom-sql-exporter
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        prometheus.io/port: "8080"
+        prometheus.io/scrape: "true"
+      labels:
+        app: prom-sql-exporter
+    spec:
+      containers:
+      - env:
+        - name: CONFIG
+          value: /config/config.yml
+        - name: PGPASSFILE
+          value: /pgpass/pgpass
+        image: justwatchcom/prom-sql-exporter:latest
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 10
+        name: prom-sql-exporter
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          timeoutSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 32Mi
+          requests:
+            cpu: 5m
+            memory: 16Mi
+        volumeMounts:
+        - mountPath: /config
+          name: config-volume
+        - mountPath: /pgpass
+          name: pgpass
+      restartPolicy: Always
+      volumes:
+      - configMap:
+          name: sql-exporter-config
+        name: config-volume
+      - name: pgpass
+        secret:
+          secretName: sql-exporter-pgpass

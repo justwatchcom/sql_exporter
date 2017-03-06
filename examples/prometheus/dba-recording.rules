@@ -1,0 +1,4 @@
+sql_table_cache_hitrate = (sql_pg_statio_user_tables{col="heap_blks_hit"} - ignoring(col) sql_pg_statio_user_tables{col="heap_blks_read"}) / ignoring(col) sql_pg_statio_user_tables{col="heap_blks_hit"} * 100 >= 0
+sql_table_index_usage_rate = sql_pg_stat_user_tables{col="idx_scan"} / ignoring(col) (sql_pg_stat_user_tables{col="seq_scan"} + ignoring(col) sql_pg_stat_user_tables{col="idx_scan"}) * 100 >= 0
+sql_index_cache_hitrate = (sql_pg_statio_user_tables{col="idx_blks_hit"} - ignoring(col) sql_pg_statio_user_tables{col="idx_blks_read"}) / ignoring(col) sql_pg_statio_user_tables{col="idx_blks_hit"} * 100 >= 0
+sql_running_queries = sum(sql_connections{state="active"}) without(state)
