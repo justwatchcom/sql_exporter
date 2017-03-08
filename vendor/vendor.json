@@ -17,6 +17,12 @@
 			"revisionTime": "2016-10-20T19:44:10Z"
 		},
 		{
+			"checksumSHA1": "et8lysBDsIwKPnh+2Z6wzTHGbsc=",
+			"path": "github.com/denisenkom/go-mssqldb",
+			"revision": "1a31ec05df993056fae01cebcc2666c27d6bf60d",
+			"revisionTime": "2017-03-07T17:24:21Z"
+		},
+		{
 			"checksumSHA1": "yZX1JnkLqTWcbc6ogOlAWK7/Xro=",
 			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/github.com/go-kit/kit/log",
 			"path": "github.com/go-kit/kit/log",
@@ -29,6 +35,12 @@
 			"path": "github.com/go-logfmt/logfmt",
 			"revision": "390ab7935ee28ec6b286364bba9b4dd6410cb3d5",
 			"revisionTime": "2016-11-15T14:25:13Z"
+		},
+		{
+			"checksumSHA1": "QD6LqgLz2JMxXqns8TaxtK9AuHs=",
+			"path": "github.com/go-sql-driver/mysql",
+			"revision": "2e00b5cd70399450106cec6431c2e2ce3cae5034",
+			"revisionTime": "2016-12-24T12:10:19Z"
 		},
 		{
 			"checksumSHA1": "2sj/DbXoXdnPAfjAEyhS0Jj5QL0=",
@@ -143,6 +155,18 @@
 			"revisionTime": "2017-02-16T22:32:56Z"
 		},
 		{
+			"checksumSHA1": "MCeXr2RNeiG1XG6V+er1OR0qyeo=",
+			"path": "golang.org/x/crypto/md4",
+			"revision": "b07d8c96772f426812d3fc5530710ec1f3b205e7",
+			"revisionTime": "2016-10-26T23:47:36Z"
+		},
+		{
+			"checksumSHA1": "Y+HGqEkYM15ir+J93MEaHdyFy0c=",
+			"path": "golang.org/x/net/context",
+			"revision": "906cda9512f77671ab44f8c8563b13a8e707b230",
+			"revisionTime": "2017-02-18T20:36:51Z"
+		},
+		{
 			"checksumSHA1": "12GqsW8PiRPnezDDy0v4brZrndM=",
 			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/gopkg.in/yaml.v2",
 			"path": "gopkg.in/yaml.v2",
@@ -150,5 +174,5 @@
 			"revisionTime": "2016-09-28T15:37:09Z"
 		}
 	],
-	"rootPath": "jus.tw.cx/jw-prom-sql-exporter"
+	"rootPath": "github.com/justwatchcom/sql_exporter"
 }

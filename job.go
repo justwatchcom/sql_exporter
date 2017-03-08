@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff"
+	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
 	"github.com/go-kit/kit/log"
+	_ "github.com/go-sql-driver/mysql" // register the MySQL driver
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // register the SQL driver
+	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -140,7 +142,12 @@ func (c *connection) connect(iv time.Duration) error {
 	if c.conn != nil {
 		return nil
 	}
-	conn, err := sqlx.Connect(c.url.Scheme, c.url.String())
+	dsn := c.url.String()
+	switch c.url.Scheme {
+	case "mysql":
+		dsn = strings.TrimPrefix(dsn, "mysql://")
+	}
+	conn, err := sqlx.Connect(c.url.Scheme, dsn)
 	if err != nil {
 		return err
 	}

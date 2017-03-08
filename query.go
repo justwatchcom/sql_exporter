@@ -85,14 +85,20 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 			value = float64(f)
 		case float64:
 			value = float64(f)
+		case []uint8:
+			val, err := strconv.ParseFloat(string(f), 64)
+			if err != nil {
+				return fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
+			}
+			value = val
 		case string:
 			val, err := strconv.ParseFloat(f, 64)
 			if err != nil {
-				return fmt.Errorf("Column '%s' must be type float, is '%T'", valueName, i)
+				return fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 			}
 			value = val
 		default:
-			return fmt.Errorf("Column '%s' must be type float, is '%T'", valueName, i)
+			return fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 		}
 	}
 	labels := prometheus.Labels{
@@ -105,9 +111,12 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 	for _, label := range q.Labels {
 		labels[label] = ""
 		if i, ok := res[label]; ok {
-			if str, ok := i.(string); ok {
+			switch str := i.(type) {
+			case string:
 				labels[label] = str
-			} else {
+			case []uint8:
+				labels[label] = string(str)
+			default:
 				return fmt.Errorf("Column '%s' must be type text (string)", label)
 			}
 		}

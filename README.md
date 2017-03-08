@@ -8,15 +8,48 @@ Status
 
 Actively used with PostgreSQL in production. We'd like to eventually support all databases for which stable Go database [drivers](https://github.com/golang/go/wiki/SQLDrivers) are available. Contributions welcome.
 
+What does it look like?
+=======================
+
+![Grafana DB Dashboard](/examples/grafana/screenshot.jpg?raw=true)
+
 Getting Started
 ===============
 
 Create a config.yml and run the service:
 
 ```
+go get github.com/justwatchcom/sql_exporter
 cp config.yml.dist config.yml
 ./prom-sql-exporter
 ```
+
+Running in Docker:
+
+```
+docker run -v `pwd`/config.yml:/config/config.yml -e CONFIG=/config/config.yml -d -p 8080:8080 --name sql_exporter justwatchcom/sql_exporter
+```
+
+Manual `scrape_configs` snippet:
+
+```
+scrape_configs:
+- job_name: sql_exporter
+  static_configs:
+  - targets: ['localhost:8080']
+```
+
+Flags
+-----
+
+None
+
+Environment Variables
+---------------------
+
+Name    | Description
+--------|------------
+CONFIG  | Location of Configuration File (yaml)
 
 Usage
 =====
@@ -129,6 +162,13 @@ AS
 GRANT SELECT ON postgres_exporter.pg_stat_replication TO postgres_exporter;
 GRANT SELECT ON postgres_exporter.pg_stat_activity TO postgres_exporter;
 ```
+
+Why this exporter exists
+========================
+
+The other projects with similar goals did not meet our requirements on either
+maturity or flexibility. This exporter does not rely on any other service and
+runs in production for some time already.
 
 License
 =======
