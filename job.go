@@ -143,6 +143,14 @@ func (c *connection) connect(iv time.Duration) error {
 		return nil
 	}
 	dsn := c.url.String()
+
+	//as sqlx doesn't allow escaped passwords,
+	//we replace the escaped one by the unescaped password
+	if passwordUnescaped, passwordIsSet := c.url.User.Password(); passwordIsSet == true {
+		unescapedUserPassString := c.url.User.Username() + string(':') + passwordUnescaped
+		dsn = strings.Replace(dsn, c.url.User.String(), unescapedUserPassString, 1)
+	}
+
 	switch c.url.Scheme {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
