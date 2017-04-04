@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -61,11 +62,13 @@ type connection struct {
 
 // Query is an SQL query that is executed on a connection
 type Query struct {
-	log    log.Logger
-	prom   *prometheus.GaugeVec
-	Name   string   `yaml:"name"`   // the prometheus metric name
-	Help   string   `yaml:"help"`   // the prometheus metric help text
-	Labels []string `yaml:"labels"` // expose these columns as labels per gauge
-	Values []string `yaml:"values"` // expose each of these as an gauge
-	Query  string   `yaml:"query"`
+	sync.Mutex
+	log     log.Logger
+	desc    *prometheus.Desc
+	metrics map[*connection][]prometheus.Metric
+	Name    string   `yaml:"name"`   // the prometheus metric name
+	Help    string   `yaml:"help"`   // the prometheus metric help text
+	Labels  []string `yaml:"labels"` // expose these columns as labels per gauge
+	Values  []string `yaml:"values"` // expose each of these as an gauge
+	Query   string   `yaml:"query"`
 }
