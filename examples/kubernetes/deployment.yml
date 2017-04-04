@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        prometheus.io/port: "8080"
+        prometheus.io/port: "9237"
         prometheus.io/scrape: "true"
       labels:
         app: prom-sql-exporter
@@ -27,17 +27,17 @@ spec:
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 8080
+            port: 9237
           initialDelaySeconds: 30
           timeoutSeconds: 10
         name: prom-sql-exporter
         ports:
-        - containerPort: 8080
+        - containerPort: 9237
           name: http
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 8080
+            port: 9237
           initialDelaySeconds: 10
           timeoutSeconds: 10
         resources:

@@ -61,7 +61,7 @@ func main() {
 		`))
 	})
 
-	addr := ":8080"
+	addr := ":9237"
 	logger.Log("level", "info", "msg", "Starting sql_exporter", "addr", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		logger.Log("level", "error", "msg", "Error starting HTTP server:", "err", err)

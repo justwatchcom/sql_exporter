@@ -27,7 +27,7 @@ cp config.yml.dist config.yml
 Running in Docker:
 
 ```
-docker run -v `pwd`/config.yml:/config/config.yml -e CONFIG=/config/config.yml -d -p 8080:8080 --name sql_exporter justwatchcom/sql_exporter
+docker run -v `pwd`/config.yml:/config/config.yml -e CONFIG=/config/config.yml -d -p 9237:9237 --name sql_exporter justwatchcom/sql_exporter
 ```
 
 Manual `scrape_configs` snippet:
@@ -36,7 +36,7 @@ Manual `scrape_configs` snippet:
 scrape_configs:
 - job_name: sql_exporter
   static_configs:
-  - targets: ['localhost:8080']
+  - targets: ['localhost:9237']
 ```
 
 Flags
