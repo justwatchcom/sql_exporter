@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/go-kit/kit/log"
+	"github.com/justwatchcom/sql_exporter/leveled"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -19,13 +20,13 @@ var (
 func main() {
 	// init logger
 	logger := log.NewJSONLogger(os.Stdout)
-	logger = log.NewContext(logger).With(
+	logger = log.With(
+		logger,
 		"ts", log.DefaultTimestampUTC,
-		"caller", log.DefaultCaller,
 		"name", Name,
-		"version", Version,
-		"commit", Commit,
 	)
+	logger = leveled.NewFromEnv(logger)
+	logger = log.With(logger, "caller", log.DefaultCaller)
 
 	cfgFile := "config.yml"
 	if f := os.Getenv("CONFIG"); f != "" {
@@ -43,7 +44,7 @@ func main() {
 		if job == nil {
 			continue
 		}
-		job.log = log.NewContext(logger).With("job", job.Name)
+		job.log = log.With(logger, "job", job.Name)
 		go job.Run()
 	}
 

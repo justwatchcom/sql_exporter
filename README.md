@@ -163,6 +163,16 @@ GRANT SELECT ON postgres_exporter.pg_stat_replication TO postgres_exporter;
 GRANT SELECT ON postgres_exporter.pg_stat_activity TO postgres_exporter;
 ```
 
+Logging
+-------
+
+You can change the loglevel by setting the `LOGLEVEL` variable in the exporters
+environment.
+
+```
+LOGLEVEL=info ./sql_exporter
+```
+
 Why this exporter exists
 ========================
 

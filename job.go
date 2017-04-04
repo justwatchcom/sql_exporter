@@ -70,7 +70,7 @@ func (j *Job) Run() {
 		// try to satisfy prometheus naming restrictions
 		name := MetricNameRE.ReplaceAllString("sql_"+q.Name, "")
 		help := q.Help
-		q.log = log.NewContext(j.log).With("query", q.Name)
+		q.log = log.With(j.log, "query", q.Name)
 		p := prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: name,

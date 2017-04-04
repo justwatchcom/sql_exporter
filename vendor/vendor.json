@@ -23,11 +23,10 @@
 			"revisionTime": "2017-03-07T17:24:21Z"
 		},
 		{
-			"checksumSHA1": "yZX1JnkLqTWcbc6ogOlAWK7/Xro=",
-			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/github.com/go-kit/kit/log",
+			"checksumSHA1": "Y1zpEnbSvlhLozUt6U63CvC3PNw=",
 			"path": "github.com/go-kit/kit/log",
-			"revision": "d72332c7d02d462ca2d309e5682164314d441ec3",
-			"revisionTime": "2017-03-01T22:05:10Z"
+			"revision": "5d93a23737003ed3ad90359f0aeb25e08dfdf547",
+			"revisionTime": "2017-03-24T23:12:18Z"
 		},
 		{
 			"checksumSHA1": "KxX/Drph+byPXBFIXaCZaCOAnrU=",
