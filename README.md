@@ -1,5 +1,7 @@
-Prometheus SQL Exporter
-=======================
+# Prometheus SQL Exporter [![Build Status](https://travis-ci.org/justwatchcom/sql_exporter.svg?branch=master)](https://travis-ci.org/justwatchcom/sql_exporter)
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/justwatch/sql_exporter.svg?maxAge=604800)](https://hub.docker.com/r/justwatchcom/sql_exporter)
+[![Go Report Card](https://goreportcard.com/badge/github.com/justwatchcom/sql_exporter)](https://goreportcard.com/report/github.com/justwatchcom/sql_exporter)
 
 This repository contains an service that runs user-defined SQL queries at flexible intervals and exports the resulting metrics via HTTP for Prometheus consumption.
 
