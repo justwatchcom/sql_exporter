@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -34,7 +35,7 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 			continue
 		}
 		if err := job.Init(logger); err != nil {
-			logger.Log("level", "warning", "msg", "Skipping job. Failed to initialize", "err", err, "job", job.Name)
+			level.Warn(logger).Log("msg", "Skipping job. Failed to initialize", "err", err, "job", job.Name)
 			continue
 		}
 		exp.jobs = append(exp.jobs, job)
@@ -55,7 +56,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 				continue
 			}
 			if query.desc == nil {
-				e.logger.Log("level", "error", "msg", "Query has no descriptor", "query", query.Name)
+				level.Error(e.logger).Log("msg", "Query has no descriptor", "query", query.Name)
 				continue
 			}
 			ch <- query.desc

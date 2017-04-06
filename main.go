@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-
-	"github.com/justwatchcom/sql_exporter/leveled"
+	"strings"
 
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/rometheus/promhttp"
 	"github.com/prometheus/common/version"
 )
 
@@ -35,18 +35,27 @@ func main() {
 
 	// init logger
 	logger := log.NewJSONLogger(os.Stdout)
-	logger = log.With(
-		logger,
+	logger = log.With(logger,
 		"ts", log.DefaultTimestampUTC,
+		"caller", log.DefaultCaller,
 	)
-	logger = leveled.NewFromEnv(logger)
-	logger = log.With(logger, "caller", log.DefaultCaller)
+	// set the allowed log level filter
+	switch strings.ToLower(os.Getenv("LOGLEVEL")) {
+	case "debug":
+		level.NewFilter(logger, level.AllowDebug())
+	case "warn":
+		level.NewFilter(logger, level.AllowWarn())
+	case "error":
+		level.NewFilter(logger, level.AllowError())
+	default:
+		level.NewFilter(logger, level.AllowInfo())
+	}
 
 	logger.Log("msg", "Starting sql_exporter", "version_info", version.Info(), "build_context", version.BuildContext())
 
 	exporter, err := NewExporter(logger, *configFile)
 	if err != nil {
-		logger.Log("level", "error", "msg", "Error starting exporter", "err", err)
+		level.Error(logger).Log("msg", "Error starting exporter", "err", err)
 		os.Exit(1)
 	}
 	prometheus.MustRegister(exporter)
@@ -65,9 +74,9 @@ func main() {
 		`))
 	})
 
-	logger.Log("level", "info", "msg", "Listening", "listenAddress", *listenAddress)
+	level.Info(logger).Log("msg", "Listening", "listenAddress", *listenAddress)
 	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
-		logger.Log("level", "error", "msg", "Error starting HTTP server:", "err", err)
+		level.Error(logger).Log("msg", "Error starting HTTP server:", "err", err)
 		os.Exit(1)
 	}
 }
