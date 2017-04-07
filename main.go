@@ -42,13 +42,15 @@ func main() {
 	// set the allowed log level filter
 	switch strings.ToLower(os.Getenv("LOGLEVEL")) {
 	case "debug":
-		level.NewFilter(logger, level.AllowDebug())
+		logger = level.NewFilter(logger, level.AllowDebug())
+	case "info":
+		logger = level.NewFilter(logger, level.AllowInfo())
 	case "warn":
-		level.NewFilter(logger, level.AllowWarn())
+		logger = level.NewFilter(logger, level.AllowWarn())
 	case "error":
-		level.NewFilter(logger, level.AllowError())
+		logger = level.NewFilter(logger, level.AllowError())
 	default:
-		level.NewFilter(logger, level.AllowInfo())
+		logger = level.NewFilter(logger, level.AllowAll())
 	}
 
 	logger.Log("msg", "Starting sql_exporter", "version_info", version.Info(), "build_context", version.BuildContext())
