@@ -34,7 +34,7 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 		if job == nil {
 			continue
 		}
-		if err := job.Init(logger); err != nil {
+		if err := job.Init(logger, cfg.Queries); err != nil {
 			level.Warn(logger).Log("msg", "Skipping job. Failed to initialize", "err", err, "job", job.Name)
 			continue
 		}

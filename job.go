@@ -24,13 +24,22 @@ var (
 )
 
 // Init will initialize the metric descriptors
-func (j *Job) Init(logger log.Logger) error {
+func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
 	// register each query as an metric
 	for _, q := range j.Queries {
 		if q == nil {
 			level.Warn(j.log).Log("msg", "Skipping invalid query")
 			continue
+		}
+		q.log = log.With(j.log, "query", q.Name)
+		if q.Query == "" && q.QueryRef != "" {
+			if qry, found := queries[q.QueryRef]; found {
+				q.Query = qry
+			}
+		}
+		if q.Query == "" {
+			level.Warn(q.log).Log("msg", "Skipping empty query")
 		}
 		if q.metrics == nil {
 			// we have no way of knowing how many metrics will be returned by the
@@ -41,7 +50,6 @@ func (j *Job) Init(logger log.Logger) error {
 		// try to satisfy prometheus naming restrictions
 		name := MetricNameRE.ReplaceAllString("sql_"+q.Name, "")
 		help := q.Help
-		q.log = log.With(j.log, "query", q.Name)
 		// prepare a new metrics descriptor
 		//
 		// the tricky part here is that the *order* of labels has to match the
