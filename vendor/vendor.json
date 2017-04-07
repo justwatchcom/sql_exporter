@@ -29,6 +29,12 @@
 			"revisionTime": "2017-03-24T23:12:18Z"
 		},
 		{
+			"checksumSHA1": "kYhdJ/8zWpaicIyiPTLcRhuX8iY=",
+			"path": "github.com/go-kit/kit/log/level",
+			"revision": "5d93a23737003ed3ad90359f0aeb25e08dfdf547",
+			"revisionTime": "2017-03-24T23:12:18Z"
+		},
+		{
 			"checksumSHA1": "KxX/Drph+byPXBFIXaCZaCOAnrU=",
 			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/github.com/go-logfmt/logfmt",
 			"path": "github.com/go-logfmt/logfmt",

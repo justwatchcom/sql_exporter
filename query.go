@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -35,12 +36,12 @@ func (q *Query) Run(conn *connection) error {
 		res := make(map[string]interface{})
 		err := rows.MapScan(res)
 		if err != nil {
-			q.log.Log("level", "error", "msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
+			level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
 			continue
 		}
 		m, err := q.updateMetrics(conn, res)
 		if err != nil {
-			q.log.Log("level", "error", "msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
+			level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
 			continue
 		}
 		metrics = append(metrics, m...)
@@ -66,7 +67,13 @@ func (q *Query) updateMetrics(conn *connection, res map[string]interface{}) ([]p
 	for _, valueName := range q.Values {
 		m, err := q.updateMetric(conn, res, valueName)
 		if err != nil {
-			q.log.Log("level", "error", "msg", "Failed to update metric", "value", valueName, "err", err, "host", conn.host, "db", conn.database)
+			level.Error(q.log).Log(
+				"msg", "Failed to update metric",
+				"value", valueName,
+				"err", err,
+				"host", conn.host,
+				"db", conn.database,
+			)
 			continue
 		}
 		metrics = append(metrics, m)
