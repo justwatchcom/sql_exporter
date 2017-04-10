@@ -106,3 +106,13 @@ jobs:
             , idx_blks_read::float
             , idx_blks_hit::float
             FROM pg_statio_user_tables;
+queries:
+  pg_statio_user_tables:    |
+                            SELECT
+                              schemaname::text
+                            , relname::text
+                            , heap_blks_read::float
+                            , heap_blks_hit::float
+                            , idx_blks_read::float
+                            , idx_blks_hit::float
+                            FROM pg_statio_user_tables;

@@ -37,7 +37,8 @@ func Read(path string) (File, error) {
 
 // File is a collection of jobs
 type File struct {
-	Jobs []*Job `yaml:"jobs"`
+	Jobs    []*Job            `yaml:"jobs"`
+	Queries map[string]string `yaml:"queries"`
 }
 
 // Job is a collection of connections and queries
@@ -63,12 +64,13 @@ type connection struct {
 // Query is an SQL query that is executed on a connection
 type Query struct {
 	sync.Mutex
-	log     log.Logger
-	desc    *prometheus.Desc
-	metrics map[*connection][]prometheus.Metric
-	Name    string   `yaml:"name"`   // the prometheus metric name
-	Help    string   `yaml:"help"`   // the prometheus metric help text
-	Labels  []string `yaml:"labels"` // expose these columns as labels per gauge
-	Values  []string `yaml:"values"` // expose each of these as an gauge
-	Query   string   `yaml:"query"`
+	log      log.Logger
+	desc     *prometheus.Desc
+	metrics  map[*connection][]prometheus.Metric
+	Name     string   `yaml:"name"`      // the prometheus metric name
+	Help     string   `yaml:"help"`      // the prometheus metric help text
+	Labels   []string `yaml:"labels"`    // expose these columns as labels per gauge
+	Values   []string `yaml:"values"`    // expose each of these as an gauge
+	Query    string   `yaml:"query"`     // a literal query
+	QueryRef string   `yaml:"query_ref"` // references an query in the query map
 }
