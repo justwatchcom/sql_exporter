@@ -40,6 +40,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		}
 		if q.Query == "" {
 			level.Warn(q.log).Log("msg", "Skipping empty query")
+			continue
 		}
 		if q.metrics == nil {
 			// we have no way of knowing how many metrics will be returned by the
