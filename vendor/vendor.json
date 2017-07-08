@@ -83,6 +83,12 @@
 			"revisionTime": "2014-02-26T03:06:59Z"
 		},
 		{
+			"checksumSHA1": "W7GdQbUr3SZRJ1ocBh/plZ4WvUk=",
+			"path": "github.com/kshvakov/clickhouse",
+			"revision": "91d73be640affc1bbd8d311913c339a0351c0672",
+			"revisionTime": "2017-07-01T21:00:50Z"
+		},
+		{
 			"checksumSHA1": "dNYxHiBLalTqluak2/Z8c3RsSEM=",
 			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/github.com/lib/pq",
 			"path": "github.com/lib/pq",
