@@ -13,7 +13,8 @@ import (
 	"github.com/go-kit/kit/log/level"
 	_ "github.com/go-sql-driver/mysql" // register the MySQL driver
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // register the PostgreSQL driver
+	_ "github.com/kshvakov/clickhouse" // register the ClickHouse driver
+	_ "github.com/lib/pq"              // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -181,6 +182,8 @@ func (c *connection) connect(iv time.Duration) error {
 	switch c.url.Scheme {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
+	case "clickhouse":
+		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.url.Scheme, dsn)
 	if err != nil {
