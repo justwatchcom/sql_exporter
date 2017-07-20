@@ -44,7 +44,12 @@ scrape_configs:
 Flags
 -----
 
-None
+Name    | Description
+--------|------------
+version | Print version information
+web.listen-address | Address to listen on for web interface and telemetry
+web.telemetry-path | Path under which to expose metrics
+config.file | SQL Exporter configuration file name
 
 Environment Variables
 ---------------------
