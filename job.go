@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/kshvakov/clickhouse" // register the ClickHouse driver
 	_ "github.com/lib/pq"              // register the PostgreSQL driver
+	_ "github.com/mattn/go-oci8"       // register the Oracle driver
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -59,7 +60,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		q.desc = prometheus.NewDesc(
 			name,
 			help,
-			append(q.Labels, "driver", "host", "database", "user", "col"),
+			append(q.Labels, "col"),
 			prometheus.Labels{
 				"sql_job": j.Name,
 			},
@@ -182,6 +183,8 @@ func (c *connection) connect(iv time.Duration) error {
 	switch c.url.Scheme {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
+	case "oci8":
+		dsn = strings.TrimPrefix(dsn, "oci8://")
 	case "clickhouse":
 		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}

@@ -8,7 +8,7 @@ This repository contains an service that runs user-defined SQL queries at flexib
 Status
 ======
 
-Actively used with PostgreSQL in production. We'd like to eventually support all databases for which stable Go database [drivers](https://github.com/golang/go/wiki/SQLDrivers) are available. Contributions welcome.
+Actively used with [PostgreSQL](http:/github.com/lib/pq) and [Oracle](https://github.com/mattn/go-oci8) in production. We'd like to eventually support all databases for which stable Go database [drivers](https://github.com/golang/go/wiki/SQLDrivers) are available. Contributions welcome.
 
 What does it look like?
 =======================
@@ -105,6 +105,8 @@ jobs:
   # each query will be executed on each connection
   connections:
   - 'postgres://postgres@localhost/postgres?sslmode=disable'
+  # for Oracle: 
+  # - 'oci8://user/password@host:port/sid'
   # queries is a map of Metric/Query mappings
   queries:
     # name is prefied with sql_ and used as the metric name
