@@ -21,7 +21,7 @@ before_install:
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
-  - export=ORACLE_HOME=instantclient/112010/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
+  - export ORACLE_HOME=instantclient/112010/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
   - .travis/oracle/download.sh
   - unzip oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
   - ls -R oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64
