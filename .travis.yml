@@ -13,7 +13,6 @@ env:
     - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
     - PKG_CONFIG_PATH="."
-    - ORACLE_DOWNLOAD_DIR=.cache/oracle
 
 before_install:
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
@@ -23,6 +22,7 @@ before_install:
   - .travis/oracle/install.sh
   - ORACLE_FILE=instantclient/10204/oracle-instantclient-devel-10.2.0.4-1.x86_64.rpm
   - .travis/oracle/download.sh
+  - find -name *.rpm
   - .travis/oracle/install.sh
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
