@@ -9,9 +9,9 @@ sudo: required
 env:
   global:
     - ORACLE_HOME=/usr/lib/oracle/11.2/client64
+    - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
     - PKG_CONFIG_PATH="."
-
 before_install:
   - sudo apt-get --no-install-recommends -qq install alien bc libaio1 unzip
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
@@ -22,7 +22,7 @@ before_install:
   - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm | cut -d' ' -f1`
   - export ORACLE_FILE=instantclient/11204/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm | cut -d' ' -f1`
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm | cut -d' ' -f1`
   - sudo ls -R /usr/include/oracle/11.2
   - sudo ls -R $ORACLE_HOME
   - >
