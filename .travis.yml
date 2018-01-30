@@ -20,8 +20,9 @@ before_install:
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
+  - sudo /etc/init.d/oracle-xe configure
   - >
-    { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.1";
+    { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
       echo "Cflags: -I$ORACLE_HOME/rdbms/public";
       echo "Libs: -L$ORACLE_HOME/lib -Wl,-rpath,$ORACLE_HOME/lib -lclntsh";
     } | tee oci8.pc
