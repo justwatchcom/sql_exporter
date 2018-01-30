@@ -8,11 +8,10 @@ sudo: required
 
 env:
   global:
-    - ORACLE_COOKIE=sqldev
     - ORACLE_FILE=oracle11g/xe/oracle-xe-11.2.0-1.0.x86_64.rpm.zip
     - ORACLE_HOME=/u01/app/oracle/product/11.2.0/xe
     - ORACLE_SID=XE
-    - ORACLE_COOKIE=ic_linuxx8664
+    - ORACLE_COOKIE=sqldev
     - PKG_CONFIG_PATH="."
 
 before_install:
@@ -21,14 +20,15 @@ before_install:
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
-  - export ORACLE_FILE=instantclient/112010/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
+  - export ORACLE_FILE=instantclient/112010/oracle-instantclient11.2-devel-11.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
+  - .travis/oracle/install.sh
   - ls -R .
   - unzip oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
   - ls -R /u01/app/oracle/product/11.2.0/xe/lib
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
-      echo "Cflags: -I$ORACLE_HOME/rdbms/public";
+      echo "Cflags: -I/usr/include/oracle/11.2/client64/";
       echo "Libs: -L$ORACLE_HOME/lib -Wl,-rpath,$ORACLE_HOME/lib -lclntsh";
     } | tee oci8.pc
   - go get github.com/mattn/go-oci8
