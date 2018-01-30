@@ -13,6 +13,7 @@ env:
     - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
     - PKG_CONFIG_PATH="."
+    - ORACLE_DOWNLOAD_DIR=.cache/oracle
 
 before_install:
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
@@ -20,11 +21,16 @@ before_install:
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
-  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm' download.sh
-  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm' download.sh
-  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-sqlplus-11.2.0.4.0-1.x86_64.rpm' download.sh
-  - sudo apt-get -qq install libaio1 rpm
-  - sudo rpm --install --nodeps oracle-instantclient11.2-*.rpm
+  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm'
+  - .travis/oracle/download.sh
+  - ls -R .cache/oracle
+  - .travis/oracle/install.sh
+  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm'
+  - .travis/oracle/download.sh
+  - .travis/oracle/install.sh
+  - ORACLE_FILE='instantclient/11204/oracle-instantclient11.2-sqlplus-11.2.0.4.0-1.x86_64.rpm'
+  - .travis/oracle/download.sh
+  - .travis/oracle/install.sh
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
       echo "Cflags: -I/usr/include/oracle/11.2/client64/";
