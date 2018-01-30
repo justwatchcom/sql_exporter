@@ -8,7 +8,6 @@ sudo: required
 
 env:
   global:
-    - ORACLE_FILE=oracle11g/xe/oracle-xe-11.2.0-1.0.x86_64.rpm.zip
     - ORACLE_HOME=/u01/app/oracle/product/11.2.0/xe
     - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
@@ -19,8 +18,9 @@ before_install:
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
   - mkdir -p .travis/oracle
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
+  - ORACLE_FILE=instantclient/10204/oracle-instantclient-basic-10.2.0.4-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - .travis/oracle/install.sh
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient-basic-10.2.0.4-1.x86_64.rpm | cut -d' ' -f1`
   - ORACLE_FILE=instantclient/10204/oracle-instantclient-devel-10.2.0.4-1.x86_64.rpm
   - .travis/oracle/download.sh
   - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient-devel-10.2.0.4-1.x86_64.rpm | cut -d' ' -f1`
