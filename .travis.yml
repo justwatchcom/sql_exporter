@@ -4,6 +4,9 @@ go:
   - 1.8
   - tip
 
+install:
+  - go get github.com/mattn/go-oci8
+
 script:
   - make style
   - make vet
