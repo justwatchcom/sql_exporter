@@ -25,8 +25,8 @@ before_install:
   - .travis/oracle/download.sh
   - ls -R .cache/oracle
   - unzip .cache/oracle/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip -d client64
-  - sudo mkdir -p /usr/include/oracle/11.2
-  - ln -s /home/travis/gopath/src/github.com/mkosiorek/sql_exporter/client64/instantclient_11_2/sdk/include/ /usr/include/oracle/11.2/client64/
+  - sudo mkdir -p /usr/include/oracle/11.2/client64/
+  - sudo cp /home/travis/gopath/src/github.com/mkosiorek/sql_exporter/client64/instantclient_11_2/sdk/include/* /usr/include/oracle/11.2/client64/
   - ls -R /usr/include/oracle
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
