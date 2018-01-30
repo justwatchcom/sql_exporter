@@ -8,7 +8,7 @@ sudo: required
 
 env:
   global:
-    - ORACLE_HOME=/u01/app/oracle/product/11.2.0/xe
+    - ORACLE_HOME=/usr/lib/oracle/11.2/client64
     - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
     - PKG_CONFIG_PATH="."
