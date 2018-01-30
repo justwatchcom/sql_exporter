@@ -4,7 +4,7 @@ go:
   - 1.8
   - tip
 
-install:
+before_script:
   - go get github.com/mattn/go-oci8
 
 script:
