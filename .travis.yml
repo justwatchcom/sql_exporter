@@ -23,9 +23,6 @@ before_install:
   - export ORACLE_FILE=instantclient/112010/oracle-instantclient11.2-devel-11.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
-  - ls -R .
-  - unzip oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip
-  - ls -R /u01/app/oracle/product/11.2.0/xe/lib
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
       echo "Cflags: -I/usr/include/oracle/11.2/client64/";
