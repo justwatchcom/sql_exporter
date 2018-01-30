@@ -21,14 +21,12 @@ before_install:
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
   - .travis/oracle/download.sh
   - .travis/oracle/install.sh
-  - ORACLE_FILE='instantclient/112010/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip'
+  - ORACLE_FILE=instantclient/10204/oracle-instantclient-devel-10.2.0.4-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - unzip .cache/oracle/oracle-instantclient11.2-sdk-11.2.0.1.0-1.x86_64.zip -d client64
-  - ls -R /home/travis/gopath/src/github.com/mkosiorek/sql_exporter/client64/instantclient_11_2/sdk/include/
-  - ls -R $ORACLE_HOME/lib
+  - .travis/oracle/install.sh
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
-      echo "Cflags: -I/home/travis/gopath/src/github.com/mkosiorek/sql_exporter/client64/instantclient_11_2/sdk/include/";
+      echo "Cflags: -I/usr/include/oracle/11.2/client64/";
       echo "Libs: -L$ORACLE_HOME/lib -Wl,-rpath,$ORACLE_HOME/lib -lclntsh";
     } | tee oci8.pc
   - go get github.com/mattn/go-oci8
