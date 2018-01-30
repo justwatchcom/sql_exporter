@@ -15,6 +15,7 @@ env:
     - PKG_CONFIG_PATH="."
 
 before_install:
+  - sudo apt-get --no-install-recommends -qq install alien bc libaio1 unzip
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
   - mkdir -p .travis/oracle
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
