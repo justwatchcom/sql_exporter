@@ -17,17 +17,17 @@ before_install:
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
   - mkdir -p .travis/oracle
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
-  - export ORACLE_FILE=instantclient/11204/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm
+  - export ORACLE_FILE=instantclient/122010/oracle-instantclient11.2-basic-12.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm | cut -d' ' -f1`
-  - export ORACLE_FILE=instantclient/11204/oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-basic-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
+  - export ORACLE_FILE=instantclient/122010/oracle-instantclient11.2-devel-12.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm | cut -d' ' -f1`
-  - sudo ls -R /usr/include/oracle/11.2
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-devel-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
+  - sudo ls -R /usr/include/oracle/12.2
   - sudo ls -R $ORACLE_HOME
   - >
-    { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 11.2";
-      echo "Cflags: -I/usr/include/oracle/11.2/client64/";
+    { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 12.2";
+      echo "Cflags: -I/usr/include/oracle/12.2/client64/";
       echo "Libs: -L$ORACLE_HOME/lib -lclntsh";
     } | tee oci8.pc
   - go get github.com/mattn/go-oci8
