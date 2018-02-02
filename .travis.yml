@@ -26,6 +26,7 @@ before_install:
   - sudo ls -R /usr/include/oracle/12.1
   - sudo ls -R $ORACLE_HOME
   - export PATH="${PATH}:${ORACLE_HOME}/lib"
+  - export LD_LIBRARY_PATH="${ORACLE_HOME}/lib"
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 12.1";
       echo "Cflags: -I/usr/include/oracle/12.1/client64/";
