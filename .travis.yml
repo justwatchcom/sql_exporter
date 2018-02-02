@@ -25,6 +25,7 @@ before_install:
   - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient12.1-devel-12.1.0.2.0-1.x86_64.rpm | cut -d' ' -f1`
   - sudo ls -R /usr/include/oracle/12.1
   - sudo ls -R $ORACLE_HOME
+  - export PATH="${PATH}:${ORACLE_HOME}/lib"
   - >
     { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 12.1";
       echo "Cflags: -I/usr/include/oracle/12.1/client64/";
