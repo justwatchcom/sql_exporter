@@ -8,7 +8,7 @@ sudo: required
 
 env:
   global:
-    - ORACLE_HOME=/usr/lib/oracle/11.2/client64
+    - ORACLE_HOME=/usr/lib/oracle/12.2/client64
     - ORACLE_SID=XE
     - ORACLE_COOKIE=ic_linuxx8664
     - PKG_CONFIG_PATH="."
@@ -17,12 +17,12 @@ before_install:
   - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
   - mkdir -p .travis/oracle
   - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
-  - export ORACLE_FILE=instantclient/122010/oracle-instantclient11.2-basic-12.2.0.1.0-1.x86_64.rpm
+  - export ORACLE_FILE=instantclient/122010/oracle-instantclient12.2-basic-12.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-basic-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
-  - export ORACLE_FILE=instantclient/122010/oracle-instantclient11.2-devel-12.2.0.1.0-1.x86_64.rpm
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient12.2-basic-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
+  - export ORACLE_FILE=instantclient/122010/oracle-instantclient12.2-devel-12.2.0.1.0-1.x86_64.rpm
   - .travis/oracle/download.sh
-  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient11.2-devel-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient12.2-devel-12.2.0.1.0-1.x86_64.rpm | cut -d' ' -f1`
   - sudo ls -R /usr/include/oracle/12.2
   - sudo ls -R $ORACLE_HOME
   - >
