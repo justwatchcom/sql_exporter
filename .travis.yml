@@ -4,6 +4,33 @@ go:
   - 1.8
   - tip
 
+sudo: required
+
+env:
+  global:
+    - ORACLE_HOME=/usr/lib/oracle/12.1/client64
+    - ORACLE_SID=XE
+    - ORACLE_COOKIE=ic_linuxx8664
+    - PKG_CONFIG_PATH="."
+before_install:
+  - sudo apt-get --no-install-recommends -qq install alien bc libaio1 unzip
+  - wget 'https://github.com/cbandy/travis-oracle/archive/v2.0.3.tar.gz'
+  - mkdir -p .travis/oracle
+  - tar x -C .travis/oracle --strip-components=1 -f v2.0.3.tar.gz
+  - export ORACLE_FILE=instantclient/121020/oracle-instantclient12.1-basic-12.1.0.2.0-1.x86_64.rpm
+  - .travis/oracle/download.sh
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient12.1-basic-12.1.0.2.0-1.x86_64.rpm | cut -d' ' -f1`
+  - export ORACLE_FILE=instantclient/121020/oracle-instantclient12.1-devel-12.1.0.2.0-1.x86_64.rpm
+  - .travis/oracle/download.sh
+  - sudo dpkg --install `sudo alien --scripts --to-deb .travis/oracle/oracle-instantclient12.1-devel-12.1.0.2.0-1.x86_64.rpm | cut -d' ' -f1`
+  - export PATH="${PATH}:${ORACLE_HOME}/lib"
+  - export LD_LIBRARY_PATH="${ORACLE_HOME}/lib"
+  - >
+    { echo "Name: oci8"; echo "Description: Oracle Call Interface"; echo "Version: 12.1";
+      echo "Cflags: -I/usr/include/oracle/12.1/client64/";
+      echo "Libs: -L$ORACLE_HOME/lib -Wl,-rpath,$ORACLE_HOME/lib -lclntsh";
+    } | tee oci8.pc
+
 script:
   - make style
   - make vet
