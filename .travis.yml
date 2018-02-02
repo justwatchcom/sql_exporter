@@ -30,7 +30,6 @@ before_install:
       echo "Cflags: -I/usr/include/oracle/12.1/client64/";
       echo "Libs: -L$ORACLE_HOME/lib -Wl,-rpath,$ORACLE_HOME/lib -lclntsh";
     } | tee oci8.pc
-  - go get github.com/mattn/go-oci8
 
 script:
   - make style
