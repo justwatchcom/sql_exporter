@@ -103,6 +103,12 @@
 			"revisionTime": "2016-08-31T22:25:20Z"
 		},
 		{
+			"checksumSHA1": "xXHmjFcWfeR8GJVhQKoYUAwTFB4=",
+			"path": "github.com/mattn/go-oci8",
+			"revision": "73e70e9fc52baed56e26e53fb22c21a913e69490",
+			"revisionTime": "2017-11-02T03:04:57Z"
+		},
+		{
 			"checksumSHA1": "bKMZjd2wPw13VwoE7mBeSv5djFA=",
 			"origin": "jus.tw.cx/jw-prom-sql-exporter/vendor/github.com/matttproud/golang_protobuf_extensions/pbutil",
 			"path": "github.com/matttproud/golang_protobuf_extensions/pbutil",
@@ -191,5 +197,5 @@
 			"revisionTime": "2016-09-28T15:37:09Z"
 		}
 	],
-	"rootPath": "github.com/justwatchcom/sql_exporter"
+	"rootPath": "github.com/mkosiorek/sql_exporter"
 }
