@@ -10,7 +10,6 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 )
 
@@ -62,8 +61,8 @@ func main() {
 	}
 	prometheus.MustRegister(exporter)
 
-	// setup and start webserver
-	http.Handle(*metricsPath, promhttp.Handler())
+	// setup and start webserver with custom function
+	http.HandleFunc(*metricsPath, exporter.handlerFunc)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "OK", http.StatusOK) })
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
