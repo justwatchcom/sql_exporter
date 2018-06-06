@@ -4,6 +4,9 @@ jobs:
   interval: '5m'
   connections:
   - 'postgres://postgres@localhost/postgres?sslmode=disable'
+  startup_sql:
+  - 'SET lock_timeout = 1000'
+  - 'SET idle_in_transaction_session_timeout = 100'
   queries:
   - name: "running_queries"
     help: "Number of running queries"
@@ -31,7 +34,7 @@ jobs:
     values:
       - "replication_lag"
     query:  |
-            WITH lag AS ( 
+            WITH lag AS (
             SELECT
             CASE
             WHEN pg_last_xlog_receive_location() = pg_last_xlog_replay_location() THEN 0

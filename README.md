@@ -105,6 +105,11 @@ jobs:
   # each query will be executed on each connection
   connections:
   - 'postgres://postgres@localhost/postgres?sslmode=disable'
+  # startup_sql is an array of SQL statements
+  # each statements is executed once after connecting
+  startup_sql:
+  - 'SET lock_timeout = 1000'
+  - 'SET idle_in_transaction_session_timeout = 100'
   # queries is a map of Metric/Query mappings
   queries:
     # name is prefied with sql_ and used as the metric name
