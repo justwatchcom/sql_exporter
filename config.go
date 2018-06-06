@@ -50,6 +50,7 @@ type Job struct {
 	Interval    time.Duration `yaml:"interval"`  // interval at which this job is run
 	Connections []string      `yaml:"connections"`
 	Queries     []*Query      `yaml:"queries"`
+	StartupSQL  []string      `yaml:"startup_sql"` // SQL executed on startup
 }
 
 type connection struct {

@@ -128,7 +128,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 	}()
 
 	// connect to DB if not connected already
-	if err := conn.connect(j.Interval); err != nil {
+	if err := conn.connect(j); err != nil {
 		level.Warn(j.log).Log("msg", "Failed to connect", "err", err)
 		return
 	}
@@ -173,7 +173,7 @@ func (j *Job) runOnce() error {
 	return nil
 }
 
-func (c *connection) connect(iv time.Duration) error {
+func (c *connection) connect(job *Job) error {
 	// already connected
 	if c.conn != nil {
 		return nil
@@ -192,7 +192,14 @@ func (c *connection) connect(iv time.Duration) error {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(iv * 2)
+	conn.SetConnMaxLifetime(job.Interval * 2)
+
+	// execute StartupSQL
+	for _, query := range job.StartupSQL {
+		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
+		conn.MustExec(query)
+	}
+
 	c.conn = conn
 	return nil
 }
