@@ -185,6 +185,13 @@ environment.
 LOGLEVEL=info ./sql_exporter
 ```
 
+
+Additional documentation
+========================
+
+Like creating a windows installer for exporting MSSQL metrics can be found in the doc directory.
+
+
 Why this exporter exists
 ========================
 
