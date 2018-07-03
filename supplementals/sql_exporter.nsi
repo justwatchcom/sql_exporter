@@ -17,7 +17,7 @@ LoadLanguageFile "${NSISDIR}\Contrib\Language files\English.nlf"
 ;Version Information
 VIProductVersion "${INSTALLERVERSION}"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "SQL Exporter"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "credativ GmbH"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "<Your company>"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalTrademarks" "Prometheus SQL exporter for SQL metrics"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "sql_exporter_setup"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${VERSION}"
