@@ -35,6 +35,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 			continue
 		}
 		q.log = log.With(j.log, "query", q.Name)
+		q.jobName = j.Name
 		if q.Query == "" && q.QueryRef != "" {
 			if qry, found := queries[q.QueryRef]; found {
 				q.Query = qry
@@ -142,6 +143,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 	// connect to DB if not connected already
 	if err := conn.connect(j); err != nil {
 		level.Warn(j.log).Log("msg", "Failed to connect", "err", err)
+		j.markFailed(conn)
 		return
 	}
 
@@ -162,6 +164,12 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 		}
 		level.Debug(q.log).Log("msg", "Query finished")
 		updated++
+	}
+}
+
+func (j *Job) markFailed(conn *connection) {
+	for _, q := range j.Queries {
+		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
 	}
 }
 

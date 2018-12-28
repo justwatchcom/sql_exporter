@@ -35,10 +35,6 @@ func main() {
 
 	// init logger
 	logger := log.NewJSONLogger(os.Stdout)
-	logger = log.With(logger,
-		"ts", log.DefaultTimestampUTC,
-		"caller", log.DefaultCaller,
-	)
 	// set the allowed log level filter
 	switch strings.ToLower(os.Getenv("LOGLEVEL")) {
 	case "debug":
@@ -52,6 +48,10 @@ func main() {
 	default:
 		logger = level.NewFilter(logger, level.AllowAll())
 	}
+	logger = log.With(logger,
+		"ts", log.DefaultTimestampUTC,
+		"caller", log.DefaultCaller,
+	)
 
 	logger.Log("msg", "Starting sql_exporter", "version_info", version.Info(), "build_context", version.BuildContext())
 

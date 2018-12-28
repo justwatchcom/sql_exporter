@@ -37,15 +37,18 @@ func (q *Query) Run(conn *connection) error {
 		err := rows.MapScan(res)
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
 			continue
 		}
 		m, err := q.updateMetrics(conn, res)
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
 			continue
 		}
 		metrics = append(metrics, m...)
 		updated++
+		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
 	}
 
 	if updated < 1 {

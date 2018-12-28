@@ -13,6 +13,20 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+var (
+	failedScrapes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sql_exporter_last_scrape_failed",
+			Help: "Failed scrapes",
+		},
+		[]string{"driver", "host", "database", "user", "sql_job", "query"},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(failedScrapes)
+}
+
 // Read attempts to parse the given config and return a file
 // object
 func Read(path string) (File, error) {
@@ -68,6 +82,7 @@ type Query struct {
 	log      log.Logger
 	desc     *prometheus.Desc
 	metrics  map[*connection][]prometheus.Metric
+	jobName  string
 	Name     string   `yaml:"name"`      // the prometheus metric name
 	Help     string   `yaml:"help"`      // the prometheus metric help text
 	Labels   []string `yaml:"labels"`    // expose these columns as labels per gauge
