@@ -2,6 +2,8 @@
 jobs:
 - name: "global"
   interval: '5m'
+  execution_time_from: '00:00:00'
+  execution_time_to: '23:59:59'
   connections:
   - 'postgres://postgres@localhost/postgres?sslmode=disable'
   startup_sql:

@@ -24,9 +24,39 @@ var (
 	MetricNameRE = regexp.MustCompile("[^a-zA-Z0-9_:]+")
 )
 
+func getClockFromTime(t time.Time) time.Time {
+	clock := t.Sub(t.Truncate(time.Hour * 24))
+	return time.Time{}.UTC().Add(clock)
+}
+
+func (j *Job) fitsExecutionTimeInterval(t time.Time) bool {
+	currentClockTime := getClockFromTime(t)
+	level.Debug(j.log).Log("current clock", currentClockTime)
+	level.Debug(j.log).Log("from clock", j.ExecutionTimeFrom.GetTime(), "after", currentClockTime.Before(j.ExecutionTimeFrom.GetTime()))
+	level.Debug(j.log).Log("to clock", j.ExecutionTimeTo.GetTime(), "before", currentClockTime.Before(j.ExecutionTimeTo.GetTime()))
+	return currentClockTime.After(j.ExecutionTimeFrom.GetTime()) && currentClockTime.Before(j.ExecutionTimeTo.GetTime())
+}
+
+func (j *Job) initiateTimeExecutionInterval() {
+	if j.ExecutionTimeFrom.GetTime().IsZero() {
+		j.ExecutionTimeFrom.Time = time.Time{}
+	}
+	if j.ExecutionTimeTo.GetTime().IsZero() {
+		j.ExecutionTimeTo.Time = time.Time{}.Add(time.Hour * 24)
+	}
+	if j.ExecutionTimeFrom.After(j.ExecutionTimeTo.GetTime()) {
+		level.Warn(j.log).Log(
+			"msg", "invalid execution time range, end preceeds it's start",
+			"start", j.ExecutionTimeFrom.GetTime(),
+			"end", j.ExecutionTimeTo.GetTime(),
+		)
+	}
+}
+
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
+	j.initiateTimeExecutionInterval()
 	// register each query as an metric
 	for _, q := range j.Queries {
 		if q == nil {
@@ -111,10 +141,18 @@ func (j *Job) Run() {
 	// enter the run loop
 	// tries to run each query on each connection at approx the interval
 	for {
-		bo := backoff.NewExponentialBackOff()
-		bo.MaxElapsedTime = j.Interval
-		if err := backoff.Retry(j.runOnce, bo); err != nil {
-			level.Error(j.log).Log("msg", "Failed to run", "err", err)
+		// check if execution is in specified time interval
+		if j.fitsExecutionTimeInterval(time.Now().UTC()) {
+			bo := backoff.NewExponentialBackOff()
+			bo.MaxElapsedTime = j.Interval
+			if err := backoff.Retry(j.runOnce, bo); err != nil {
+				level.Error(j.log).Log("msg", "Failed to run", "err", err)
+			}
+		} else {
+			level.Debug(j.log).Log(
+				"msg", "Ommited job execution, out of time range",
+				"start", j.ExecutionTimeFrom.GetTime().Format(TimeFormat),
+				"stop", j.ExecutionTimeTo.GetTime().Format(TimeFormat))
 		}
 		level.Debug(j.log).Log("msg", "Sleeping until next run", "sleep", j.Interval.String())
 		time.Sleep(j.Interval)
