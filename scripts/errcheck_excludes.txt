@@ -1,0 +1,4 @@
+// Used in HTTP handlers, any error is handled by the server itself.
+(net/http.ResponseWriter).Write
+// Explicit ignore, can't do much there.
+(github.com/go-kit/kit/log.Logger).Log
