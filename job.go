@@ -12,7 +12,7 @@ import (
 	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	_ "github.com/go-sql-driver/mysql" // register the MySQL driver
+	"github.com/go-sql-driver/mysql" // register the MySQL driver
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
@@ -87,6 +87,23 @@ func (j *Job) Run() {
 	// parse the connection URLs and create an connection object for each
 	if len(j.conns) < len(j.Connections) {
 		for _, conn := range j.Connections {
+			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
+			if strings.HasPrefix(conn, "mysql://") {
+				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse MySQL DSN", "url", conn, "err", err)
+				}
+
+				j.conns = append(j.conns, &connection{
+					conn:     nil,
+					url:      conn,
+					driver:   "mysql",
+					host:     config.Addr,
+					database: config.DBName,
+					user:     config.User,
+				})
+				continue
+			}
 			u, err := url.Parse(conn)
 			if err != nil {
 				level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
@@ -100,7 +117,7 @@ func (j *Job) Run() {
 			// remember them
 			newConn := &connection{
 				conn:     nil,
-				url:      u,
+				url:      conn,
 				driver:   u.Scheme,
 				host:     u.Host,
 				database: strings.TrimPrefix(u.Path, "/"),
@@ -198,14 +215,14 @@ func (c *connection) connect(job *Job) error {
 	if c.conn != nil {
 		return nil
 	}
-	dsn := c.url.String()
-	switch c.url.Scheme {
+	dsn := c.url
+	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
 	case "clickhouse":
 		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
-	conn, err := sqlx.Connect(c.url.Scheme, dsn)
+	conn, err := sqlx.Connect(c.driver, dsn)
 	if err != nil {
 		return err
 	}

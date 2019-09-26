@@ -2,7 +2,6 @@ package main
 
 import (
 	"io/ioutil"
-	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -69,7 +68,7 @@ type Job struct {
 
 type connection struct {
 	conn     *sqlx.DB
-	url      *url.URL
+	url      string
 	driver   string
 	host     string
 	database string
