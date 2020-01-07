@@ -4,6 +4,9 @@ go:
   - 1.12
   - tip
 
+env:
+  - GO111MODULE=on
+
 script:
   - make style
   - make vet
