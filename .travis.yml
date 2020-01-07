@@ -1,8 +1,11 @@
 language: go
 
 go:
-  - 1.8
+  - 1.12
   - tip
+
+env:
+  - GO111MODULE=on
 
 script:
   - make style
