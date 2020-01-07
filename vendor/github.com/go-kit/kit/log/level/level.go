@@ -37,27 +37,6 @@ func NewFilter(next log.Logger, options ...Option) log.Logger {
 	return l
 }
 
-type FilterLogger interface {
-	log.Logger
-	Filter(option Option)
-}
-
-type filterLogger struct {
-	*logger
-}
-
-func (l *filterLogger) Filter(option Option) {
-	option(l.logger)
-}
-
-func NewRuntimeFilter(next log.Logger, option Option) FilterLogger {
-	l := &filterLogger{
-		logger: &logger{next: next},
-	}
-	option(l.logger)
-	return l
-}
-
 type logger struct {
 	next           log.Logger
 	allowed        level
@@ -197,8 +176,8 @@ func InfoValue() Value { return infoValue }
 func DebugValue() Value { return debugValue }
 
 var (
-	// key is of type interfae{} so that it allocates once during package
-	// initialization and avoids allocating every type the value is added to a
+	// key is of type interface{} so that it allocates once during package
+	// initialization and avoids allocating every time the value is added to a
 	// []interface{} later.
 	key interface{} = "level"
 
