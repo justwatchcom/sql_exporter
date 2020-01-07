@@ -16,6 +16,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
+	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
 )
 
 var (
@@ -96,14 +97,25 @@ func (j *Job) Run() {
 			}
 			// we expose some of the connection variables as labels, so we need to
 			// remember them
-			j.conns = append(j.conns, &connection{
+			newConn := &connection{
 				conn:     nil,
 				url:      u,
 				driver:   u.Scheme,
 				host:     u.Host,
 				database: strings.TrimPrefix(u.Path, "/"),
 				user:     user,
-			})
+			}
+			if newConn.driver == "athena" {
+				// call go-athena's Open() to ensure conn.db is set,
+				// otherwise API calls will complain about an empty database field:
+				// "InvalidParameter: 1 validation error(s) found. - minimum field size of 1, StartQueryExecutionInput.QueryExecutionContext.Database."
+				newConn.conn, err = sqlx.Open("athena", u.RawQuery)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to open Athena connection", "connection", conn, "err", err)
+					continue
+				}
+			}
+			j.conns = append(j.conns, newConn)
 		}
 	}
 	level.Debug(j.log).Log("msg", "Starting")
