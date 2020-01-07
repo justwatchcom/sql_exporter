@@ -119,3 +119,19 @@ queries:
                             , idx_blks_read::float
                             , idx_blks_hit::float
                             FROM pg_statio_user_tables;
+- name: "athena"
+  interval: '5m'
+  connections:
+  # see https://godoc.org/github.com/segmentio/go-athena#Driver.Open
+  - 'athena://HOST_VALUE_IGNORED/<DB_NAME>?db=<DB_NAME>&region=<AWS_REGION>&output_location=s3://aws-athena-query-results-<ACCOUNT_ID>-<REGION>'
+  queries:
+  - name: "athena_query_rows"
+    help: "Number of rows..."
+    values:
+      - "count"
+    query: |
+      SELECT COUNT(*) AS count
+      FROM my_athena_db.some_table
+      WHERE partition IN
+          (SELECT max(partition)
+          FROM my_athena_db.some_table);
