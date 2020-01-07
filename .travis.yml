@@ -5,8 +5,7 @@ go:
   - tip
 
 env:
-  - GO111MODULE=on
-  - GOFLAGS=-mod=vendor
+  - GO111MODULE=on GOFLAGS=-mod=vendor
 
 script:
   - make style
