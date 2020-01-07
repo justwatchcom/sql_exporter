@@ -76,7 +76,7 @@ func (j *Job) Run() {
 	}
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
-		level.Error(j.log).Log("msg", "No conenctions for job", "job", j.Name)
+		level.Error(j.log).Log("msg", "No connections for job", "job", j.Name)
 		return
 	}
 	// make space for the connection objects
