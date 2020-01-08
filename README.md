@@ -107,6 +107,12 @@ jobs:
 - name: "example"
   # interval defined the pause between the runs of this job
   interval: '5m'
+  # execution_time_from defines optional lower boundary of time interval the query will be executed
+  # it is defined in format hh:mm:ss and default is 00:00:00 in UTC
+  execution_time_from: '12:00:00'
+  # execution_time_to defines optional upper boundary of time interval the query will be executed
+  # it is defined in format hh:mm:ss and default is 24:00:00 in UTC
+  execution_time_to: '14:00:00'
   # connections is an array of connection URLs
   # each query will be executed on each connection
   connections:
