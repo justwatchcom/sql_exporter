@@ -1,14 +1,14 @@
 package mssql
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"strings"
-
-	"golang.org/x/net/context"
 )
 
 //go:generate stringer -type token
@@ -22,6 +22,7 @@ const (
 	tokenOrder        token = 169 // 0xA9
 	tokenError        token = 170 // 0xAA
 	tokenInfo         token = 171 // 0xAB
+	tokenReturnValue  token = 0xAC
 	tokenLoginAck     token = 173 // 0xad
 	tokenRow          token = 209 // 0xd1
 	tokenNbcRow       token = 210 // 0xd2
@@ -149,27 +150,23 @@ func processEnvChg(sess *tdsSession) {
 				badStreamPanic(err)
 			}
 		case envTypLanguage:
-			//currently ignored
-			// old value
-			_, err = readBVarChar(r)
-			if err != nil {
+			// currently ignored
+			// new value
+			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value
-			_, err = readBVarChar(r)
-			if err != nil {
+			// old value
+			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
 		case envTypCharset:
-			//currently ignored
-			// old value
-			_, err = readBVarChar(r)
-			if err != nil {
+			// currently ignored
+			// new value
+			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value
-			_, err = readBVarChar(r)
-			if err != nil {
+			// old value
+			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
 		case envTypPacketSize:
@@ -188,31 +185,52 @@ func processEnvChg(sess *tdsSession) {
 			sess.buf.ResizeBuffer(packetsizei)
 		case envSortId:
 			// currently ignored
-			// old value, should be 0
+			// new value
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value
+			// old value, should be 0
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
 		case envSortFlags:
 			// currently ignored
-			// old value, should be 0
+			// new value
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value
+			// old value, should be 0
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
 		case envSqlCollation:
 			// currently ignored
-			// old value
-			if _, err = readBVarChar(r); err != nil {
+			var collationSize uint8
+			err = binary.Read(r, binary.LittleEndian, &collationSize)
+			if err != nil {
 				badStreamPanic(err)
 			}
-			// new value
+
+			// SQL Collation data should contain 5 bytes in length
+			if collationSize != 5 {
+				badStreamPanicf("Invalid SQL Collation size value returned from server: %d", collationSize)
+			}
+
+			// 4 bytes, contains: LCID ColFlags Version
+			var info uint32
+			err = binary.Read(r, binary.LittleEndian, &info)
+			if err != nil {
+				badStreamPanic(err)
+			}
+
+			// 1 byte, contains: sortID
+			var sortID uint8
+			err = binary.Read(r, binary.LittleEndian, &sortID)
+			if err != nil {
+				badStreamPanic(err)
+			}
+
+			// old value, should be 0
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
@@ -251,21 +269,21 @@ func processEnvChg(sess *tdsSession) {
 			sess.tranid = 0
 		case envEnlistDTC:
 			// currently ignored
-			// old value
+			// new value, should be 0
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value, should be 0
+			// old value
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
 		case envDefectTran:
 			// currently ignored
-			// old value, should be 0
+			// new value
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
-			// new value
+			// old value, should be 0
 			if _, err = readBVarChar(r); err != nil {
 				badStreamPanic(err)
 			}
@@ -367,11 +385,9 @@ func processEnvChg(sess *tdsSession) {
 	}
 }
 
-type returnStatus int32
-
 // http://msdn.microsoft.com/en-us/library/dd358180.aspx
-func parseReturnStatus(r *tdsBuffer) returnStatus {
-	return returnStatus(r.int32())
+func parseReturnStatus(r *tdsBuffer) ReturnStatus {
+	return ReturnStatus(r.int32())
 }
 
 func parseOrder(r *tdsBuffer) (res orderStruct) {
@@ -500,7 +516,29 @@ func parseInfo(r *tdsBuffer) (res Error) {
 	return
 }
 
-func processSingleResponse(sess *tdsSession, ch chan tokenStruct) {
+// https://msdn.microsoft.com/en-us/library/dd303881.aspx
+func parseReturnValue(r *tdsBuffer) (nv namedValue) {
+	/*
+		ParamOrdinal
+		ParamName
+		Status
+		UserType
+		Flags
+		TypeInfo
+		CryptoMetadata
+		Value
+	*/
+	r.uint16()
+	nv.Name = r.BVarChar()
+	r.byte()
+	r.uint32() // UserType (uint16 prior to 7.2)
+	r.uint16()
+	ti := readTypeInfo(r)
+	nv.Value = ti.Reader(&ti, r)
+	return
+}
+
+func processSingleResponse(sess *tdsSession, ch chan tokenStruct, outs map[string]interface{}) {
 	defer func() {
 		if err := recover(); err != nil {
 			if sess.logFlags&logErrors != 0 {
@@ -520,7 +558,7 @@ func processSingleResponse(sess *tdsSession, ch chan tokenStruct) {
 		return
 	}
 	if packet_type != packReply {
-		badStreamPanicf("invalid response packet type, expected REPLY, actual: %d", packet_type)
+		badStreamPanic(fmt.Errorf("unexpected packet type in reply: got %v, expected %v", packet_type, packReply))
 	}
 	var columns []columnStruct
 	errs := make([]Error, 0, 5)
@@ -595,8 +633,20 @@ func processSingleResponse(sess *tdsSession, ch chan tokenStruct) {
 			if sess.logFlags&logMessages != 0 {
 				sess.log.Println(info.Message)
 			}
+		case tokenReturnValue:
+			nv := parseReturnValue(sess.buf)
+			if len(nv.Name) > 0 {
+				name := nv.Name[1:] // Remove the leading "@".
+				if ov, has := outs[name]; has {
+					err = scanIntoOut(name, nv.Value, ov)
+					if err != nil {
+						fmt.Println("scan error", err)
+						ch <- err
+					}
+				}
+			}
 		default:
-			badStreamPanicf("Unknown token type: %d", token)
+			badStreamPanic(fmt.Errorf("unknown token type returned: %v", token))
 		}
 	}
 }
@@ -716,7 +766,7 @@ func (ts *parseResp) iter(ctx context.Context, ch chan tokenStruct, tokChan chan
 	}
 }
 
-func processResponse(ctx context.Context, sess *tdsSession, ch chan tokenStruct) {
+func processResponse(ctx context.Context, sess *tdsSession, ch chan tokenStruct, outs map[string]interface{}) {
 	ts := &parseResp{
 		sess:    sess,
 		ctxDone: ctx.Done(),
@@ -736,7 +786,7 @@ func processResponse(ctx context.Context, sess *tdsSession, ch chan tokenStruct)
 		ts.dlog("initiating response reading")
 
 		tokChan := make(chan tokenStruct)
-		go processSingleResponse(sess, tokChan)
+		go processSingleResponse(sess, tokChan, outs)
 
 		// Loop over multiple tokens in response.
 	tokensLoop:
