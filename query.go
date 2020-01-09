@@ -26,6 +26,7 @@ func (q *Query) Run(conn *connection) error {
 	// execute query
 	rows, err := conn.conn.Queryx(q.Query)
 	if err != nil {
+		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
 		return err
 	}
 	defer rows.Close()
