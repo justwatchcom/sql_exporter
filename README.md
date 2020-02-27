@@ -1,7 +1,6 @@
-# Prometheus SQL Exporter [![Build Status](https://travis-ci.org/justwatchcom/sql_exporter.svg?branch=master)](https://travis-ci.org/justwatchcom/sql_exporter)
+# Prometheus SQL Exporter
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/justwatch/sql_exporter.svg?maxAge=604800)](https://hub.docker.com/r/justwatch/sql_exporter)
-[![Go Report Card](https://goreportcard.com/badge/github.com/justwatchcom/sql_exporter)](https://goreportcard.com/report/github.com/justwatchcom/sql_exporter)
+Forked from [justwatchom/sql_exporter](https://github.com/justwatchcom/sql_exporter).
 
 This repository contains a service that runs user-defined SQL queries at flexible intervals and exports the resulting metrics via HTTP for Prometheus consumption.
 
@@ -21,7 +20,7 @@ Getting Started
 Create a _config.yml_ and run the service:
 
 ```
-go get github.com/justwatchcom/sql_exporter
+go get github.com/utilitywarehouse/sql_exporter
 cp config.yml.dist config.yml
 ./prom-sql-exporter
 ```
@@ -35,7 +34,7 @@ docker run \
   -d \
   -p 9237:9237 \
   --name sql_exporter \
-  justwatch/sql_exporter
+  utilitywarehouse/sql_exporter
 ```
 
 Manual `scrape_configs` snippet:
@@ -72,17 +71,17 @@ We recommend to deploy and run the SQL exporter in Kubernetes.
 Kubernetes
 ----------
 
-See [examples/kubernetes](https://github.com/justwatchcom/sql_exporter/tree/master/examples/kubernetes).
+See [examples/kubernetes](https://github.com/utilitywarehouse/sql_exporter/tree/master/examples/kubernetes).
 
 Grafana
 -------
 
-See [examples/grafana](https://github.com/justwatchcom/sql_exporter/tree/master/examples/grafana).
+See [examples/grafana](https://github.com/utilitywarehouse/sql_exporter/tree/master/examples/grafana).
 
 Prometheus
 ----------
 
-Example recording and alerting rules are available in [examples/prometheus](https://github.com/justwatchcom/sql_exporter/tree/master/examples/prometheus).
+Example recording and alerting rules are available in [examples/prometheus](https://github.com/utilitywarehouse/sql_exporter/tree/master/examples/prometheus).
 
 Configuration
 -------------
@@ -97,7 +96,7 @@ try hard to support other types or drivers w/o support for explicit cast as well
 but the results may not be what you expect.
 
 Below is a documented configuration example showing all available options.
-For a more realistic example please have a look at [examples/kubernetes/configmap.yml](https://github.com/justwatchcom/sql_exporter/blob/master/examples/kubernetes/configmap.yml).
+For a more realistic example please have a look at [examples/kubernetes/configmap.yml](https://github.com/utilitywarehouse/sql_exporter/blob/master/examples/kubernetes/configmap.yml).
 
 ```yaml
 ---
