@@ -52,8 +52,12 @@ func (q *Query) Run(conn *connection) error {
 		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
 	}
 
-	if updated < 1 && !q.AllowZeroRows {
-		return fmt.Errorf("zero rows returned")
+	if updated < 1 {
+		if q.AllowZeroRows {
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+		} else {
+			return fmt.Errorf("zero rows returned")
+		}
 	}
 
 	// update the metrics cache
