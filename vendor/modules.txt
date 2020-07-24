@@ -107,3 +107,5 @@ golang.org/x/sys/windows
 google.golang.org/appengine/cloudsql
 # gopkg.in/yaml.v2 v2.2.7
 gopkg.in/yaml.v2
+# github.com/vertica/vertica-sql-go v1.1.0
+github.com/vertica/vertica-sql-go
