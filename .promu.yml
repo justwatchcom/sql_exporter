@@ -1,7 +1,7 @@
 go:
     cgo: false
 repository:
-    path: github.com/justwatchcom/sql_exporter
+    path: github.com/lukas-mi/sql_exporter-1
 build:
     flags: -a -tags netgo
     ldflags: |

@@ -1,4 +1,4 @@
-module github.com/justwatchcom/sql_exporter
+module github.com/lukas-mi/sql_exporter-1
 
 go 1.12
 
