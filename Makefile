@@ -54,7 +54,20 @@ docker:
 promu:
 	@GOOS=$(shell uname -s | tr A-Z a-z) \
 		GOARCH=$(subst x86_64,amd64,$(patsubst i%86,386,$(shell uname -m))) \
+		$(GO) get github.com/prometheus/promu
+
+update-promu:
+	@GOOS=$(shell uname -s | tr A-Z a-z) \
+		GOARCH=$(subst x86_64,amd64,$(patsubst i%86,386,$(shell uname -m))) \
 		$(GO) get -u github.com/prometheus/promu
 
+config.yml: ../6rs-sql-exporter/docker-deps/config.yml
+	cat $^ \
+	| sed -e 's@$$DATABASE_HOST@localhost@g;s@$$DATABASE_PASS@localhost@g;' \
+		-e 's@/tc\?@/task_coordinator_development?@g' \
+		-e 's@/notification_manager\?@/notification_manager_development?@g' \
+		-e 's@/map\?@/map_manager_development?@g' \
+		-e 's@/am\?@asset_manager_development?@g' \
+	> $@
 
-.PHONY: all style format build test vet tarball docker promu
+.PHONY: all style format build test vet tarball docker promu update-promu

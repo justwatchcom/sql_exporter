@@ -1,0 +1,18 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "run sql_exporter against 6rs-sql-exporter config",
+			"type": "go",
+			"request": "launch",
+			"mode": "auto",
+			"program": "${workspaceFolder}",
+			"env": {},
+			"args": [
+				"-config.file",
+				"./config.yml"
+			],
+			"preLaunchTask": "make sql_exporter 6rs config.yml"
+		}
+	]
+}

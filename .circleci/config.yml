@@ -1,0 +1,40 @@
+# -*- yaml -*-
+version: 2.1
+orbs:
+  go-module: timakin/go-module@0.3.0
+  sixrs-gke: sixriversystems/sixrs-gke@2
+
+# Copied from rivsctl, adjusted from upstream travis config, and then trimmed to
+# only publish docker image, since there's no client binary for this
+
+jobs:
+  build:
+    docker:
+      - image: circleci/golang:1.15
+    steps:
+      - checkout
+      - run:
+          name: Fix Path
+          command: export PATH=$PATH:$GOROOT/bin
+      - run:
+          name: staticcheck
+          command: go get honnef.co/go/tools/cmd/staticcheck
+      - run:
+          name: golint
+          command: go get golang.org/x/lint/golint
+      - run: go get -v -d ./...
+      # compare to upstream .travis.yml
+      - run: make style
+      - run: make vet
+      - run: make test
+      - sixrs-gke/run-release
+      - run: make build
+      - setup_remote_docker
+      - sixrs-gke/docker-login
+      - sixrs-gke/build-and-publish
+
+workflows:
+  build_and_release:
+    jobs:
+      - build:
+          context: 6rs-circle
