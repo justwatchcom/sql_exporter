@@ -78,14 +78,15 @@ type connection struct {
 // Query is an SQL query that is executed on a connection
 type Query struct {
 	sync.Mutex
-	log      log.Logger
-	desc     *prometheus.Desc
-	metrics  map[*connection][]prometheus.Metric
-	jobName  string
-	Name     string   `yaml:"name"`      // the prometheus metric name
-	Help     string   `yaml:"help"`      // the prometheus metric help text
-	Labels   []string `yaml:"labels"`    // expose these columns as labels per gauge
-	Values   []string `yaml:"values"`    // expose each of these as an gauge
-	Query    string   `yaml:"query"`     // a literal query
-	QueryRef string   `yaml:"query_ref"` // references an query in the query map
+	log           log.Logger
+	desc          *prometheus.Desc
+	metrics       map[*connection][]prometheus.Metric
+	jobName       string
+	AllowZeroRows bool     `yaml:"allow_zero_rows"`
+	Name          string   `yaml:"name"`      // the prometheus metric name
+	Help          string   `yaml:"help"`      // the prometheus metric help text
+	Labels        []string `yaml:"labels"`    // expose these columns as labels per gauge
+	Values        []string `yaml:"values"`    // expose each of these as an gauge
+	Query         string   `yaml:"query"`     // a literal query
+	QueryRef      string   `yaml:"query_ref"` // references an query in the query map
 }
