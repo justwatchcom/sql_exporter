@@ -106,6 +106,7 @@ jobs:
   # each job needs a unique name, it's used for logging and as an default label
 - name: "example"
   # interval defined the pause between the runs of this job
+  # set to 0 to make the queries synchronous
   interval: '5m'
   # connections is an array of connection URLs
   # each query will be executed on each connection
