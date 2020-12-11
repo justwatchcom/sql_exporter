@@ -1,0 +1,24 @@
+jobs:
+- connections:
+  - sqlserver://<USERNAME>:<PASSWORD>@127.0.0.1:1433
+  interval: '0'
+  name: cluster
+  queries:
+  - help: Number of running queries
+    labels:
+    - mylabel
+    name: running_queries
+    query: "SELECT 1 as foobar, 'test' as mylabel"
+    values:
+    - foobar
+
+  - help: 'Number of times the transaction log has been expanded, per database.'
+    labels:
+      - db
+    name: mssql_log_growths
+    query: |
+      SELECT rtrim(instance_name) AS db, cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Log Growths' AND instance_name <> '_Total'
+    values: 
+    - cntr_value
