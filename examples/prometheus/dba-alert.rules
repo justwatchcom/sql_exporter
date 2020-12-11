@@ -1,54 +1,43 @@
-ALERT DBAPostresTableCacheHitrateLow
-IF sql_table_cache_hitrate{relname!="schema_version"} < 90
-FOR 6h
-LABELS {
-  severity = "notice",
-}
-ANNOTATIONS {
-  summary = "PostgreSQL Table Cache Hitrate is low",
-  description = "Table Cache Hitrate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90",
-}
-
-ALERT DBAPostresIndexCacheHitrateLow
-IF sql_index_cache_hitrate{relname!="schema_version"} < 90
-FOR 6h
-LABELS {
-  severity = "notice",
-}
-ANNOTATIONS {
-  summary = "PostgreSQL Index Cache Hitrate is low",
-  description = "Index Cache Hitrate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90",
-}
-
-ALERT DBAPostresIndexUsageRateLow
-IF sql_index_usage_rate{relname!="schema_version"} < 90
-FOR 6h
-LABELS {
-  severity = "notice",
-}
-ANNOTATIONS {
-  summary = "PostgreSQL Index Usage Rate is low",
-  description = "Index Usage Rate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90",
-}
-
-ALERT DBANoReplicationSendersRunning
-IF sql_replication_senders_count < 1
-FOR 5m
-LABELS {
-  severity = "critical",
-}
-ANNOTATIONS {
-  summary = "PostgreSQL has no replication senders running",
-  description = "There must be at least one replication sender running",
-}
-
-ALERT DBAPostgresHighReplicationLagSeconds
-IF sql_replication_lag_seconds > 60
-FOR 5m
-LABELS {
-  severity = "critical",
-}
-ANNOTATIONS {
-  summary = "High Master-Slave Replication Lag",
-  description = "The replication lag between the master and slave in {{$labels.env}} is above the high water mark: {{$value}}",
-}
+groups:
+- name: dba
+  rules:
+  - alert: DBAPostresTableCacheHitrateLow
+    expr: sql_table_cache_hitrate{relname!="schema_version"} < 90
+    for: 6h
+    labels:
+      severity: "notice"
+    annotations:
+      summary: "PostgreSQL Table Cache Hitrate is low"
+      description: "Table Cache Hitrate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90"
+  - alert: DBAPostresIndexCacheHitrateLow
+    expr: sql_index_cache_hitrate{relname!="schema_version"} < 90
+    for: 6h
+    labels:
+      severity: notice
+    annotations:
+      summary: "PostgreSQL Index Cache Hitrate is low"
+      description: "Index Cache Hitrate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90"
+  - alert: DBAPostresIndexUsageRateLow
+    expr: sql_index_usage_rate{relname!="schema_version"} < 90
+    for: 6h
+    labels:
+      severity: notice
+    annotations:
+      summary: "PostgreSQL Index Usage Rate is low"
+      description: "Index Usage Rate of {{$labels.database}}.{{$labels.schemaname}}.{{$labels.relname}} is {{$value}} < 90"
+  - alert: DBANoReplicationSendersRunning
+    expr: sql_replication_senders_count < 1
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "PostgreSQL has no replication senders running"
+      description: "There must be at least one replication sender running"
+  - alert: DBAPostgresHighReplicationLagSeconds
+    expr: sql_replication_lag_seconds > 60
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High Master-Slave Replication Lag"
+      description: "The replication lag between the master and slave in {{$labels.env}} is above the high water mark: {{$value}}"
