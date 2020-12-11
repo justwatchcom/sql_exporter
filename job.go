@@ -16,7 +16,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
+	_ "github.com/segmentio/go-athena"    // register the AWS Athena driver
+	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 )
 
 var (

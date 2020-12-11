@@ -18,6 +18,7 @@ require (
 	github.com/prometheus/common v0.7.0
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/segmentio/go-athena v0.0.0-20181208004937-dfa5f1818930
+	github.com/vertica/vertica-sql-go v1.1.0 // indirect
 	google.golang.org/appengine v1.6.5 // indirect
 	gopkg.in/yaml.v2 v2.2.7
 )
