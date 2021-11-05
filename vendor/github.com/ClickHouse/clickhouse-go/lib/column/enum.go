@@ -15,7 +15,7 @@ type Enum struct {
 	baseType interface{}
 }
 
-func (enum *Enum) Read(decoder *binary.Decoder) (interface{}, error) {
+func (enum *Enum) Read(decoder *binary.Decoder, isNull bool) (interface{}, error) {
 	var (
 		err   error
 		ident interface{}
@@ -30,7 +30,7 @@ func (enum *Enum) Read(decoder *binary.Decoder) (interface{}, error) {
 			return nil, err
 		}
 	}
-	if ident, found := enum.vi[ident]; found {
+	if ident, found := enum.vi[ident]; found || isNull {
 		return ident, nil
 	}
 	return nil, fmt.Errorf("invalid Enum value: %v", ident)
@@ -39,16 +39,7 @@ func (enum *Enum) Read(decoder *binary.Decoder) (interface{}, error) {
 func (enum *Enum) Write(encoder *binary.Encoder, v interface{}) error {
 	switch v := v.(type) {
 	case string:
-		ident, found := enum.iv[v]
-		if !found {
-			return fmt.Errorf("invalid Enum ident: %s", v)
-		}
-		switch ident := ident.(type) {
-		case int8:
-			return encoder.Int8(ident)
-		case int16:
-			return encoder.Int16(ident)
-		}
+		return enum.encodeFromString(v, encoder)
 	case uint8:
 		if _, ok := enum.baseType.(int8); ok {
 			return encoder.Int8(int8(v))
@@ -72,10 +63,54 @@ func (enum *Enum) Write(encoder *binary.Encoder, v interface{}) error {
 		case int16:
 			return encoder.Int16(int16(v))
 		}
+	// nullable enums
+	case *string:
+		return enum.encodeFromString(*v, encoder)
+	case *uint8:
+		if _, ok := enum.baseType.(int8); ok {
+			return encoder.Int8(int8(*v))
+		}
+	case *int8:
+		if _, ok := enum.baseType.(int8); ok {
+			return encoder.Int8(*v)
+		}
+	case *uint16:
+		if _, ok := enum.baseType.(int16); ok {
+			return encoder.Int16(int16(*v))
+		}
+	case *int16:
+		if _, ok := enum.baseType.(int16); ok {
+			return encoder.Int16(*v)
+		}
+	case *int64:
+		switch enum.baseType.(type) {
+		case int8:
+			return encoder.Int8(int8(*v))
+		case int16:
+			return encoder.Int16(int16(*v))
+		}
 	}
 	return &ErrUnexpectedType{
 		T:      v,
 		Column: enum,
+	}
+}
+
+func (enum *Enum) encodeFromString(v string, encoder *binary.Encoder) error {
+	ident, found := enum.iv[v]
+	if !found {
+		return fmt.Errorf("invalid Enum ident: %s", v)
+	}
+	switch ident := ident.(type) {
+	case int8:
+		return encoder.Int8(ident)
+	case int16:
+		return encoder.Int16(ident)
+	default:
+		return &ErrUnexpectedType{
+			T:      ident,
+			Column: enum,
+		}
 	}
 }
 
