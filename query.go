@@ -125,6 +125,12 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 		default:
 			return nil, fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 		}
+	} else {
+		level.Warn(q.log).Log(
+			"msg", "Column not found in query result",
+			"column", valueName,
+			"resultColumns", res,
+		)
 	}
 	// make space for all defined variable label columns and the "static" labels
 	// added below
