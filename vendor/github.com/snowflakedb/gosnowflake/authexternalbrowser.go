@@ -1,8 +1,6 @@
-package gosnowflake
+// Copyright (c) 2019-2022 Snowflake Computing Inc. All rights reserved.
 
-//
-// Copyright (c) 2019 Snowflake Computing Inc. All right reserved.
-//
+package gosnowflake
 
 import (
 	"bytes"

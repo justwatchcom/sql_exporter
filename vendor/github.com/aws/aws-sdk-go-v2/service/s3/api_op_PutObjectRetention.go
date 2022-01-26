@@ -148,6 +148,9 @@ func (c *Client) addOperationPutObjectRetentionMiddlewares(stack *middleware.Sta
 	if err = swapWithCustomHTTPSignerMiddleware(stack, options); err != nil {
 		return err
 	}
+	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
+		return err
+	}
 	if err = addOpPutObjectRetentionValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -170,9 +173,6 @@ func (c *Client) addOperationPutObjectRetentionMiddlewares(stack *middleware.Sta
 		return err
 	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
 		return err
 	}
 	return nil
@@ -208,7 +208,6 @@ func addPutObjectRetentionUpdateEndpoint(stack *middleware.Stack, options Option
 		TargetS3ObjectLambda:           false,
 		EndpointResolver:               options.EndpointResolver,
 		EndpointResolverOptions:        options.EndpointOptions,
-		UseDualstack:                   options.UseDualstack,
 		UseARNRegion:                   options.UseARNRegion,
 		DisableMultiRegionAccessPoints: options.DisableMultiRegionAccessPoints,
 	})

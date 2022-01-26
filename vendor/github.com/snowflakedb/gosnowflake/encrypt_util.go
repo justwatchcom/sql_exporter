@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -56,18 +56,23 @@ func encryptStream(
 	if chunkSize == 0 {
 		chunkSize = aes.BlockSize * 4 * 1024
 	}
-	decodedKey, _ := base64.StdEncoding.DecodeString(sfe.QueryStageMasterKey)
+	decodedKey, err := base64.StdEncoding.DecodeString(sfe.QueryStageMasterKey)
+	if err != nil {
+		return nil, err
+	}
 	keySize := len(decodedKey)
 
 	fileKey := getSecureRandom(keySize)
-	block, _ := aes.NewCipher(fileKey)
+	block, err := aes.NewCipher(fileKey)
+	if err != nil {
+		return nil, err
+	}
 	ivData := getSecureRandom(block.BlockSize())
 
 	mode := cipher.NewCBCEncrypter(block, ivData)
 	cipherText := make([]byte, chunkSize)
 
 	// encrypt file with CBC
-	var err error
 	for {
 		chunk := make([]byte, chunkSize)
 		n, err := src.Read(chunk)
@@ -97,15 +102,22 @@ func encryptStream(
 		strconv.Itoa(keySize * 8),
 	}
 
+	matDescUnicode, err := matdescToUnicode(matDesc)
+	if err != nil {
+		return nil, err
+	}
 	return &encryptMetadata{
 		base64.StdEncoding.EncodeToString(encryptedFileKey),
 		base64.StdEncoding.EncodeToString(ivData),
-		matdescToUnicode(matDesc),
+		matDescUnicode,
 	}, nil
 }
 
 func encryptECB(encrypted []byte, fileKey []byte, decodedKey []byte) error {
-	block, _ := aes.NewCipher(decodedKey)
+	block, err := aes.NewCipher(decodedKey)
+	if err != nil {
+		return err
+	}
 	if len(fileKey)%block.BlockSize() != 0 {
 		return fmt.Errorf("input not full of blocks")
 	}
@@ -121,7 +133,10 @@ func encryptECB(encrypted []byte, fileKey []byte, decodedKey []byte) error {
 }
 
 func decryptECB(decrypted []byte, keyBytes []byte, decodedKey []byte) error {
-	block, _ := aes.NewCipher(decodedKey)
+	block, err := aes.NewCipher(decodedKey)
+	if err != nil {
+		return err
+	}
 	if len(keyBytes)%block.BlockSize() != 0 {
 		return fmt.Errorf("input not full of blocks")
 	}
@@ -145,7 +160,10 @@ func encryptFile(
 	if chunkSize == 0 {
 		chunkSize = aes.BlockSize * 4 * 1024
 	}
-	tmpOutputFile, _ := ioutil.TempFile(tmpDir, baseName(filename)+"#")
+	tmpOutputFile, err := ioutil.TempFile(tmpDir, baseName(filename)+"#")
+	if err != nil {
+		return nil, "", err
+	}
 	infile, err := os.OpenFile(filename, os.O_CREATE|os.O_RDONLY, os.ModePerm)
 	if err != nil {
 		return nil, "", err
@@ -167,19 +185,31 @@ func decryptFile(
 	if chunkSize == 0 {
 		chunkSize = aes.BlockSize * 4 * 1024
 	}
-	decodedKey, _ := base64.StdEncoding.DecodeString(sfe.QueryStageMasterKey)
-	keyBytes, _ := base64.StdEncoding.DecodeString(metadata.key) // encrypted file key
-	ivBytes, _ := base64.StdEncoding.DecodeString(metadata.iv)
+	decodedKey, err := base64.StdEncoding.DecodeString(sfe.QueryStageMasterKey)
+	if err != nil {
+		return "", err
+	}
+	keyBytes, err := base64.StdEncoding.DecodeString(metadata.key) // encrypted file key
+	if err != nil {
+		return "", err
+	}
+	ivBytes, err := base64.StdEncoding.DecodeString(metadata.iv)
+	if err != nil {
+		return "", err
+	}
 
 	// decrypt file key
 	decryptedKey := make([]byte, len(keyBytes))
-	if err := decryptECB(decryptedKey, keyBytes, decodedKey); err != nil {
+	if err = decryptECB(decryptedKey, keyBytes, decodedKey); err != nil {
 		return "", err
 	}
 	decryptedKey = paddingTrim(decryptedKey)
 
 	// decrypt file
-	block, _ := aes.NewCipher(decryptedKey)
+	block, err := aes.NewCipher(decryptedKey)
+	if err != nil {
+		return "", err
+	}
 	mode := cipher.NewCBCDecrypter(block, ivBytes)
 
 	tmpOutputFile, err := ioutil.TempFile(tmpDir, baseName(filename)+"#")
@@ -222,9 +252,12 @@ type materialDescriptor struct {
 	KeySize string `json:"keySize"`
 }
 
-func matdescToUnicode(matdesc materialDescriptor) string {
-	s, _ := json.Marshal(&matdesc)
-	return string(s)
+func matdescToUnicode(matdesc materialDescriptor) (string, error) {
+	s, err := json.Marshal(&matdesc)
+	if err != nil {
+		return "", err
+	}
+	return string(s), nil
 }
 
 func getSecureRandom(byteLength int) []byte {

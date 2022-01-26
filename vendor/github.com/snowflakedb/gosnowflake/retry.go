@@ -1,23 +1,22 @@
-// Copyright (c) 2017-2019 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"context"
-
-	"sync"
+	"github.com/google/uuid"
 )
 
 var random *rand.Rand
@@ -26,19 +25,18 @@ func init() {
 	random = rand.New(rand.NewSource(time.Now().UnixNano()))
 }
 
-// requestGUIDKey is attached to every request against Snowflake
-const requestGUIDKey string = "request_guid"
+const (
+	// requestGUIDKey is attached to every request against Snowflake
+	requestGUIDKey string = "request_guid"
+	// retryCounterKey is attached to query-request from the second time
+	retryCounterKey string = "retryCounter"
+	// requestIDKey is attached to all requests to Snowflake
+	requestIDKey string = "requestId"
+)
 
-// retryCounterKey is attached to query-request from the second time
-const retryCounterKey string = "retryCounter"
-
-// requestIDKey is attached to all requests to Snowflake
-const requestIDKey string = "requestId"
-
-// This class takes in an url during construction and replace the
-// value of request_guid every time the replace() is called
-// When the url does not contain request_guid, just return the original
-// url
+// This class takes in an url during construction and replaces the value of
+// request_guid every time replace() is called. If the url does not contain
+// request_guid, just return the original url
 type requestGUIDReplacer interface {
 	// replace the url with new ID
 	replace() *url.URL

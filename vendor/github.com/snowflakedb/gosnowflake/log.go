@@ -1,3 +1,5 @@
+// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
+
 package gosnowflake
 
 import (

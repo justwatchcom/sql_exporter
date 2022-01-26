@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Snowflake Computing Inc. All rights reserved.
+// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -19,6 +19,7 @@ const (
 
 const (
 	typeKey          = "type"
+	sourceKey        = "source"
 	queryIDKey       = "QueryID"
 	driverTypeKey    = "DriverType"
 	driverVersionKey = "DriverVersion"
@@ -30,6 +31,7 @@ const (
 )
 
 const (
+	telemetrySource      = "golang_driver"
 	sqlException         = "client_sql_exception"
 	connectionParameters = "client_connection_parameters"
 )
