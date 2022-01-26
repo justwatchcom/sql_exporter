@@ -26,6 +26,12 @@ type (
 	UUID     = types.UUID
 )
 
+type ExternalTable struct {
+	Name    string
+	Values  [][]driver.Value
+	Columns []column.Column
+}
+
 var (
 	ErrInsertInNotBatchMode = errors.New("insert statement supported only in the batch mode (use begin/commit)")
 	ErrLimitDataRequestInTx = errors.New("data request has already been prepared in transaction")
@@ -41,16 +47,17 @@ type clickhouse struct {
 	sync.Mutex
 	data.ServerInfo
 	data.ClientInfo
-	logf          logger
-	conn          *connect
-	block         *data.Block
-	buffer        *bufio.Writer
-	decoder       *binary.Decoder
-	encoder       *binary.Encoder
-	settings      *querySettings
-	compress      bool
-	blockSize     int
-	inTransaction bool
+	logf              logger
+	conn              *connect
+	block             *data.Block
+	buffer            *bufio.Writer
+	decoder           *binary.Decoder
+	encoder           *binary.Encoder
+	settings          *querySettings
+	compress          bool
+	blockSize         int
+	inTransaction     bool
+	checkConnLiveness bool
 }
 
 func (ch *clickhouse) Prepare(query string) (driver.Stmt, error) {
@@ -72,7 +79,7 @@ func (ch *clickhouse) prepareContext(ctx context.Context, query string) (driver.
 		if !ch.inTransaction {
 			return nil, ErrInsertInNotBatchMode
 		}
-		return ch.insert(query)
+		return ch.insert(ctx, query)
 	}
 	return &stmt{
 		ch:       ch,
@@ -81,8 +88,8 @@ func (ch *clickhouse) prepareContext(ctx context.Context, query string) (driver.
 	}, nil
 }
 
-func (ch *clickhouse) insert(query string) (_ driver.Stmt, err error) {
-	if err := ch.sendQuery(splitInsertRe.Split(query, -1)[0] + " VALUES "); err != nil {
+func (ch *clickhouse) insert(ctx context.Context, query string) (_ driver.Stmt, err error) {
+	if err := ch.sendQuery(ctx, splitInsertRe.Split(query, -1)[0]+" VALUES ", nil); err != nil {
 		return nil, err
 	}
 	if ch.block, err = ch.readMeta(); err != nil {
@@ -118,6 +125,18 @@ func (ch *clickhouse) beginTx(ctx context.Context, opts txOptions) (*clickhouse,
 	case ch.conn.closed:
 		return nil, driver.ErrBadConn
 	}
+
+	// Perform a stale connection check. We only perform this check in beginTx,
+	// because database/sql retries driver.ErrBadConn only for first request,
+	// but beginTx doesn't perform any other network interaction.
+	if ch.checkConnLiveness {
+		if err := ch.conn.connCheck(); err != nil {
+			ch.logf("[begin] closing bad idle connection: %w", err)
+			ch.Close()
+			return ch, driver.ErrBadConn
+		}
+	}
+
 	if finish := ch.watchCancel(ctx); finish != nil {
 		defer finish()
 	}
@@ -142,11 +161,11 @@ func (ch *clickhouse) Commit() error {
 		return driver.ErrBadConn
 	}
 	if ch.block != nil {
-		if err := ch.writeBlock(ch.block); err != nil {
+		if err := ch.writeBlock(ch.block, ""); err != nil {
 			return err
 		}
 		// Send empty block as marker of end of data.
-		if err := ch.writeBlock(&data.Block{}); err != nil {
+		if err := ch.writeBlock(&data.Block{}, ""); err != nil {
 			return err
 		}
 		if err := ch.encoder.Flush(); err != nil {
@@ -173,7 +192,7 @@ func (ch *clickhouse) Rollback() error {
 
 func (ch *clickhouse) CheckNamedValue(nv *driver.NamedValue) error {
 	switch nv.Value.(type) {
-	case column.IP, column.UUID:
+	case ExternalTable, column.IP, column.UUID:
 		return nil
 	case nil, []byte, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64, string, time.Time:
 		return nil
@@ -317,4 +336,19 @@ func (ch *clickhouse) watchCancel(ctx context.Context) func() {
 		}
 	}
 	return func() {}
+}
+
+func (ch *clickhouse) ExecContext(ctx context.Context, query string,
+	args []driver.NamedValue) (driver.Result, error) {
+	finish := ch.watchCancel(ctx)
+	defer finish()
+	stmt, err := ch.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	dargs := make([]driver.Value, len(args))
+	for i, nv := range args {
+		dargs[i] = nv.Value
+	}
+	return stmt.Exec(dargs)
 }

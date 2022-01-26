@@ -11,7 +11,7 @@ type DateTime struct {
 	Timezone *time.Location
 }
 
-func (dt *DateTime) Read(decoder *binary.Decoder) (interface{}, error) {
+func (dt *DateTime) Read(decoder *binary.Decoder, isNull bool) (interface{}, error) {
 	sec, err := decoder.Int32()
 	if err != nil {
 		return nil, err
@@ -29,6 +29,10 @@ func (dt *DateTime) Write(encoder *binary.Encoder, v interface{}) error {
 	case int16:
 		timestamp = int64(value)
 	case int32:
+		timestamp = int64(value)
+	case uint32:
+		timestamp = int64(value)
+	case uint64:
 		timestamp = int64(value)
 	case int64:
 		timestamp = value
@@ -78,6 +82,6 @@ func (dt *DateTime) parse(value string) (int64, error) {
 		time.Time(tv).Hour(),
 		time.Time(tv).Minute(),
 		time.Time(tv).Second(),
-		0, time.UTC,
+		0, time.Local,    //use local timzone when insert into clickhouse
 	).Unix(), nil
 }

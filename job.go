@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/snowflakedb/gosnowflake"
 
 	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
@@ -16,7 +19,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
+	_ "github.com/segmentio/go-athena"     // register the AWS Athena driver
+	_ "github.com/snowflakedb/gosnowflake" // register the Snowflake driver
 )
 
 var (
@@ -127,9 +131,41 @@ func (j *Job) Run() {
 				// call go-athena's Open() to ensure conn.db is set,
 				// otherwise API calls will complain about an empty database field:
 				// "InvalidParameter: 1 validation error(s) found. - minimum field size of 1, StartQueryExecutionInput.QueryExecutionContext.Database."
-				newConn.conn, err = sqlx.Open("athena", u.RawQuery)
+				newConn.conn, err = sqlx.Open("athena", u.String())
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to open Athena connection", "connection", conn, "err", err)
+					continue
+				}
+			}
+			if newConn.driver == "snowflake" {
+				cfg := &gosnowflake.Config{
+					Account: u.Host,
+					User:    u.User.Username(),
+				}
+
+				pw, set := u.User.Password()
+				if set {
+					cfg.Password = pw
+				}
+
+				if u.Port() != "" {
+					portStr, err := strconv.Atoi(u.Port())
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to parse Snowflake port", "connection", conn, "err", err)
+						continue
+					}
+					cfg.Port = portStr
+				}
+
+				dsn, err := gosnowflake.DSN(cfg)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to create Snowflake DSN", "connection", conn, "err", err)
+					continue
+				}
+
+				newConn.conn, err = sqlx.Open("snowflake", dsn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "connection", conn, "err", err)
 					continue
 				}
 			}
