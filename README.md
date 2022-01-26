@@ -149,6 +149,8 @@ jobs:
     query:  |
             SELECT datname::text, usename::text, COUNT(*)::float AS count
             FROM pg_stat_activity GROUP BY datname, usename;
+    # Consider the query failed if it returns zero rows
+    allow_zero_rows: false
 ```
 
 Running as non-superuser on PostgreSQL
