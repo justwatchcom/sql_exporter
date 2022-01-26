@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"io/ioutil"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +23,7 @@ var (
 		},
 		[]string{"driver", "host", "database", "user", "sql_job", "query"},
 	)
+	reEnvironmentPlaceholders = regexp.MustCompile(`{{.+?}}`)
 )
 
 func init() {
@@ -42,7 +46,26 @@ func Read(path string) (File, error) {
 		return f, err
 	}
 
-	if err := yaml.Unmarshal(buf, &f); err != nil {
+	placeholders := reEnvironmentPlaceholders.FindAllString(string(buf), -1)
+	replacer := strings.NewReplacer("{{", "", "}}", "")
+	var replacements []string
+	for _, placeholder := range placeholders {
+		environmentVariableName := strings.ToUpper(replacer.Replace(placeholder))
+		environmentVariableValue := os.Getenv(environmentVariableName)
+
+		// We extracted a placeholder and found the value in the env variables to replace it with
+		if environmentVariableName != "" && environmentVariableValue != "" {
+			replacements = append(replacements, placeholder)
+			replacements = append(replacements, environmentVariableValue)
+		}
+	}
+	if len(replacements)%2 == 1 {
+		return f, errors.New("uneven amount of replacement arguments")
+	}
+	replacerSecrets := strings.NewReplacer(replacements...)
+	processedConfig := replacerSecrets.Replace(string(buf))
+
+	if err := yaml.Unmarshal([]byte(processedConfig), &f); err != nil {
 		return f, err
 	}
 	return f, nil
