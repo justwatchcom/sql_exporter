@@ -117,17 +117,17 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 		case []uint8:
 			val, err := strconv.ParseFloat(string(f), 64)
 			if err != nil {
-				return nil, fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
+				return nil, fmt.Errorf("column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 			}
 			value = val
 		case string:
 			val, err := strconv.ParseFloat(f, 64)
 			if err != nil {
-				return nil, fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
+				return nil, fmt.Errorf("column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 			}
 			value = val
 		default:
-			return nil, fmt.Errorf("Column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
+			return nil, fmt.Errorf("column '%s' must be type float, is '%T' (val: %s)", valueName, i, f)
 		}
 	} else {
 		level.Warn(q.log).Log(
@@ -152,7 +152,7 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 			case []uint8:
 				lv = string(str)
 			default:
-				return nil, fmt.Errorf("Column '%s' must be type text (string)", label)
+				return nil, fmt.Errorf("column '%s' must be type text (string)", label)
 			}
 		}
 		labels = append(labels, lv)

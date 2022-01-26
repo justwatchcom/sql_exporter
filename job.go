@@ -2,13 +2,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/snowflakedb/gosnowflake"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/snowflakedb/gosnowflake"
 
 	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
