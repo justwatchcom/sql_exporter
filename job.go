@@ -2,25 +2,23 @@ package main
 
 import (
 	"fmt"
+	"github.com/snowflakedb/gosnowflake"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/snowflakedb/gosnowflake"
-
 	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
 	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena"     // register the AWS Athena driver
-	_ "github.com/snowflakedb/gosnowflake" // register the Snowflake driver
 )
 
 var (
