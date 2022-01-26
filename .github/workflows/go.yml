@@ -12,8 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-	  with:
-		fetch-depth: 1
+      with:
+        fetch-depth: 1
 
     - name: Set up Go
       uses: actions/setup-go@v2
@@ -27,6 +27,6 @@ jobs:
       run: go test -v ./...
 
     - name: Staticcheck
-	  uses: dominikh/staticcheck-action@v1.1.0
-	  with:
-		version: "2021.1.1"
+      uses: dominikh/staticcheck-action@v1.1.0
+      with:
+        version: "2021.1.1"
