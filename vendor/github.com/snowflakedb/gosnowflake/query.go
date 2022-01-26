@@ -1,8 +1,6 @@
-// Copyright (c) 2017-2021 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
-
-//lint:file-ignore U1000 Ignore all unused code
 
 import (
 	"time"

@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2020-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 

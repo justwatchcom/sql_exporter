@@ -154,6 +154,9 @@ func (c *Client) addOperationPutBucketCorsMiddlewares(stack *middleware.Stack, o
 	if err = swapWithCustomHTTPSignerMiddleware(stack, options); err != nil {
 		return err
 	}
+	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
+		return err
+	}
 	if err = addOpPutBucketCorsValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -176,9 +179,6 @@ func (c *Client) addOperationPutBucketCorsMiddlewares(stack *middleware.Stack, o
 		return err
 	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
 		return err
 	}
 	return nil
@@ -214,7 +214,6 @@ func addPutBucketCorsUpdateEndpoint(stack *middleware.Stack, options Options) er
 		TargetS3ObjectLambda:           false,
 		EndpointResolver:               options.EndpointResolver,
 		EndpointResolverOptions:        options.EndpointOptions,
-		UseDualstack:                   options.UseDualstack,
 		UseARNRegion:                   options.UseARNRegion,
 		DisableMultiRegionAccessPoints: options.DisableMultiRegionAccessPoints,
 	})

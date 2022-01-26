@@ -304,6 +304,9 @@ func (c *Client) addOperationPutObjectAclMiddlewares(stack *middleware.Stack, op
 	if err = swapWithCustomHTTPSignerMiddleware(stack, options); err != nil {
 		return err
 	}
+	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
+		return err
+	}
 	if err = addOpPutObjectAclValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -326,9 +329,6 @@ func (c *Client) addOperationPutObjectAclMiddlewares(stack *middleware.Stack, op
 		return err
 	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddContentChecksumMiddleware(stack); err != nil {
 		return err
 	}
 	return nil
@@ -364,7 +364,6 @@ func addPutObjectAclUpdateEndpoint(stack *middleware.Stack, options Options) err
 		TargetS3ObjectLambda:           false,
 		EndpointResolver:               options.EndpointResolver,
 		EndpointResolverOptions:        options.EndpointOptions,
-		UseDualstack:                   options.UseDualstack,
 		UseARNRegion:                   options.UseARNRegion,
 		DisableMultiRegionAccessPoints: options.DisableMultiRegionAccessPoints,
 	})

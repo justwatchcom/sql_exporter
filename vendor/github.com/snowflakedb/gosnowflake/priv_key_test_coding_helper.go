@@ -1,11 +1,6 @@
-// Copyright (c) 2017-2019 Snowflake Computing Inc. All right reserved.
-//go:build go1.10
-// +build go1.10
+// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
-
-// This file contains coding and decoding functions for rsa private key
-// Only golang with version of 1.10 or upper should support this
 
 import (
 	"crypto/rsa"

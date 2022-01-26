@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -19,15 +19,15 @@ const (
 
 // implemented by localUtil and remoteStorageUtil
 type storageUtil interface {
-	createClient(*execResponseStageInfo, bool) cloudClient
+	createClient(*execResponseStageInfo, bool) (cloudClient, error)
 	uploadOneFileWithRetry(*fileMetadata) error
 	downloadOneFile(*fileMetadata) error
 }
 
 // implemented by snowflakeS3Util, snowflakeAzureUtil and snowflakeGcsUtil
 type cloudUtil interface {
-	createClient(*execResponseStageInfo, bool) cloudClient
-	getFileHeader(*fileMetadata, string) *fileHeader
+	createClient(*execResponseStageInfo, bool) (cloudClient, error)
+	getFileHeader(*fileMetadata, string) (*fileHeader, error)
 	uploadFile(string, *fileMetadata, *encryptMetadata, int, int64) error
 	nativeDownloadFile(*fileMetadata, string, int64) error
 }
@@ -39,17 +39,17 @@ type remoteStorageUtil struct {
 
 func (rsu *remoteStorageUtil) getNativeCloudType(cli string) cloudUtil {
 	if cloudType(cli) == s3Client {
-		return &snowflakeS3Util{}
+		return &snowflakeS3Client{}
 	} else if cloudType(cli) == azureClient {
-		return &snowflakeAzureUtil{}
+		return &snowflakeAzureClient{}
 	} else if cloudType(cli) == gcsClient {
-		return &snowflakeGcsUtil{}
+		return &snowflakeGcsClient{}
 	}
 	return nil
 }
 
 // call cloud utils' native create client methods
-func (rsu *remoteStorageUtil) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool) cloudClient {
+func (rsu *remoteStorageUtil) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool) (cloudClient, error) {
 	utilClass := rsu.getNativeCloudType(info.LocationType)
 	return utilClass.createClient(info, useAccelerateEndpoint)
 }
@@ -87,7 +87,10 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 	maxRetry := defaultMaxRetry
 	for retry := 0; retry < maxRetry; retry++ {
 		if !meta.overwrite {
-			header := utilClass.getFileHeader(meta, meta.dstFileName)
+			header, err := utilClass.getFileHeader(meta, meta.dstFileName)
+			if err != nil {
+				return err
+			}
 			if header != nil && meta.resStatus == uploaded {
 				meta.dstFileSize = 0
 				meta.resStatus = skipped
@@ -162,9 +165,15 @@ func (rsu *remoteStorageUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 
 func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 	fullDstFileName := path.Join(meta.localLocation, baseName(meta.dstFileName))
-	fullDstFileName = expandUser(fullDstFileName)
+	fullDstFileName, err := expandUser(fullDstFileName)
+	if err != nil {
+		return err
+	}
 	if !filepath.IsAbs(fullDstFileName) {
-		cwd, _ := os.Getwd()
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
 		fullDstFileName = filepath.Join(cwd, fullDstFileName)
 	}
 	baseDir, err := getDirectory()
@@ -178,7 +187,10 @@ func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 	}
 
 	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType)
-	header := utilClass.getFileHeader(meta, meta.srcFileName)
+	header, err := utilClass.getFileHeader(meta, meta.srcFileName)
+	if err != nil {
+		return err
+	}
 	if header != nil {
 		meta.srcFileSize = header.contentLength
 	}
@@ -193,7 +205,10 @@ func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 		if meta.resStatus == downloaded {
 			if meta.encryptionMaterial != nil {
 				if meta.presignedURL != nil {
-					header = utilClass.getFileHeader(meta, meta.srcFileName)
+					header, err = utilClass.getFileHeader(meta, meta.srcFileName)
+					if err != nil {
+						return err
+					}
 				}
 				tmpDstFileName, err := decryptFile(header.encryptionMetadata,
 					meta.encryptionMaterial, fullDstFileName, 0, meta.tmpDir)

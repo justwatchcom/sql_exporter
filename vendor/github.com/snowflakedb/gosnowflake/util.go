@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2021 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -17,21 +17,13 @@ import (
 type contextKey string
 
 const (
-	// multiStatementCount controls the number of queries to execute in a single API call
-	multiStatementCount contextKey = "MULTI_STATEMENT_COUNT"
-	// asyncMode tells the server to not block the request on executing the entire query
-	asyncMode contextKey = "ASYNC_MODE_QUERY"
-	// queryIDChannel is the channel to receive the query ID from
-	queryIDChannel contextKey = "QUERY_ID_CHANNEL"
-	// snowflakeRequestIDKey is optional context key to specify request id
+	multiStatementCount   contextKey = "MULTI_STATEMENT_COUNT"
+	asyncMode             contextKey = "ASYNC_MODE_QUERY"
+	queryIDChannel        contextKey = "QUERY_ID_CHANNEL"
 	snowflakeRequestIDKey contextKey = "SNOWFLAKE_REQUEST_ID"
-	// fetchResultByID the queryID of query result to fetch
-	fetchResultByID contextKey = "SF_FETCH_RESULT_BY_ID"
-	// fileStreamFile is the address of the file to be uploaded via PUT
-	fileStreamFile contextKey = "STREAMING_PUT_FILE"
-	// fileTransferOptions allows the user to pass in custom
-	fileTransferOptions contextKey = "FILE_TRANSFER_OPTIONS"
-	// enableHigherPrecision returns numbers with higher precision in a *big format
+	fetchResultByID       contextKey = "SF_FETCH_RESULT_BY_ID"
+	fileStreamFile        contextKey = "STREAMING_PUT_FILE"
+	fileTransferOptions   contextKey = "FILE_TRANSFER_OPTIONS"
 	enableHigherPrecision contextKey = "ENABLE_HIGHER_PRECISION"
 )
 

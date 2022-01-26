@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Snowflake Computing Inc. All right reserved.
+// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -8,8 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/apache/arrow/go/arrow/ipc"
-	"github.com/apache/arrow/go/arrow/memory"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -19,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/apache/arrow/go/arrow/ipc"
+	"github.com/apache/arrow/go/arrow/memory"
 )
 
 type chunkDownloader interface {
@@ -215,10 +216,7 @@ func (scd *snowflakeChunkDownloader) getChunkMetas() []execResponseChunk {
 }
 
 func (scd *snowflakeChunkDownloader) getQueryResultFormat() resultFormat {
-	if scd.QueryResultFormat == "json" {
-		return jsonFormat
-	}
-	return arrowFormat
+	return resultFormat(scd.QueryResultFormat)
 }
 
 func (scd *snowflakeChunkDownloader) setNextChunkDownloader(nextDownloader chunkDownloader) {
@@ -565,14 +563,20 @@ func (f *httpStreamChunkFetcher) fetch(URL string, rows chan<- []*string) error 
 		}
 	}
 
-	fullURL, _ := url.Parse(URL)
+	fullURL, err := url.Parse(URL)
+	if err != nil {
+		return err
+	}
 	res, err := newRetryHTTP(context.Background(), f.client, http.NewRequest, fullURL, f.headers, 0).execute()
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		b, _ := ioutil.ReadAll(res.Body)
+		b, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
 		return fmt.Errorf("status (%d): %s", res.StatusCode, string(b))
 	}
 	if err = copyChunkStream(res.Body, rows); err != nil {

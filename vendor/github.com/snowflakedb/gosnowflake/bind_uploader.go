@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Snowflake Computing Inc. All rights reserved.
+// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
 
 package gosnowflake
 
@@ -10,11 +10,13 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 const (
-	bindStageName   = "SYSTEM$BIND"
-	createStageStmt = "CREATE OR REPLACE TEMPORARY STAGE " + bindStageName +
+	bindStageName            = "SYSTEM$BIND"
+	createTemporaryStageStmt = "CREATE OR REPLACE TEMPORARY STAGE " + bindStageName +
 		" file_format=" + "(type=csv field_optionally_enclosed_by='\"')"
 
 	// size (in bytes) of max input stream (10MB default) as per JDBC specs
@@ -30,11 +32,13 @@ type bindUploader struct {
 }
 
 func (bu *bindUploader) upload(bindings []driver.NamedValue) (*execResponse, error) {
-	bindingRows, _ := bu.buildRowsAsBytes(bindings)
+	bindingRows, err := bu.buildRowsAsBytes(bindings)
+	if err != nil {
+		return nil, err
+	}
 	startIdx, numBytes, rowNum := 0, 0, 0
 	bu.fileCount = 0
 	var data *execResponse
-	var err error
 	for rowNum < len(bindingRows) {
 		for numBytes < inputStreamBufferSize && rowNum < len(bindingRows) {
 			numBytes += len(bindingRows[rowNum])
@@ -89,7 +93,7 @@ func (bu *bindUploader) createStageIfNeeded() error {
 	if bu.arrayBindStage != "" {
 		return nil
 	}
-	data, err := bu.sc.exec(bu.ctx, createStageStmt, false, false, false, []driver.NamedValue{})
+	data, err := bu.sc.exec(bu.ctx, createTemporaryStageStmt, false, false, false, []driver.NamedValue{})
 	if err != nil {
 		newThreshold := "0"
 		bu.sc.cfg.Params[sessionArrayBindStageThreshold] = &newThreshold
@@ -165,6 +169,34 @@ func (bu *bindUploader) createCSVRecord(data []string) []byte {
 	return []byte(b.String())
 }
 
+func (sc *snowflakeConn) processBindings(
+	ctx context.Context,
+	bindings []driver.NamedValue,
+	describeOnly bool,
+	requestID uuid.UUID,
+	req *execRequest) error {
+	arrayBindThreshold := sc.getArrayBindStageThreshold()
+	numBinds := arrayBindValueCount(bindings)
+	if 0 < arrayBindThreshold && arrayBindThreshold <= numBinds && !describeOnly && isArrayBind(bindings) {
+		uploader := bindUploader{
+			sc:        sc,
+			ctx:       ctx,
+			stagePath: "@" + bindStageName + "/" + requestID.String(),
+		}
+		uploader.upload(bindings)
+		req.Bindings = nil
+		req.BindStage = uploader.stagePath
+	} else {
+		var err error
+		req.Bindings, err = getBindValues(bindings)
+		if err != nil {
+			return err
+		}
+		req.BindStage = ""
+	}
+	return nil
+}
+
 func getBindValues(bindings []driver.NamedValue) (map[string]execBindParameter, error) {
 	tsmode := timestampNtzType
 	idx := 1
@@ -233,7 +265,10 @@ func supportedArrayBind(nv *driver.NamedValue) bool {
 		return true
 	case reflect.TypeOf([]uint8{}):
 		// internal binding ts mode
-		val, _ := nv.Value.([]uint8)
+		val, ok := nv.Value.([]uint8)
+		if !ok {
+			return ok
+		}
 		if len(val) == 0 {
 			return true // for null binds
 		}
