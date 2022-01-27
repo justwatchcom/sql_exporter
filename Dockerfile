@@ -1,14 +1,30 @@
-FROM quay.io/prometheus/golang-builder as builder
+FROM golang:1.17-alpine as builder
 
-ADD .   /go/src/github.com/justwatchcom/sql_exporter
-WORKDIR /go/src/github.com/justwatchcom/sql_exporter
+RUN apk add git bash
 
-RUN make
+ENV GO111MODULE=on
 
-FROM        quay.io/prometheus/busybox:glibc
-MAINTAINER  The Prometheus Authors <prometheus-developers@googlegroups.com>
+# Add our code
+COPY ./ /src
 
-COPY --from=builder /go/src/github.com/justwatchcom/sql_exporter/sql_exporter  /bin/sql_exporter
+# build
+WORKDIR /src
+RUN GOGC=off go build -mod=vendor -v -o /sql_exporter .
 
-EXPOSE      9237
-ENTRYPOINT  [ "/bin/sql_exporter" ]
+# multistage
+FROM alpine:latest
+
+RUN apk --update upgrade && \
+    apk add curl ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/cache/apk/*
+
+COPY --from=builder /sql_exporter /usr/bin/sql_exporter
+
+# Run the image as a non-root user
+RUN adduser -D prom
+RUN chmod 0755 /usr/bin/sql_exporter
+
+USER prom
+
+CMD sql_exporter
