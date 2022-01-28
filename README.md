@@ -18,6 +18,7 @@ Currently supported:
 - MS-SQL
 - MySQL
 - Snowflake
+- Vertica
 
 
 What does it look like?
