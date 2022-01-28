@@ -138,3 +138,28 @@ jobs:
       - "count"
     query: |
       select count(1) as "count" from our_data_warehouse limit 1;
+- name: "vertica"
+  interval: '1m'
+  connections:
+  - 'vertica://user:password@host:port/database?queryArgs'
+  queries:
+  - name: "delete_vector_count"
+    help: 'Count of delete vectors'
+    labels:
+      - node_name
+      - schema_name
+      - projection_name
+    values:
+      - delete_vector_count
+    query: |
+      SELECT
+        node_name,
+        schema_name,
+        projection_name,
+        COUNT(*) AS delete_vector_count
+      FROM
+        delete_vectors
+      GROUP BY
+        node_name,
+        schema_name,
+        projection_name;

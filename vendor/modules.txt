@@ -174,8 +174,6 @@ github.com/gabriel-vasile/mimetype/internal/json
 github.com/gabriel-vasile/mimetype/internal/magic
 # github.com/go-kit/kit v0.12.0
 ## explicit; go 1.17
-github.com/go-kit/kit/log
-github.com/go-kit/kit/log/level
 # github.com/go-kit/log v0.2.0
 ## explicit; go 1.17
 github.com/go-kit/log
@@ -268,6 +266,14 @@ github.com/sirupsen/logrus
 # github.com/snowflakedb/gosnowflake v1.6.6
 ## explicit; go 1.16
 github.com/snowflakedb/gosnowflake
+# github.com/vertica/vertica-sql-go v1.2.1
+## explicit; go 1.13
+github.com/vertica/vertica-sql-go
+github.com/vertica/vertica-sql-go/common
+github.com/vertica/vertica-sql-go/logger
+github.com/vertica/vertica-sql-go/msgs
+github.com/vertica/vertica-sql-go/parse
+github.com/vertica/vertica-sql-go/rowcache
 # golang.org/x/crypto v0.0.0-20211117183948-ae814b36b871
 ## explicit; go 1.17
 golang.org/x/crypto/md4
