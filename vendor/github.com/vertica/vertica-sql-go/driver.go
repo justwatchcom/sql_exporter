@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2020 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,8 +46,8 @@ type Driver struct{}
 
 const (
 	driverName      string = "vertica-sql-go"
-	driverVersion   string = "1.1.0"
-	protocolVersion uint32 = 0x00030008
+	driverVersion   string = "1.2.1"
+	protocolVersion uint32 = 0x00030009
 )
 
 var driverLogger = logger.New("driver")

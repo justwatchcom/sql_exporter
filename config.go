@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"io/ioutil"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
 	"gopkg.in/yaml.v2"
@@ -20,6 +23,7 @@ var (
 		},
 		[]string{"driver", "host", "database", "user", "sql_job", "query"},
 	)
+	reEnvironmentPlaceholders = regexp.MustCompile(`{{.+?}}`)
 )
 
 func init() {
@@ -42,7 +46,26 @@ func Read(path string) (File, error) {
 		return f, err
 	}
 
-	if err := yaml.Unmarshal(buf, &f); err != nil {
+	placeholders := reEnvironmentPlaceholders.FindAllString(string(buf), -1)
+	replacer := strings.NewReplacer("{{", "", "}}", "")
+	var replacements []string
+	for _, placeholder := range placeholders {
+		environmentVariableName := strings.ToUpper(replacer.Replace(placeholder))
+		environmentVariableValue := os.Getenv(environmentVariableName)
+
+		// We extracted a placeholder and found the value in the env variables to replace it with
+		if environmentVariableName != "" && environmentVariableValue != "" {
+			replacements = append(replacements, placeholder)
+			replacements = append(replacements, environmentVariableValue)
+		}
+	}
+	if len(replacements)%2 == 1 {
+		return f, errors.New("uneven amount of replacement arguments")
+	}
+	replacerSecrets := strings.NewReplacer(replacements...)
+	processedConfig := replacerSecrets.Replace(string(buf))
+
+	if err := yaml.Unmarshal([]byte(processedConfig), &f); err != nil {
 		return f, err
 	}
 	return f, nil
@@ -78,14 +101,15 @@ type connection struct {
 // Query is an SQL query that is executed on a connection
 type Query struct {
 	sync.Mutex
-	log      log.Logger
-	desc     *prometheus.Desc
-	metrics  map[*connection][]prometheus.Metric
-	jobName  string
-	Name     string   `yaml:"name"`      // the prometheus metric name
-	Help     string   `yaml:"help"`      // the prometheus metric help text
-	Labels   []string `yaml:"labels"`    // expose these columns as labels per gauge
-	Values   []string `yaml:"values"`    // expose each of these as an gauge
-	Query    string   `yaml:"query"`     // a literal query
-	QueryRef string   `yaml:"query_ref"` // references an query in the query map
+	log           log.Logger
+	desc          *prometheus.Desc
+	metrics       map[*connection][]prometheus.Metric
+	jobName       string
+	AllowZeroRows bool     `yaml:"allow_zero_rows"`
+	Name          string   `yaml:"name"`      // the prometheus metric name
+	Help          string   `yaml:"help"`      // the prometheus metric help text
+	Labels        []string `yaml:"labels"`    // expose these columns as labels per gauge
+	Values        []string `yaml:"values"`    // expose each of these as an gauge
+	Query         string   `yaml:"query"`     // a literal query
+	QueryRef      string   `yaml:"query_ref"` // references an query in the query map
 }

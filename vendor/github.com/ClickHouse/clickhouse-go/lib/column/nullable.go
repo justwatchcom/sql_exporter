@@ -14,11 +14,11 @@ type Nullable struct {
 }
 
 func (null *Nullable) ScanType() reflect.Type {
-	return null.column.ScanType()
+	return reflect.PtrTo(null.column.ScanType())
 }
 
-func (null *Nullable) Read(decoder *binary.Decoder) (interface{}, error) {
-	return null.column.Read(decoder)
+func (null *Nullable) Read(decoder *binary.Decoder, isNull bool) (interface{}, error) {
+	return null.column.Read(decoder, isNull)
 }
 
 func (null *Nullable) Write(encoder *binary.Encoder, v interface{}) error {
@@ -39,7 +39,7 @@ func (null *Nullable) ReadNull(decoder *binary.Decoder, rows int) (_ []interface
 		nulls[i] = isNull
 	}
 	for i, isNull := range nulls {
-		switch value, err = null.column.Read(decoder); true {
+		switch value, err = null.column.Read(decoder, isNull != 0); true {
 		case err != nil:
 			return nil, err
 		case isNull == 0:
@@ -51,7 +51,7 @@ func (null *Nullable) ReadNull(decoder *binary.Decoder, rows int) (_ []interface
 	return values, nil
 }
 func (null *Nullable) WriteNull(nulls, encoder *binary.Encoder, v interface{}) error {
-	if value := reflect.ValueOf(v); v == nil || (value.Kind() == reflect.Ptr && value.IsNil()) {
+	if isNil(v) {
 		if _, err := nulls.Write([]byte{1}); err != nil {
 			return err
 		}
@@ -78,4 +78,19 @@ func parseNullable(name, chType string, timezone *time.Location) (*Nullable, err
 		},
 		column: column,
 	}, nil
+}
+
+func (null *Nullable) GetColumn() Column {
+	return null.column
+}
+
+func isNil(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	switch val := reflect.ValueOf(v); val.Type().Kind() {
+	case reflect.Array, reflect.Chan, reflect.Map, reflect.Ptr, reflect.Slice:
+		return val.IsNil()
+	}
+	return false
 }

@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2020 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,7 +39,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"os"
 	"reflect"
 	"regexp"
@@ -252,7 +251,7 @@ func (s *stmt) QueryContextRaw(ctx context.Context, baseArgs []driver.NamedValue
 		case <-ctx.Done():
 			stmtLogger.Info("Context cancelled, cancelling %s", s.preparedName)
 			cancelMsg := msgs.FECancelMsg{PID: pid, Key: key}
-			conn, err := net.Dial("tcp", s.conn.connURL.Host)
+			conn, err := s.conn.establishSocketConnection()
 			if err != nil {
 				stmtLogger.Warn("unable to establish connection for cancellation")
 				return
@@ -376,6 +375,8 @@ func (s *stmt) cleanQuotes(val string) string {
 func (s *stmt) formatArg(arg driver.NamedValue) string {
 	var replaceStr string
 	switch v := arg.Value.(type) {
+	case nil:
+		replaceStr = "NULL"
 	case int64, float64:
 		replaceStr = fmt.Sprintf("%v", v)
 	case string:
@@ -387,13 +388,14 @@ func (s *stmt) formatArg(arg driver.NamedValue) string {
 			replaceStr = "false"
 		}
 	case time.Time:
-		replaceStr = fmt.Sprintf("%02d-%02d-%02d %02d:%02d:%02d",
+		replaceStr = fmt.Sprintf("'%02d-%02d-%02d %02d:%02d:%02d.%09d'",
 			v.Year(),
 			v.Month(),
 			v.Day(),
 			v.Hour(),
 			v.Minute(),
-			v.Second())
+			v.Second(),
+			v.Nanosecond())
 	default:
 		replaceStr = "?unknown_type?"
 	}
@@ -423,7 +425,7 @@ func (s *stmt) evaluateErrorMsg(msg *msgs.BEErrorMsg) error {
 	if msg.Severity == "ROLLBACK" {
 		s.rolledBack = true
 	}
-	return msg.ToErrorType()
+	return errorMsgToVError(msg)
 }
 
 func (s *stmt) prepareAndDescribe() error {
@@ -468,7 +470,7 @@ func (s *stmt) prepareAndDescribe() error {
 		switch msg := bMsg.(type) {
 		case *msgs.BEErrorMsg:
 			s.conn.sync()
-			return msg.ToErrorType()
+			return errorMsgToVError(msg)
 		case *msgs.BEParseCompleteMsg:
 			s.parseState = parseStateParsed
 		case *msgs.BERowDescMsg:

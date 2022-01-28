@@ -125,3 +125,16 @@ jobs:
       WHERE partition IN
           (SELECT max(partition)
           FROM my_athena_db.some_table);
+- name: "snowflake"
+  interval: '1m'
+  connections:
+  - 'snowflake://username:password@hostname/schema/table'
+  queries:
+  - name: "snowflake_dwh_some_table"
+    help: "Number of rows..."
+    # Make sure values matches the return value of the query. If alias isn't quoted in the query Snowflake will use uppercase which has to match with the column
+    # name in values.
+    values:
+      - "count"
+    query: |
+      select count(1) as "count" from our_data_warehouse limit 1;

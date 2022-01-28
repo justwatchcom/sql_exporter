@@ -109,8 +109,8 @@ go test --locator hostname:5433 --user rhuebner --tlsmode server --use_prepared_
 go test --locator hostname:5433 --user rhuebner --tlsmode server --use_prepared_statements false
 ```
 
-The Travis CI configuration committed as part of the project will automatically run through several combinations of parameters.
-These CI tests must pass before any PR will be considered.
+The Github Actions [CI workflow](.github/workflows/ci.yaml) committed as part of the project will automatically run through several combinations of parameters.
+These CI tests must pass before any PR will be considered. This CI workflow can be run on your forked repository after you enabling Github Actions on your fork.
 
 ## Step 4: Implement your fix or feature
 

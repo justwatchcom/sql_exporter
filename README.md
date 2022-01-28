@@ -10,6 +10,16 @@ Status
 
 Actively used with PostgreSQL in production. We'd like to eventually support all databases for which stable Go database [drivers](https://github.com/golang/go/wiki/SQLDrivers) are available. Contributions welcome.
 
+Currently supported:
+
+- Postgres
+- ClickHouse
+- AWS Athena
+- MS-SQL
+- MySQL
+- Snowflake
+
+
 What does it look like?
 =======================
 
@@ -139,6 +149,8 @@ jobs:
     query:  |
             SELECT datname::text, usename::text, COUNT(*)::float AS count
             FROM pg_stat_activity GROUP BY datname, usename;
+    # Consider the query failed if it returns zero rows
+    allow_zero_rows: false
 ```
 
 Running as non-superuser on PostgreSQL
