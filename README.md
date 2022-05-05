@@ -118,6 +118,9 @@ jobs:
 - name: "example"
   # interval defined the pause between the runs of this job
   interval: '5m'
+  # cron_schedule when to execute the job in the standard CRON syntax
+  # if specified, the interval is ignored
+  cron_schedule: "0 0 * * *"
   # connections is an array of connection URLs
   # each query will be executed on each connection
   connections:

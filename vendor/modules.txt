@@ -255,6 +255,9 @@ github.com/prometheus/common/version
 github.com/prometheus/procfs
 github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
+# github.com/robfig/cron/v3 v3.0.1
+## explicit; go 1.12
+github.com/robfig/cron/v3
 # github.com/satori/go.uuid v1.2.0
 ## explicit
 # github.com/segmentio/go-athena v0.0.0-20181208004937-dfa5f1818930

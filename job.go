@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/snowflakedb/gosnowflake"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -18,7 +17,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/segmentio/go-athena"     // register the AWS Athena driver
+	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
+	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 )
 
@@ -70,14 +70,11 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 			},
 		)
 	}
+	j.updateConnections()
 	return nil
 }
 
-// Run prepares and runs the job
-func (j *Job) Run() {
-	if j.log == nil {
-		j.log = log.NewNopLogger()
-	}
+func (j *Job) updateConnections() {
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
 		level.Error(j.log).Log("msg", "No connections for job", "job", j.Name)
@@ -171,16 +168,12 @@ func (j *Job) Run() {
 			j.conns = append(j.conns, newConn)
 		}
 	}
-	level.Debug(j.log).Log("msg", "Starting")
+}
 
-	// enter the run loop
-	// tries to run each query on each connection at approx the interval
+func (j *Job) ExecutePeriodically() {
+	level.Debug(j.log).Log("msg", "Starting")
 	for {
-		bo := backoff.NewExponentialBackOff()
-		bo.MaxElapsedTime = j.Interval
-		if err := backoff.Retry(j.runOnce, bo); err != nil {
-			level.Error(j.log).Log("msg", "Failed to run", "err", err)
-		}
+		j.Run()
 		level.Debug(j.log).Log("msg", "Sleeping until next run", "sleep", j.Interval.String())
 		time.Sleep(j.Interval)
 	}
@@ -222,6 +215,18 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 func (j *Job) markFailed(conn *connection) {
 	for _, q := range j.Queries {
 		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+	}
+}
+
+// Run the job queries with exponential backoff, implements the cron.Job interface
+func (j *Job) Run() {
+	bo := backoff.NewExponentialBackOff()
+	bo.MaxElapsedTime = j.Interval
+	if bo.MaxElapsedTime == 0 {
+		bo.MaxElapsedTime = time.Minute
+	}
+	if err := backoff.Retry(j.runOnce, bo); err != nil {
+		level.Error(j.log).Log("msg", "Failed to run", "err", err)
 	}
 }
 

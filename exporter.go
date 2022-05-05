@@ -4,12 +4,14 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/robfig/cron/v3"
 )
 
 // Exporter collects SQL metrics. It implements prometheus.Collector.
 type Exporter struct {
-	jobs   []*Job
-	logger log.Logger
+	jobs          []*Job
+	logger        log.Logger
+	cronScheduler *cron.Cron
 }
 
 // NewExporter returns a new SQL Exporter for the provided config.
@@ -25,8 +27,9 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 	}
 
 	exp := &Exporter{
-		jobs:   make([]*Job, 0, len(cfg.Jobs)),
-		logger: logger,
+		jobs:          make([]*Job, 0, len(cfg.Jobs)),
+		logger:        logger,
+		cronScheduler: cron.New(),
 	}
 
 	// dispatch all jobs
@@ -34,14 +37,21 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 		if job == nil {
 			continue
 		}
+
 		if err := job.Init(logger, cfg.Queries); err != nil {
 			level.Warn(logger).Log("msg", "Skipping job. Failed to initialize", "err", err, "job", job.Name)
 			continue
 		}
 		exp.jobs = append(exp.jobs, job)
-		go job.Run()
+		if job.CronSchedule.schedule != nil {
+			exp.cronScheduler.Schedule(job.CronSchedule.schedule, job)
+			level.Info(logger).Log("msg", "Scheduled CRON job", "name", job.Name, "cron_schedule", job.CronSchedule.definition)
+		} else {
+			go job.ExecutePeriodically()
+			level.Info(logger).Log("msg", "Started periodically execution of job", "name", job.Name, "interval", job.Interval)
+		}
 	}
-
+	exp.cronScheduler.Start()
 	return exp, nil
 }
 
