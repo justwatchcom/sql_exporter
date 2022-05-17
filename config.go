@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v2"
 )
 
@@ -77,16 +79,34 @@ type File struct {
 	Queries map[string]string `yaml:"queries"`
 }
 
+type cronConfig struct {
+	definition string
+	schedule   cron.Schedule
+}
+
+func (c *cronConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	if err := unmarshal(&c.definition); err != nil {
+		return fmt.Errorf("invalid cron_schedule, must be a string: %w", err)
+	}
+	var err error
+	c.schedule, err = cron.ParseStandard(c.definition)
+	if err != nil {
+		return fmt.Errorf("invalid cron_schedule syntax for `%s`: %w", c.definition, err)
+	}
+	return nil
+}
+
 // Job is a collection of connections and queries
 type Job struct {
-	log         log.Logger
-	conns       []*connection
-	Name        string        `yaml:"name"`      // name of this job
-	KeepAlive   bool          `yaml:"keepalive"` // keep connection between runs?
-	Interval    time.Duration `yaml:"interval"`  // interval at which this job is run
-	Connections []string      `yaml:"connections"`
-	Queries     []*Query      `yaml:"queries"`
-	StartupSQL  []string      `yaml:"startup_sql"` // SQL executed on startup
+	log          log.Logger
+	conns        []*connection
+	Name         string        `yaml:"name"`          // name of this job
+	KeepAlive    bool          `yaml:"keepalive"`     // keep connection between runs?
+	Interval     time.Duration `yaml:"interval"`      // interval at which this job is run
+	CronSchedule cronConfig    `yaml:"cron_schedule"` // if specified, the interval is ignored and the job will be executed at the specified time in CRON syntax
+	Connections  []string      `yaml:"connections"`
+	Queries      []*Query      `yaml:"queries"`
+	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
 }
 
 type connection struct {
