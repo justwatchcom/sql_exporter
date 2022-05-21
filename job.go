@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
+	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
 	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
 	"github.com/go-kit/log"
