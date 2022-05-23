@@ -16,6 +16,7 @@ FROM alpine:latest
 
 RUN apk --update upgrade && \
     apk add curl ca-certificates && \
+    apk add tzdata && \
     update-ca-certificates && \
     rm -rf /var/cache/apk/*
 
