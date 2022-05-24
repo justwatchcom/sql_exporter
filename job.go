@@ -259,8 +259,6 @@ func (c *connection) connect(job *Job) error {
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
-	case "clickhouse":
-		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.driver, dsn)
 	if err != nil {
