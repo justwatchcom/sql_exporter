@@ -23,7 +23,7 @@ spec:
           value: /config/config.yml
         - name: PGPASSFILE
           value: /pgpass/pgpass
-        image: justwatchcom/prom-sql-exporter:latest
+        image: justwatch/prom-sql-exporter:latest
         livenessProbe:
           httpGet:
             path: /healthz
