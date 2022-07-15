@@ -269,7 +269,6 @@ func (c *connection) connect(job *Job) error {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(job.Interval * 2)
 
 	// execute StartupSQL
 	for _, query := range job.StartupSQL {
