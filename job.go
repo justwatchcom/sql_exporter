@@ -269,6 +269,10 @@ func (c *connection) connect(job *Job) error {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
+	// Disable SetConnMaxLifetime if MSSQL as it is causing issues with the MSSQL driver we are using. See #60
+	if c.driver != "sqlserver" {
+		conn.SetConnMaxLifetime(job.Interval * 2)
+	}
 
 	// execute StartupSQL
 	for _, query := range job.StartupSQL {
