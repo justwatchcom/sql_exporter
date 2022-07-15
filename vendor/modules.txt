@@ -159,14 +159,6 @@ github.com/cenkalti/backoff
 # github.com/cespare/xxhash/v2 v2.1.2
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
-## explicit
-# github.com/denisenkom/go-mssqldb v0.0.0-20191128021309-1d7a30a10f73
-## explicit; go 1.11
-github.com/denisenkom/go-mssqldb
-github.com/denisenkom/go-mssqldb/internal/cp
-github.com/denisenkom/go-mssqldb/internal/decimal
-github.com/denisenkom/go-mssqldb/internal/querytext
 # github.com/form3tech-oss/jwt-go v3.2.5+incompatible
 ## explicit
 github.com/form3tech-oss/jwt-go
@@ -176,6 +168,9 @@ github.com/gabriel-vasile/mimetype
 github.com/gabriel-vasile/mimetype/internal/charset
 github.com/gabriel-vasile/mimetype/internal/json
 github.com/gabriel-vasile/mimetype/internal/magic
+# github.com/denisenkom/go-mssqldb v0.12.2
+## explicit; go 1.17
+github.com/denisenkom/go-mssqldb
 # github.com/go-kit/kit v0.12.0
 ## explicit; go 1.17
 # github.com/go-kit/log v0.2.0
