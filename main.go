@@ -20,10 +20,11 @@ func init() {
 
 func main() {
 	var (
-		showVersion   = flag.Bool("version", false, "Print version information.")
-		listenAddress = flag.String("web.listen-address", ":9237", "Address to listen on for web interface and telemetry.")
-		metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-		configFile    = flag.String("config.file", os.Getenv("CONFIG"), "SQL Exporter configuration file name.")
+		showVersion    = flag.Bool("version", false, "Print version information.")
+		disableBuiltIn = flag.Bool("metrics.disable-built-in", false, "Disable the collection of built-in metrics (such as GC stats).")
+		listenAddress  = flag.String("web.listen-address", ":9237", "Address to listen on for web interface and telemetry.")
+		metricsPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		configFile     = flag.String("config.file", os.Getenv("CONFIG"), "SQL Exporter configuration file name.")
 	)
 
 	flag.Parse()
@@ -59,6 +60,10 @@ func main() {
 	if err != nil {
 		level.Error(logger).Log("msg", "Error starting exporter", "err", err)
 		os.Exit(1)
+	}
+
+	if *disableBuiltIn {
+		prometheus.Unregister(prometheus.NewGoCollector())
 	}
 	prometheus.MustRegister(exporter)
 
