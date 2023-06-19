@@ -259,7 +259,10 @@ func (c *connection) connect(job *Job) error {
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
-	case "clickhouse":
+	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
+		dsn = strings.TrimPrefix(dsn, "clickhouse+")
+		c.driver = "clickhouse"
+	case "clickhouse": // Backward compatible alias
 		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.driver, dsn)
