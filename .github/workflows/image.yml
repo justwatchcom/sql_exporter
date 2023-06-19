@@ -1,8 +1,10 @@
 name: Publish Docker image
 
-on:
-  push:
-    branches: ['release']
+# on:
+#   push:
+#     branches: ['release']
+
+on: workflow_dispatch
 
 env:
   REGISTRY: ghcr.io
