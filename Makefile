@@ -12,7 +12,6 @@
 # limitations under the License.
 
 GO    := go
-PROMU := $(GOPATH)/bin/promu
 pkgs   = $(shell $(GO) list ./... | grep -v /vendor/)
 
 PREFIX              ?= $(shell pwd)
@@ -39,22 +38,12 @@ vet:
 	@echo ">> vetting code"
 	@$(GO) vet $(pkgs)
 
-build: promu
+build:
 	@echo ">> building binaries"
-	@$(PROMU) build --prefix $(PREFIX)
-
-tarball: promu
-	@echo ">> building release tarball"
-	@$(PROMU) tarball --prefix $(PREFIX) $(BIN_DIR)
+	@$(GO) build -o $(PREFIX)/$(DOCKER_IMAGE_NAME)
 
 docker:
 	@echo ">> building docker image"
 	@docker build -t "$(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_TAG)" .
 
-promu:
-	@GOOS=$(shell uname -s | tr A-Z a-z) \
-		GOARCH=$(subst x86_64,amd64,$(patsubst i%86,386,$(shell uname -m))) \
-		$(GO) get -u github.com/prometheus/promu
-
-
-.PHONY: all style format build test vet tarball docker promu
+.PHONY: all style format build test vet docker
