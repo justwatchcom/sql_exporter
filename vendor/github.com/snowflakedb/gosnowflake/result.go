@@ -13,10 +13,11 @@ const (
 	QueryFailed queryStatus = "queryFailed"
 )
 
-// SnowflakeResult provides the associated query ID
+// SnowflakeResult provides an API for methods exposed to the clients
 type SnowflakeResult interface {
 	GetQueryID() string
 	GetStatus() queryStatus
+	GetArrowBatches() ([]*ArrowBatch, error)
 }
 
 type snowflakeResult struct {
@@ -48,6 +49,13 @@ func (res *snowflakeResult) GetQueryID() string {
 
 func (res *snowflakeResult) GetStatus() queryStatus {
 	return res.status
+}
+
+func (res *snowflakeResult) GetArrowBatches() ([]*ArrowBatch, error) {
+	return nil, &SnowflakeError{
+		Number:  ErrNotImplemented,
+		Message: errMsgNotImplemented,
+	}
 }
 
 func (res *snowflakeResult) waitForAsyncExecStatus() error {

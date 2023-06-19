@@ -1,6 +1,6 @@
 package common
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -60,6 +60,7 @@ const (
 	AuthenticationOK                int32 = 0
 	AuthenticationCleartextPassword int32 = 3
 	AuthenticationMD5Password       int32 = 5
+	AuthenticationOAuth             int32 = 12
 	AuthenticationSHA512Password    int32 = 66048
 )
 

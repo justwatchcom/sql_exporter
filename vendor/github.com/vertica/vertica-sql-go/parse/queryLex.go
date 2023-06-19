@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// Copyright (c) 2020-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2020-2023 Open Text.
 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -170,7 +170,7 @@ func lexQuery(l *Lexer) stateFunc {
 			return lexComment
 		}
 
-		if r == '\'' && l.peek() != '\'' {
+		if r == '\'' {
 			return lexString
 		}
 
@@ -195,9 +195,21 @@ func lexComment(l *Lexer) stateFunc {
 // lexString assumes we are starting inside the string and goes to the next ' rune
 // if it was an escaped quote like 'isn''t' lexQuery will drop us right back here to finish
 func lexString(l *Lexer) stateFunc {
-	l.skipUntil('\'')
+	l.skipQuotedLiteral()
 	l.writeChunk()
 	return lexQuery
+}
+func (l *Lexer) skipQuotedLiteral() {
+	for {
+		next := l.next()
+		if next == '\'' && l.peek() == '\'' {
+			l.next()
+			continue
+		}
+		if next == '\'' || next == eof {
+			return
+		}
+	}
 }
 
 // lexNamedParam replaces named params like @named with a ? while calling out to a consumer

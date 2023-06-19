@@ -19,10 +19,10 @@ package column
 
 import (
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 	"strings"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
+	"time"
 )
 
 type offset struct {
@@ -36,9 +36,21 @@ type Array struct {
 	values   Interface
 	offsets  []*offset
 	scanType reflect.Type
+	name     string
 }
 
-func (col *Array) parse(t Type) (_ Interface, err error) {
+func (col *Array) Reset() {
+	col.values.Reset()
+	for i := range col.offsets {
+		col.offsets[i].values.Reset()
+	}
+}
+
+func (col *Array) Name() string {
+	return col.name
+}
+
+func (col *Array) parse(t Type, tz *time.Location) (_ *Array, err error) {
 	col.chType = t
 	var typeStr = string(t)
 
@@ -54,7 +66,7 @@ parse:
 		}
 	}
 	if col.depth != 0 {
-		if col.values, err = Type(typeStr).Column(); err != nil {
+		if col.values, err = Type(typeStr).Column(col.name, tz); err != nil {
 			return nil, err
 		}
 		offsetScanTypes := make([]reflect.Type, 0, col.depth)
@@ -89,32 +101,20 @@ func (col *Array) ScanType() reflect.Type {
 
 func (col *Array) Rows() int {
 	if len(col.offsets) != 0 {
-		return len(col.offsets[0].values)
+		return col.offsets[0].values.Rows()
 	}
 	return 0
 }
 
-func (col *Array) Row(i int, ptr bool) interface{} {
-	return col.make(uint64(i), 0).Interface()
+func (col *Array) Row(i int, ptr bool) any {
+	value, err := col.scan(col.ScanType(), i)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return value.Interface()
 }
 
-func (col *Array) ScanRow(dest interface{}, row int) error {
-	elem := reflect.Indirect(reflect.ValueOf(dest))
-	if elem.Type() != col.scanType {
-		return &ColumnConverterError{
-			Op:   "ScanRow",
-			To:   fmt.Sprintf("%T", dest),
-			From: string(col.chType),
-			Hint: fmt.Sprintf("try using *%s", col.scanType),
-		}
-	}
-	{
-		elem.Set(col.make(uint64(row), 0))
-	}
-	return nil
-}
-
-func (col *Array) Append(v interface{}) (nulls []uint8, err error) {
+func (col *Array) Append(v any) (nulls []uint8, err error) {
 	value := reflect.Indirect(reflect.ValueOf(v))
 	if value.Kind() != reflect.Slice {
 		return nil, &ColumnConverterError{
@@ -132,7 +132,7 @@ func (col *Array) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (col *Array) AppendRow(v interface{}) error {
+func (col *Array) AppendRow(v any) error {
 	var elem reflect.Value
 	switch v := v.(type) {
 	case reflect.Value:
@@ -140,7 +140,7 @@ func (col *Array) AppendRow(v interface{}) error {
 	default:
 		elem = reflect.Indirect(reflect.ValueOf(v))
 	}
-	if !elem.IsValid() || elem.Type() != col.scanType {
+	if !elem.IsValid() {
 		from := fmt.Sprintf("%T", v)
 		if !elem.IsValid() {
 			from = fmt.Sprintf("%v", v)
@@ -158,10 +158,10 @@ func (col *Array) AppendRow(v interface{}) error {
 func (col *Array) append(elem reflect.Value, level int) error {
 	if level < col.depth {
 		offset := uint64(elem.Len())
-		if ln := len(col.offsets[level].values); ln != 0 {
-			offset += col.offsets[level].values[ln-1]
+		if ln := col.offsets[level].values.Rows(); ln != 0 {
+			offset += col.offsets[level].values.col.Row(ln - 1)
 		}
-		col.offsets[level].values = append(col.offsets[level].values, offset)
+		col.offsets[level].values.col.Append(offset)
 		for i := 0; i < elem.Len(); i++ {
 			if err := col.append(elem.Index(i), level+1); err != nil {
 				return err
@@ -175,78 +175,262 @@ func (col *Array) append(elem reflect.Value, level int) error {
 	return col.values.AppendRow(elem.Interface())
 }
 
-func (col *Array) Decode(decoder *binary.Decoder, rows int) error {
+func (col *Array) Decode(reader *proto.Reader, rows int) error {
 	for _, offset := range col.offsets {
-		if err := offset.values.Decode(decoder, rows); err != nil {
+		if err := offset.values.col.DecodeColumn(reader, rows); err != nil {
 			return err
 		}
 		switch {
-		case len(offset.values) > 0:
-			rows = int(offset.values[len(offset.values)-1])
+		case offset.values.Rows() > 0:
+			rows = int(offset.values.col.Row(offset.values.col.Rows() - 1))
 		default:
 			rows = 0
 		}
 	}
-	return col.values.Decode(decoder, rows)
+	return col.values.Decode(reader, rows)
 }
 
-func (col *Array) Encode(encoder *binary.Encoder) error {
+func (col *Array) Encode(buffer *proto.Buffer) {
 	for _, offset := range col.offsets {
-		if err := offset.values.Encode(encoder); err != nil {
-			return err
-		}
+		offset.values.col.EncodeColumn(buffer)
 	}
-	return col.values.Encode(encoder)
+	col.values.Encode(buffer)
 }
 
-func (col *Array) ReadStatePrefix(decoder *binary.Decoder) error {
+func (col *Array) ReadStatePrefix(reader *proto.Reader) error {
 	if serialize, ok := col.values.(CustomSerialization); ok {
-		if err := serialize.ReadStatePrefix(decoder); err != nil {
+		if err := serialize.ReadStatePrefix(reader); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (col *Array) WriteStatePrefix(encoder *binary.Encoder) error {
+func (col *Array) WriteStatePrefix(buffer *proto.Buffer) error {
 	if serialize, ok := col.values.(CustomSerialization); ok {
-		if err := serialize.WriteStatePrefix(encoder); err != nil {
+		if err := serialize.WriteStatePrefix(buffer); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (col *Array) make(row uint64, level int) reflect.Value {
+func (col *Array) ScanRow(dest any, row int) error {
+	elem := reflect.Indirect(reflect.ValueOf(dest))
+	value, err := col.scan(elem.Type(), row)
+	if err != nil {
+		return err
+	}
+	elem.Set(value)
+	return nil
+}
+
+func (col *Array) scan(sliceType reflect.Type, row int) (reflect.Value, error) {
+	switch col.values.(type) {
+	case *Tuple:
+		subSlice, err := col.scanSliceOfObjects(sliceType, row)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return subSlice, nil
+	default:
+		subSlice, err := col.scanSlice(sliceType, row, 0)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return subSlice, nil
+	}
+}
+
+func (col *Array) scanSlice(sliceType reflect.Type, row int, level int) (reflect.Value, error) {
+	// We could try and set - if it exceeds just return immediately
 	offset := col.offsets[level]
 	var (
-		end   = offset.values[row]
+		end   = offset.values.col.Row(row)
 		start = uint64(0)
 	)
 	if row > 0 {
-		start = offset.values[row-1]
+		start = offset.values.col.Row(row - 1)
 	}
-	var (
-		base  = offset.scanType.Elem()
-		isPtr = base.Kind() == reflect.Ptr
-		slice = reflect.MakeSlice(offset.scanType, 0, int(end-start))
-	)
+	base := offset.scanType.Elem()
+	isPtr := base.Kind() == reflect.Ptr
+
+	var rSlice reflect.Value
+	switch sliceType.Kind() {
+	case reflect.Interface:
+		sliceType = offset.scanType
+		rSlice = reflect.MakeSlice(sliceType, 0, int(end-start))
+	case reflect.Slice:
+		rSlice = reflect.MakeSlice(sliceType, 0, int(end-start))
+	default:
+		return reflect.Value{}, &Error{
+			ColumnType: fmt.Sprint(sliceType.Kind()),
+			Err:        fmt.Errorf("column %s - needs a slice or any", col.Name()),
+		}
+	}
+
 	for i := start; i < end; i++ {
 		var value reflect.Value
+		var err error
 		switch {
 		case level == len(col.offsets)-1:
-			switch v := col.values.Row(int(i), isPtr); {
-			case v == nil:
-				value = reflect.Zero(base)
+			switch dcol := col.values.(type) {
+			case *Nested:
+				//Array(Nested
+				aCol := dcol.Interface.(*Array)
+				value, err = aCol.scanSliceOfObjects(sliceType.Elem(), int(i))
+				if err != nil {
+					return reflect.Value{}, err
+				}
+			case *Array:
+				//Array(Array
+				value, err = dcol.scanSlice(sliceType.Elem(), int(i), 0)
+				if err != nil {
+					return reflect.Value{}, err
+				}
+			case *Tuple:
+				// Array(Tuple possible outside JSON object cases e.g. if the user defines a  Array(Array( Tuple(String, Int64) ))
+				value, err = dcol.scan(sliceType.Elem(), int(i))
+				if err != nil {
+					return reflect.Value{}, err
+				}
 			default:
-				value = reflect.ValueOf(v)
+				v := col.values.Row(int(i), isPtr)
+				val := reflect.ValueOf(v)
+				if v == nil {
+					val = reflect.Zero(base)
+				}
+				if sliceType.Kind() == reflect.Interface {
+					value = reflect.New(sliceType).Elem()
+					if err := setJSONFieldValue(value, val); err != nil {
+						return reflect.Value{}, err
+					}
+				} else {
+					value = reflect.New(sliceType.Elem()).Elem()
+					if err := setJSONFieldValue(value, val); err != nil {
+						return reflect.Value{}, err
+					}
+				}
 			}
 		default:
-			value = col.make(i, level+1)
+			value, err = col.scanSlice(sliceType.Elem(), int(i), level+1)
+			if err != nil {
+				return reflect.Value{}, err
+			}
 		}
-		slice = reflect.Append(slice, value)
+		rSlice = reflect.Append(rSlice, value)
 	}
-	return slice
+	return rSlice, nil
+}
+
+func (col *Array) scanSliceOfObjects(sliceType reflect.Type, row int) (reflect.Value, error) {
+	if sliceType.Kind() == reflect.Interface {
+		// catches any - Note this swallows custom interfaces to which maps couldn't conform
+		subMap := make(map[string]any)
+		return col.scanSliceOfMaps(reflect.SliceOf(reflect.TypeOf(subMap)), row)
+	} else if sliceType.Kind() == reflect.Slice {
+		// make a slice of the right type - we need this to be a slice of a type capable of taking an object as nested
+		switch sliceType.Elem().Kind() {
+		case reflect.Struct:
+			return col.scanSliceOfStructs(sliceType, row)
+		case reflect.Map:
+			return col.scanSliceOfMaps(sliceType, row)
+		case reflect.Slice:
+			// tuples can be read as arrays
+			return col.scanSlice(sliceType, row, 0)
+		case reflect.Interface:
+			// catches []any - Note this swallows custom interfaces to which maps could never conform
+			subMap := make(map[string]any)
+			return col.scanSliceOfMaps(reflect.SliceOf(reflect.TypeOf(subMap)), row)
+		default:
+			return reflect.Value{}, &Error{
+				ColumnType: fmt.Sprint(sliceType.Elem().Kind()),
+				Err:        fmt.Errorf("column %s - needs a slice of objects or an any", col.Name()),
+			}
+		}
+	}
+	return reflect.Value{}, &Error{
+		ColumnType: fmt.Sprint(sliceType.Kind()),
+		Err:        fmt.Errorf("column %s - needs a slice or any", col.Name()),
+	}
+}
+
+// the following 2 functions can probably be refactored - the share alot of common code for structs and maps
+func (col *Array) scanSliceOfMaps(sliceType reflect.Type, row int) (reflect.Value, error) {
+	if sliceType.Kind() != reflect.Slice {
+		return reflect.Value{}, &ColumnConverterError{
+			Op:   "ScanRow",
+			To:   sliceType.String(),
+			From: string(col.Type()),
+		}
+	}
+	tCol, ok := col.values.(*Tuple)
+	if !ok {
+		return reflect.Value{}, &Error{
+			ColumnType: fmt.Sprint(col.values.Type()),
+			Err:        fmt.Errorf("column %s - must be a tuple", col.Name()),
+		}
+	}
+	// Array(Tuple so depth 1 for JSON
+	offset := col.offsets[0]
+	var (
+		end   = offset.values.col.Row(row)
+		start = uint64(0)
+	)
+	if row > 0 {
+		start = offset.values.col.Row(row - 1)
+	}
+	if end-start > 0 {
+		rSlice := reflect.MakeSlice(sliceType, 0, int(end-start))
+		for i := start; i < end; i++ {
+			sMap := reflect.MakeMap(sliceType.Elem())
+			if err := tCol.scanMap(sMap, int(i)); err != nil {
+				return reflect.Value{}, err
+			}
+			rSlice = reflect.Append(rSlice, sMap)
+		}
+		return rSlice, nil
+	}
+	return reflect.MakeSlice(sliceType, 0, 0), nil
+}
+
+func (col *Array) scanSliceOfStructs(sliceType reflect.Type, row int) (reflect.Value, error) {
+	if sliceType.Kind() != reflect.Slice {
+		return reflect.Value{}, &ColumnConverterError{
+			Op:   "ScanRow",
+			To:   sliceType.String(),
+			From: string(col.Type()),
+		}
+	}
+	tCol, ok := col.values.(*Tuple)
+	if !ok {
+		return reflect.Value{}, &Error{
+			ColumnType: fmt.Sprint(col.values.Type()),
+			Err:        fmt.Errorf("column %s - must be a tuple", col.Name()),
+		}
+	}
+	// Array(Tuple so depth 1 for JSON
+	offset := col.offsets[0]
+	var (
+		end   = offset.values.col.Row(row)
+		start = uint64(0)
+	)
+	if row > 0 {
+		start = offset.values.col.Row(row - 1)
+	}
+	if end-start > 0 {
+		// create a slice of the type from the sliceType - if this might be any as its driven by the target datastructure
+		rSlice := reflect.MakeSlice(sliceType, 0, int(end-start))
+		for i := start; i < end; i++ {
+			sStruct := reflect.New(sliceType.Elem()).Elem()
+			if err := tCol.scanStruct(sStruct, int(i)); err != nil {
+				return reflect.Value{}, err
+			}
+			rSlice = reflect.Append(rSlice, sStruct)
+		}
+		return rSlice, nil
+	}
+	return reflect.MakeSlice(sliceType, 0, 0), nil
 }
 
 var (

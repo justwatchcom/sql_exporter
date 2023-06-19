@@ -1,6 +1,6 @@
 package rowcache
 
-// Copyright (c) 2020-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2020-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -67,29 +67,41 @@ func NewFileCache(rowLimit int) (*FileCache, error) {
 	}, nil
 }
 
-func (f *FileCache) writeCached(msg *msgs.BEDataRowMsg) {
+func (f *FileCache) writeCached(msg *msgs.BEDataRowMsg) error {
 	sizeBuf := f.scratch[:4]
 	binary.LittleEndian.PutUint32(sizeBuf, uint32(len(*msg)))
-	f.rwbuffer.Write(sizeBuf)
-	f.rwbuffer.Write(*msg)
+	if _, err := f.rwbuffer.Write(sizeBuf); err != nil {
+		return err
+	}
+	if _, err := f.rwbuffer.Write(*msg); err != nil {
+		return err
+	}
+	return nil
 }
 
 // AddRow adds a row to the cache
-func (f *FileCache) AddRow(msg *msgs.BEDataRowMsg) {
+func (f *FileCache) AddRow(msg *msgs.BEDataRowMsg) error {
 	f.rowCount++
 	if len(f.resultData) >= f.maxInMemory {
-		f.writeCached(msg)
-		return
+		if err := f.writeCached(msg); err != nil {
+			return err
+		}
+		return nil
 	}
 	f.resultData = append(f.resultData, msg)
+	return nil
 }
 
 // Finalize signals the end of rows from the wire and readies the cache for reading
 func (f *FileCache) Finalize() error {
 	var err error
 	name := f.file.Name()
-	f.rwbuffer.Flush()
-	f.file.Close()
+	if err = f.rwbuffer.Flush(); err != nil {
+		return err
+	}
+	if err = f.file.Close(); err != nil {
+		return err
+	}
 	f.file, err = os.OpenFile(name, os.O_RDONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return err

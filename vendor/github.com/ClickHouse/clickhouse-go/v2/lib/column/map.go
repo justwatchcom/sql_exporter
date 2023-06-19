@@ -19,10 +19,10 @@ package column
 
 import (
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 	"strings"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
+	"time"
 )
 
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Columns/ColumnMap.cpp
@@ -32,15 +32,32 @@ type Map struct {
 	chType   Type
 	offsets  Int64
 	scanType reflect.Type
+	name     string
 }
 
-func (col *Map) parse(t Type) (_ Interface, err error) {
+type OrderedMap interface {
+	Get(key any) (any, bool)
+	Put(key any, value any)
+	Keys() <-chan any
+}
+
+func (col *Map) Reset() {
+	col.keys.Reset()
+	col.values.Reset()
+	col.offsets.Reset()
+}
+
+func (col *Map) Name() string {
+	return col.name
+}
+
+func (col *Map) parse(t Type, tz *time.Location) (_ Interface, err error) {
 	col.chType = t
 	if types := strings.SplitN(t.params(), ",", 2); len(types) == 2 {
-		if col.keys, err = Type(strings.TrimSpace(types[0])).Column(); err != nil {
+		if col.keys, err = Type(strings.TrimSpace(types[0])).Column(col.name, tz); err != nil {
 			return nil, err
 		}
-		if col.values, err = Type(strings.TrimSpace(types[1])).Column(); err != nil {
+		if col.values, err = Type(strings.TrimSpace(types[1])).Column(col.name, tz); err != nil {
 			return nil, err
 		}
 		col.scanType = reflect.MapOf(
@@ -63,30 +80,35 @@ func (col *Map) ScanType() reflect.Type {
 }
 
 func (col *Map) Rows() int {
-	return len(col.offsets)
+	return col.offsets.col.Rows()
 }
 
-func (col *Map) Row(i int, ptr bool) interface{} {
+func (col *Map) Row(i int, ptr bool) any {
 	return col.row(i).Interface()
 }
 
-func (col *Map) ScanRow(dest interface{}, i int) error {
+func (col *Map) ScanRow(dest any, i int) error {
 	value := reflect.Indirect(reflect.ValueOf(dest))
-	if value.Type() != col.scanType {
-		return &ColumnConverterError{
-			Op:   "ScanRow",
-			To:   fmt.Sprintf("%T", dest),
-			From: string(col.chType),
-			Hint: fmt.Sprintf("try using %s", col.scanType),
-		}
-	}
-	{
+	if value.Type() == col.scanType {
 		value.Set(col.row(i))
+		return nil
 	}
-	return nil
+	if om, ok := dest.(OrderedMap); ok {
+		keys, values := col.orderedRow(i)
+		for i := range keys {
+			om.Put(keys[i], values[i])
+		}
+		return nil
+	}
+	return &ColumnConverterError{
+		Op:   "ScanRow",
+		To:   fmt.Sprintf("%T", dest),
+		From: string(col.chType),
+		Hint: fmt.Sprintf("try using %s", col.scanType),
+	}
 }
 
-func (col *Map) Append(v interface{}) (nulls []uint8, err error) {
+func (col *Map) Append(v any) (nulls []uint8, err error) {
 	value := reflect.Indirect(reflect.ValueOf(v))
 	if value.Kind() != reflect.Slice {
 		return nil, &ColumnConverterError{
@@ -104,73 +126,97 @@ func (col *Map) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (col *Map) AppendRow(v interface{}) error {
+func (col *Map) AppendRow(v any) error {
 	value := reflect.Indirect(reflect.ValueOf(v))
-	if value.Type() != col.scanType {
-		return &ColumnConverterError{
-			Op:   "AppendRow",
-			To:   string(col.chType),
-			From: fmt.Sprintf("%T", v),
-			Hint: fmt.Sprintf("try using %s", col.scanType),
+	if value.Type() == col.scanType {
+		var (
+			size int64
+			iter = value.MapRange()
+		)
+		for iter.Next() {
+			size++
+			if err := col.keys.AppendRow(iter.Key().Interface()); err != nil {
+				return err
+			}
+			if err := col.values.AppendRow(iter.Value().Interface()); err != nil {
+				return err
+			}
 		}
+		var prev int64
+		if n := col.offsets.Rows(); n != 0 {
+			prev = col.offsets.col.Row(n - 1)
+		}
+		col.offsets.col.Append(prev + size)
+		return nil
 	}
-	var (
-		size int64
-		iter = value.MapRange()
-	)
-	for iter.Next() {
-		size++
-		if err := col.keys.AppendRow(iter.Key().Interface()); err != nil {
+
+	if orderedMap, ok := v.(OrderedMap); ok {
+		var size int64
+		for key := range orderedMap.Keys() {
+			value, ok := orderedMap.Get(key)
+			if !ok {
+				return fmt.Errorf("ordered map has key %v but no corresponding value", key)
+			}
+			size++
+			if err := col.keys.AppendRow(key); err != nil {
+				return err
+			}
+			if err := col.values.AppendRow(value); err != nil {
+				return err
+			}
+		}
+		var prev int64
+		if n := col.offsets.Rows(); n != 0 {
+			prev = col.offsets.col.Row(n - 1)
+		}
+		col.offsets.col.Append(prev + size)
+		return nil
+	}
+
+	return &ColumnConverterError{
+		Op:   "AppendRow",
+		To:   string(col.chType),
+		From: fmt.Sprintf("%T", v),
+		Hint: fmt.Sprintf("try using %s", col.scanType),
+	}
+
+}
+
+func (col *Map) Decode(reader *proto.Reader, rows int) error {
+	if err := col.offsets.col.DecodeColumn(reader, rows); err != nil {
+		return err
+	}
+	if i := col.offsets.Rows(); i != 0 {
+		size := int(col.offsets.col.Row(i - 1))
+		if err := col.keys.Decode(reader, size); err != nil {
 			return err
 		}
-		if err := col.values.AppendRow(iter.Value().Interface()); err != nil {
-			return err
-		}
+		return col.values.Decode(reader, size)
 	}
-	var prev int64
-	if n := len(col.offsets); n != 0 {
-		prev = col.offsets[n-1]
-	}
-	col.offsets = append(col.offsets, prev+size)
 	return nil
 }
 
-func (col *Map) Decode(decoder *binary.Decoder, rows int) error {
-	if err := col.offsets.Decode(decoder, rows); err != nil {
-		return err
-	}
-	size := int(col.offsets[len(col.offsets)-1])
-	if err := col.keys.Decode(decoder, size); err != nil {
-		return err
-	}
-	return col.values.Decode(decoder, size)
+func (col *Map) Encode(buffer *proto.Buffer) {
+	col.offsets.col.EncodeColumn(buffer)
+	col.keys.Encode(buffer)
+	col.values.Encode(buffer)
 }
 
-func (col *Map) Encode(encoder *binary.Encoder) error {
-	if err := col.offsets.Encode(encoder); err != nil {
-		return err
-	}
-	if err := col.keys.Encode(encoder); err != nil {
-		return err
-	}
-	return col.values.Encode(encoder)
-}
-
-func (col *Map) ReadStatePrefix(decoder *binary.Decoder) error {
+func (col *Map) ReadStatePrefix(reader *proto.Reader) error {
 	if serialize, ok := col.keys.(CustomSerialization); ok {
-		if err := serialize.ReadStatePrefix(decoder); err != nil {
+		if err := serialize.ReadStatePrefix(reader); err != nil {
 			return err
 		}
 	}
 	if serialize, ok := col.values.(CustomSerialization); ok {
-		if err := serialize.ReadStatePrefix(decoder); err != nil {
+		if err := serialize.ReadStatePrefix(reader); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (col *Map) WriteStatePrefix(encoder *binary.Encoder) error {
+func (col *Map) WriteStatePrefix(encoder *proto.Buffer) error {
 	if serialize, ok := col.keys.(CustomSerialization); ok {
 		if err := serialize.WriteStatePrefix(encoder); err != nil {
 			return err
@@ -190,10 +236,10 @@ func (col *Map) row(n int) reflect.Value {
 		value = reflect.MakeMap(col.scanType)
 	)
 	if n != 0 {
-		prev = col.offsets[n-1]
+		prev = col.offsets.col.Row(n - 1)
 	}
 	var (
-		size = int(col.offsets[n] - prev)
+		size = int(col.offsets.col.Row(n) - prev)
 		from = int(prev)
 	)
 	for next := 0; next < size; next++ {
@@ -203,6 +249,24 @@ func (col *Map) row(n int) reflect.Value {
 		)
 	}
 	return value
+}
+
+func (col *Map) orderedRow(n int) ([]any, []any) {
+	var prev int64
+	if n != 0 {
+		prev = col.offsets.col.Row(n - 1)
+	}
+	var (
+		size = int(col.offsets.col.Row(n) - prev)
+		from = int(prev)
+	)
+	keys := make([]any, size)
+	values := make([]any, size)
+	for next := 0; next < size; next++ {
+		keys[next] = col.keys.Row(from+next, false)
+		values[next] = col.values.Row(from+next, false)
+	}
+	return keys, values
 }
 
 var (

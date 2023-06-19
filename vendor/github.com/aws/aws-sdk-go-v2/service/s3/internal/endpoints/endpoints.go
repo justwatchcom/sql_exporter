@@ -196,6 +196,15 @@ var defaultPartitions = endpoints.Partitions{
 				Hostname: "s3.dualstack.ap-south-1.amazonaws.com",
 			},
 			endpoints.EndpointKey{
+				Region: "ap-south-2",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "ap-south-2",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.ap-south-2.amazonaws.com",
+			},
+			endpoints.EndpointKey{
 				Region: "ap-southeast-1",
 			}: endpoints.Endpoint{
 				Hostname:          "s3.ap-southeast-1.amazonaws.com",
@@ -220,6 +229,24 @@ var defaultPartitions = endpoints.Partitions{
 			}: {
 				Hostname:          "s3.dualstack.ap-southeast-2.amazonaws.com",
 				SignatureVersions: []string{"s3", "s3v4"},
+			},
+			endpoints.EndpointKey{
+				Region: "ap-southeast-3",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "ap-southeast-3",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.ap-southeast-3.amazonaws.com",
+			},
+			endpoints.EndpointKey{
+				Region: "ap-southeast-4",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "ap-southeast-4",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.ap-southeast-4.amazonaws.com",
 			},
 			endpoints.EndpointKey{
 				Region: "aws-global",
@@ -261,6 +288,15 @@ var defaultPartitions = endpoints.Partitions{
 				Hostname: "s3.dualstack.eu-central-1.amazonaws.com",
 			},
 			endpoints.EndpointKey{
+				Region: "eu-central-2",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "eu-central-2",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.eu-central-2.amazonaws.com",
+			},
+			endpoints.EndpointKey{
 				Region: "eu-north-1",
 			}: endpoints.Endpoint{},
 			endpoints.EndpointKey{
@@ -277,6 +313,15 @@ var defaultPartitions = endpoints.Partitions{
 				Variant: endpoints.DualStackVariant,
 			}: {
 				Hostname: "s3.dualstack.eu-south-1.amazonaws.com",
+			},
+			endpoints.EndpointKey{
+				Region: "eu-south-2",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "eu-south-2",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.eu-south-2.amazonaws.com",
 			},
 			endpoints.EndpointKey{
 				Region: "eu-west-1",
@@ -353,6 +398,15 @@ var defaultPartitions = endpoints.Partitions{
 					Region: "us-west-2",
 				},
 				Deprecated: aws.TrueTernary,
+			},
+			endpoints.EndpointKey{
+				Region: "me-central-1",
+			}: endpoints.Endpoint{},
+			endpoints.EndpointKey{
+				Region:  "me-central-1",
+				Variant: endpoints.DualStackVariant,
+			}: {
+				Hostname: "s3.dualstack.me-central-1.amazonaws.com",
 			},
 			endpoints.EndpointKey{
 				Region: "me-south-1",
@@ -788,6 +842,31 @@ func GetDNSSuffix(id string, options Options) (string, error) {
 
 	default:
 		return "", fmt.Errorf("unknown partition")
+
+	}
+}
+
+// GetDNSSuffixFromRegion returns the DNS suffix for the provided region and
+// options.
+func GetDNSSuffixFromRegion(region string, options Options) (string, error) {
+	switch {
+	case partitionRegexp.Aws.MatchString(region):
+		return GetDNSSuffix("aws", options)
+
+	case partitionRegexp.AwsCn.MatchString(region):
+		return GetDNSSuffix("aws-cn", options)
+
+	case partitionRegexp.AwsIso.MatchString(region):
+		return GetDNSSuffix("aws-iso", options)
+
+	case partitionRegexp.AwsIsoB.MatchString(region):
+		return GetDNSSuffix("aws-iso-b", options)
+
+	case partitionRegexp.AwsUsGov.MatchString(region):
+		return GetDNSSuffix("aws-us-gov", options)
+
+	default:
+		return GetDNSSuffix("aws", options)
 
 	}
 }

@@ -51,7 +51,7 @@ func (sr *snowflakeRestful) getAsync(
 	resType := getResultType(ctx)
 	var errChannel chan error
 	sfError := &SnowflakeError{
-		Number: -1,
+		Number: ErrAsync,
 	}
 	if resType == execResultType {
 		errChannel = res.errChannel
@@ -68,7 +68,6 @@ func (sr *snowflakeRestful) getAsync(
 		logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
 		sfError.Message = err.Error()
 		errChannel <- sfError
-		close(errChannel)
 		return err
 	}
 	if resp.Body != nil {
@@ -82,7 +81,6 @@ func (sr *snowflakeRestful) getAsync(
 		logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
 		sfError.Message = err.Error()
 		errChannel <- sfError
-		close(errChannel)
 		return err
 	}
 
@@ -99,13 +97,11 @@ func (sr *snowflakeRestful) getAsync(
 				r, err := sc.handleMultiExec(ctx, respd.Data)
 				if err != nil {
 					res.errChannel <- err
-					close(errChannel)
 					return err
 				}
 				res.affectedRows, err = r.RowsAffected()
 				if err != nil {
 					res.errChannel <- err
-					close(errChannel)
 					return err
 				}
 			}
@@ -117,7 +113,6 @@ func (sr *snowflakeRestful) getAsync(
 			if isMultiStmt(&respd.Data) {
 				if err = sc.handleMultiQuery(ctx, respd.Data, rows); err != nil {
 					rows.errChannel <- err
-					close(errChannel)
 					return err
 				}
 			} else {

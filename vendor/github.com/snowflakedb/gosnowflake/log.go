@@ -12,16 +12,16 @@ import (
 	"time"
 )
 
-//SFSessionIDKey is context key of session id
+// SFSessionIDKey is context key of session id
 const SFSessionIDKey contextKey = "LOG_SESSION_ID"
 
-//SFSessionUserKey is context key of  user id of a session
+// SFSessionUserKey is context key of  user id of a session
 const SFSessionUserKey contextKey = "LOG_USER"
 
-//LogKeys these keys in context should be included in logging messages when using logger.WithContext
+// LogKeys these keys in context should be included in logging messages when using logger.WithContext
 var LogKeys = [...]contextKey{SFSessionIDKey, SFSessionUserKey}
 
-//SFLogger Snowflake logger interface to expose FieldLogger defined in logrus
+// SFLogger Snowflake logger interface to expose FieldLogger defined in logrus
 type SFLogger interface {
 	rlog.Ext1FieldLogger
 	SetLogLevel(level string) error
@@ -29,7 +29,7 @@ type SFLogger interface {
 	SetOutput(output io.Writer)
 }
 
-//SFCallerPrettyfier to provide base file name and function name from calling frame used in SFLogger
+// SFCallerPrettyfier to provide base file name and function name from calling frame used in SFLogger
 func SFCallerPrettyfier(frame *runtime.Frame) (string, string) {
 	return path.Base(frame.Function), fmt.Sprintf("%s:%d", path.Base(frame.File), frame.Line)
 }
@@ -38,7 +38,7 @@ type defaultLogger struct {
 	inner *rlog.Logger
 }
 
-//SetLogLevel set logging level for calling defaultLogger
+// SetLogLevel set logging level for calling defaultLogger
 func (log *defaultLogger) SetLogLevel(level string) error {
 	actualLevel, err := rlog.ParseLevel(level)
 	if err != nil {
@@ -48,13 +48,13 @@ func (log *defaultLogger) SetLogLevel(level string) error {
 	return nil
 }
 
-//WithContext return Entry to include fields in context
+// WithContext return Entry to include fields in context
 func (log *defaultLogger) WithContext(ctx context.Context) *rlog.Entry {
 	fields := context2Fields(ctx)
 	return log.inner.WithFields(*fields)
 }
 
-//CreateDefaultLogger return a new instance of SFLogger with default config
+// CreateDefaultLogger return a new instance of SFLogger with default config
 func CreateDefaultLogger() SFLogger {
 	var rLogger = rlog.New()
 	var formatter = rlog.TextFormatter{CallerPrettyfier: SFCallerPrettyfier}

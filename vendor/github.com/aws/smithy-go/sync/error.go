@@ -51,4 +51,3 @@ func (e *OnceErr) SetError(err error) {
 func (e *OnceErr) ErrorSet() <-chan struct{} {
 	return e.ch
 }
-

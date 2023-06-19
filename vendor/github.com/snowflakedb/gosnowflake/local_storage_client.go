@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -97,11 +96,11 @@ func (util *localUtil) downloadOneFile(meta *fileMetadata) error {
 		}
 	}
 
-	data, err := ioutil.ReadFile(fullSrcFileName)
+	data, err := os.ReadFile(fullSrcFileName)
 	if err != nil {
 		return err
 	}
-	if err = ioutil.WriteFile(fullDstFileName, data, os.ModePerm); err != nil {
+	if err = os.WriteFile(fullDstFileName, data, os.ModePerm); err != nil {
 		return err
 	}
 	fi, err := os.Stat(fullDstFileName)

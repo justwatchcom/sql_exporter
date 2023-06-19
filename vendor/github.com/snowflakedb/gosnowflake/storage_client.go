@@ -98,7 +98,10 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 			}
 		}
 		if meta.overwrite || meta.resStatus == notFoundFile {
-			utilClass.uploadFile(dataFile, meta, encryptMeta, maxConcurrency, meta.options.MultiPartThreshold)
+			err := utilClass.uploadFile(dataFile, meta, encryptMeta, maxConcurrency, meta.options.MultiPartThreshold)
+			if err != nil {
+				logger.Debugf("Error uploading %v. err: %v", dataFile, err)
+			}
 		}
 		if meta.resStatus == uploaded || meta.resStatus == renewToken || meta.resStatus == renewPresignedURL {
 			return nil
@@ -223,23 +226,6 @@ func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 				meta.dstFileSize = fi.Size()
 			}
 			return nil
-		} else if meta.resStatus == renewPresignedURL {
-			return nil
-		} else if meta.resStatus == renewToken {
-			return nil
-		} else if meta.resStatus == needRetryWithLowerConcurrency {
-			maxConcurrency = meta.parallel - int64(retry)*meta.parallel/int64(maxRetry)
-			maxConcurrency = int64Max(defaultConcurrency, maxConcurrency)
-			meta.lastMaxConcurrency = int(maxConcurrency)
-			if !meta.noSleepingTime {
-				sleepingTime := intMin(int(math.Exp2(float64(retry))), 16)
-				time.Sleep(time.Duration(sleepingTime) * time.Second)
-			}
-		} else if meta.resStatus == needRetry {
-			if !meta.noSleepingTime {
-				sleepingTime := intMin(int(math.Exp2(float64(retry))), 16)
-				time.Sleep(time.Duration(sleepingTime) * time.Second)
-			}
 		}
 		lastErr = meta.lastError
 	}

@@ -88,6 +88,7 @@ const (
 	BucketLocationConstraintApSouth1     BucketLocationConstraint = "ap-south-1"
 	BucketLocationConstraintApSoutheast1 BucketLocationConstraint = "ap-southeast-1"
 	BucketLocationConstraintApSoutheast2 BucketLocationConstraint = "ap-southeast-2"
+	BucketLocationConstraintApSoutheast3 BucketLocationConstraint = "ap-southeast-3"
 	BucketLocationConstraintCaCentral1   BucketLocationConstraint = "ca-central-1"
 	BucketLocationConstraintCnNorth1     BucketLocationConstraint = "cn-north-1"
 	BucketLocationConstraintCnNorthwest1 BucketLocationConstraint = "cn-northwest-1"
@@ -120,6 +121,7 @@ func (BucketLocationConstraint) Values() []BucketLocationConstraint {
 		"ap-south-1",
 		"ap-southeast-1",
 		"ap-southeast-2",
+		"ap-southeast-3",
 		"ca-central-1",
 		"cn-north-1",
 		"cn-northwest-1",
@@ -175,6 +177,44 @@ func (BucketVersioningStatus) Values() []BucketVersioningStatus {
 	return []BucketVersioningStatus{
 		"Enabled",
 		"Suspended",
+	}
+}
+
+type ChecksumAlgorithm string
+
+// Enum values for ChecksumAlgorithm
+const (
+	ChecksumAlgorithmCrc32  ChecksumAlgorithm = "CRC32"
+	ChecksumAlgorithmCrc32c ChecksumAlgorithm = "CRC32C"
+	ChecksumAlgorithmSha1   ChecksumAlgorithm = "SHA1"
+	ChecksumAlgorithmSha256 ChecksumAlgorithm = "SHA256"
+)
+
+// Values returns all known values for ChecksumAlgorithm. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (ChecksumAlgorithm) Values() []ChecksumAlgorithm {
+	return []ChecksumAlgorithm{
+		"CRC32",
+		"CRC32C",
+		"SHA1",
+		"SHA256",
+	}
+}
+
+type ChecksumMode string
+
+// Enum values for ChecksumMode
+const (
+	ChecksumModeEnabled ChecksumMode = "ENABLED"
+)
+
+// Values returns all known values for ChecksumMode. Note that this can be expanded
+// in the future, and so it is only as up to date as the client. The ordering of
+// this slice is not guaranteed to be stable across updates.
+func (ChecksumMode) Values() []ChecksumMode {
+	return []ChecksumMode{
+		"ENABLED",
 	}
 }
 
@@ -257,6 +297,16 @@ func (Event) Values() []Event {
 		"s3:Replication:OperationNotTracked",
 		"s3:Replication:OperationMissedThreshold",
 		"s3:Replication:OperationReplicatedAfterThreshold",
+		"s3:ObjectRestore:Delete",
+		"s3:LifecycleTransition",
+		"s3:IntelligentTiering",
+		"s3:ObjectAcl:Put",
+		"s3:LifecycleExpiration:*",
+		"s3:LifecycleExpiration:Delete",
+		"s3:LifecycleExpiration:DeleteMarkerCreated",
+		"s3:ObjectTagging:*",
+		"s3:ObjectTagging:Put",
+		"s3:ObjectTagging:Delete",
 	}
 }
 
@@ -460,6 +510,7 @@ const (
 	InventoryOptionalFieldObjectLockLegalHoldStatus    InventoryOptionalField = "ObjectLockLegalHoldStatus"
 	InventoryOptionalFieldIntelligentTieringAccessTier InventoryOptionalField = "IntelligentTieringAccessTier"
 	InventoryOptionalFieldBucketKeyStatus              InventoryOptionalField = "BucketKeyStatus"
+	InventoryOptionalFieldChecksumAlgorithm            InventoryOptionalField = "ChecksumAlgorithm"
 )
 
 // Values returns all known values for InventoryOptionalField. Note that this can
@@ -479,6 +530,7 @@ func (InventoryOptionalField) Values() []InventoryOptionalField {
 		"ObjectLockLegalHoldStatus",
 		"IntelligentTieringAccessTier",
 		"BucketKeyStatus",
+		"ChecksumAlgorithm",
 	}
 }
 
@@ -569,6 +621,30 @@ func (MFADeleteStatus) Values() []MFADeleteStatus {
 	return []MFADeleteStatus{
 		"Enabled",
 		"Disabled",
+	}
+}
+
+type ObjectAttributes string
+
+// Enum values for ObjectAttributes
+const (
+	ObjectAttributesEtag         ObjectAttributes = "ETag"
+	ObjectAttributesChecksum     ObjectAttributes = "Checksum"
+	ObjectAttributesObjectParts  ObjectAttributes = "ObjectParts"
+	ObjectAttributesStorageClass ObjectAttributes = "StorageClass"
+	ObjectAttributesObjectSize   ObjectAttributes = "ObjectSize"
+)
+
+// Values returns all known values for ObjectAttributes. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (ObjectAttributes) Values() []ObjectAttributes {
+	return []ObjectAttributes{
+		"ETag",
+		"Checksum",
+		"ObjectParts",
+		"StorageClass",
+		"ObjectSize",
 	}
 }
 
@@ -676,6 +752,7 @@ type ObjectOwnership string
 const (
 	ObjectOwnershipBucketOwnerPreferred ObjectOwnership = "BucketOwnerPreferred"
 	ObjectOwnershipObjectWriter         ObjectOwnership = "ObjectWriter"
+	ObjectOwnershipBucketOwnerEnforced  ObjectOwnership = "BucketOwnerEnforced"
 )
 
 // Values returns all known values for ObjectOwnership. Note that this can be
@@ -685,6 +762,7 @@ func (ObjectOwnership) Values() []ObjectOwnership {
 	return []ObjectOwnership{
 		"BucketOwnerPreferred",
 		"ObjectWriter",
+		"BucketOwnerEnforced",
 	}
 }
 
@@ -700,6 +778,7 @@ const (
 	ObjectStorageClassIntelligentTiering ObjectStorageClass = "INTELLIGENT_TIERING"
 	ObjectStorageClassDeepArchive        ObjectStorageClass = "DEEP_ARCHIVE"
 	ObjectStorageClassOutposts           ObjectStorageClass = "OUTPOSTS"
+	ObjectStorageClassGlacierIr          ObjectStorageClass = "GLACIER_IR"
 )
 
 // Values returns all known values for ObjectStorageClass. Note that this can be
@@ -715,6 +794,7 @@ func (ObjectStorageClass) Values() []ObjectStorageClass {
 		"INTELLIGENT_TIERING",
 		"DEEP_ARCHIVE",
 		"OUTPOSTS",
+		"GLACIER_IR",
 	}
 }
 
@@ -1000,6 +1080,7 @@ const (
 	StorageClassGlacier            StorageClass = "GLACIER"
 	StorageClassDeepArchive        StorageClass = "DEEP_ARCHIVE"
 	StorageClassOutposts           StorageClass = "OUTPOSTS"
+	StorageClassGlacierIr          StorageClass = "GLACIER_IR"
 )
 
 // Values returns all known values for StorageClass. Note that this can be expanded
@@ -1015,6 +1096,7 @@ func (StorageClass) Values() []StorageClass {
 		"GLACIER",
 		"DEEP_ARCHIVE",
 		"OUTPOSTS",
+		"GLACIER_IR",
 	}
 }
 
@@ -1082,6 +1164,7 @@ const (
 	TransitionStorageClassOnezoneIa          TransitionStorageClass = "ONEZONE_IA"
 	TransitionStorageClassIntelligentTiering TransitionStorageClass = "INTELLIGENT_TIERING"
 	TransitionStorageClassDeepArchive        TransitionStorageClass = "DEEP_ARCHIVE"
+	TransitionStorageClassGlacierIr          TransitionStorageClass = "GLACIER_IR"
 )
 
 // Values returns all known values for TransitionStorageClass. Note that this can
@@ -1094,6 +1177,7 @@ func (TransitionStorageClass) Values() []TransitionStorageClass {
 		"ONEZONE_IA",
 		"INTELLIGENT_TIERING",
 		"DEEP_ARCHIVE",
+		"GLACIER_IR",
 	}
 }
 

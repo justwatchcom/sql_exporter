@@ -11,3 +11,6 @@ wss-golang-agent.config
 wss-unified-agent.jar
 whitesource/
 *.swp
+
+# exclude vendor
+vendor

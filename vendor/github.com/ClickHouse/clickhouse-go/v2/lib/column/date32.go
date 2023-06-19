@@ -18,11 +18,11 @@
 package column
 
 import (
+	"database/sql"
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 	"time"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
 var (
@@ -31,10 +31,20 @@ var (
 )
 
 type Date32 struct {
-	values Int32
+	col      proto.ColDate32
+	name     string
+	location *time.Location
 }
 
-func (dt *Date32) Type() Type {
+func (col *Date32) Reset() {
+	col.col.Reset()
+}
+
+func (col *Date32) Name() string {
+	return col.name
+}
+
+func (col *Date32) Type() Type {
 	return "Date32"
 }
 
@@ -42,26 +52,31 @@ func (col *Date32) ScanType() reflect.Type {
 	return scanTypeTime
 }
 
-func (dt *Date32) Rows() int {
-	return len(dt.values)
+func (col *Date32) Rows() int {
+	return col.col.Rows()
 }
 
-func (dt *Date32) Row(i int, ptr bool) interface{} {
-	value := dt.row(i)
+func (col *Date32) Row(i int, ptr bool) any {
+	value := col.row(i)
 	if ptr {
 		return &value
 	}
 	return value
 }
 
-func (dt *Date32) ScanRow(dest interface{}, row int) error {
+func (col *Date32) ScanRow(dest any, row int) error {
 	switch d := dest.(type) {
 	case *time.Time:
-		*d = dt.row(row)
+		*d = col.row(row)
 	case **time.Time:
 		*d = new(time.Time)
-		**d = dt.row(row)
+		**d = col.row(row)
+	case *sql.NullTime:
+		return d.Scan(col.row(row))
 	default:
+		if scan, ok := dest.(sql.Scanner); ok {
+			return scan.Scan(col.row(row))
+		}
 		return &ColumnConverterError{
 			Op:   "ScanRow",
 			To:   fmt.Sprintf("%T", dest),
@@ -71,17 +86,15 @@ func (dt *Date32) ScanRow(dest interface{}, row int) error {
 	return nil
 }
 
-func (dt *Date32) Append(v interface{}) (nulls []uint8, err error) {
+func (col *Date32) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []time.Time:
-		in := make([]int32, 0, len(v))
 		for _, t := range v {
 			if err := dateOverflow(minDate32, maxDate32, t, "2006-01-02"); err != nil {
 				return nil, err
 			}
-			in = append(in, timeToInt32(t))
+			col.col.Append(t)
 		}
-		dt.values, nulls = append(dt.values, in...), make([]uint8, len(v))
 	case []*time.Time:
 		nulls = make([]uint8, len(v))
 		for i, v := range v {
@@ -90,9 +103,46 @@ func (dt *Date32) Append(v interface{}) (nulls []uint8, err error) {
 				if err := dateOverflow(minDate32, maxDate32, *v, "2006-01-02"); err != nil {
 					return nil, err
 				}
-				dt.values = append(dt.values, timeToInt32(*v))
+				col.col.Append(*v)
 			default:
-				dt.values, nulls[i] = append(dt.values, 0), 1
+				nulls[i] = 1
+				col.col.Append(time.Time{})
+			}
+		}
+	case []sql.NullTime:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			col.AppendRow(v[i])
+		}
+	case []*sql.NullTime:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			if v[i] == nil {
+				nulls[i] = 1
+			}
+			col.AppendRow(v[i])
+		}
+	case []string:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			value, err := col.parseDate(v[i])
+			if err != nil {
+				return nil, err
+			}
+			col.col.Append(value)
+		}
+	case []*string:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			if v[i] == nil || *v[i] == "" {
+				nulls[i] = 1
+				col.col.Append(time.Time{})
+			} else {
+				value, err := col.parseDate(*v[i])
+				if err != nil {
+					return nil, err
+				}
+				col.col.Append(value)
 			}
 		}
 	default:
@@ -105,47 +155,90 @@ func (dt *Date32) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (dt *Date32) AppendRow(v interface{}) error {
-	var date int32
+func (col *Date32) AppendRow(v any) error {
 	switch v := v.(type) {
 	case time.Time:
 		if err := dateOverflow(minDate32, maxDate32, v, "2006-01-02"); err != nil {
 			return err
 		}
-		date = timeToInt32(v)
+		col.col.Append(v)
 	case *time.Time:
-		if v != nil {
+		switch {
+		case v != nil:
 			if err := dateOverflow(minDate32, maxDate32, *v, "2006-01-02"); err != nil {
 				return err
 			}
-			date = timeToInt32(*v)
+			col.col.Append(*v)
+		default:
+			col.col.Append(time.Time{})
+		}
+	case sql.NullTime:
+		switch v.Valid {
+		case true:
+			col.col.Append(v.Time)
+		default:
+			col.col.Append(time.Time{})
+		}
+	case *sql.NullTime:
+		switch v.Valid {
+		case true:
+			col.col.Append(v.Time)
+		default:
+			col.col.Append(time.Time{})
 		}
 	case nil:
+		col.col.Append(time.Time{})
+	case string:
+		value, err := col.parseDate(v)
+		if err != nil {
+			return err
+		}
+		col.col.Append(value)
+	case *string:
+		if v == nil || *v == "" {
+			col.col.Append(time.Time{})
+		} else {
+			value, err := col.parseDate(*v)
+			if err != nil {
+				return err
+			}
+			col.col.Append(value)
+		}
 	default:
+		s, ok := v.(fmt.Stringer)
+		if ok {
+			return col.AppendRow(s.String())
+		}
 		return &ColumnConverterError{
 			Op:   "AppendRow",
 			To:   "Date32",
 			From: fmt.Sprintf("%T", v),
 		}
 	}
-	dt.values = append(dt.values, date)
 	return nil
 }
 
-func (dt *Date32) Decode(decoder *binary.Decoder, rows int) error {
-	return dt.values.Decode(decoder, rows)
+func (col *Date32) parseDate(value string) (datetime time.Time, err error) {
+	return parseDate(value, minDate32, maxDate32, col.location)
 }
 
-func (dt *Date32) Encode(encoder *binary.Encoder) error {
-	return dt.values.Encode(encoder)
+func (col *Date32) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
 }
 
-func (dt *Date32) row(i int) time.Time {
-	return time.Unix((int64(dt.values[i]) * secInDay), 0).UTC()
+func (col *Date32) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
 }
 
-func timeToInt32(t time.Time) int32 {
-	return int32(t.Unix() / secInDay)
+func (col *Date32) row(i int) time.Time {
+	t := col.col.Row(i)
+
+	if col.location != nil {
+		// proto.Date is normalized as time.Time with UTC timezone.
+		// We make sure Date return from ClickHouse matches server timezone or user defined location.
+		t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), col.location)
+	}
+	return t
 }
 
 var _ Interface = (*Date32)(nil)

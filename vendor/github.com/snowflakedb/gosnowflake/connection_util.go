@@ -14,7 +14,9 @@ import (
 )
 
 func (sc *snowflakeConn) isClientSessionKeepAliveEnabled() bool {
+	paramsMutex.Lock()
 	v, ok := sc.cfg.Params[sessionClientSessionKeepAlive]
+	paramsMutex.Unlock()
 	if !ok {
 		return false
 	}
@@ -39,7 +41,9 @@ func (sc *snowflakeConn) stopHeartBeat() {
 }
 
 func (sc *snowflakeConn) getArrayBindStageThreshold() int {
+	paramsMutex.Lock()
 	v, ok := sc.cfg.Params[sessionArrayBindStageThreshold]
+	paramsMutex.Unlock()
 	if !ok {
 		return 0
 	}
@@ -60,9 +64,11 @@ func (sc *snowflakeConn) connectionTelemetry(cfg *Config) {
 		},
 		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
 	}
+	paramsMutex.Lock()
 	for k, v := range cfg.Params {
 		data.Message[k] = *v
 	}
+	paramsMutex.Unlock()
 	sc.telemetry.addLog(data)
 	sc.telemetry.sendBatch()
 }
@@ -150,7 +156,9 @@ func (sc *snowflakeConn) populateSessionParameters(parameters []nameValueParamet
 			}
 		}
 		logger.Debugf("parameter. name: %v, value: %v", param.Name, v)
+		paramsMutex.Lock()
 		sc.cfg.Params[strings.ToLower(param.Name)] = &v
+		paramsMutex.Unlock()
 	}
 }
 
@@ -219,7 +227,8 @@ func getResumeQueryID(ctx context.Context) (string, error) {
 		return strVal, &SnowflakeError{
 			Number:  ErrQueryIDFormat,
 			Message: "Invalid QID",
-			QueryID: strVal}
+			QueryID: strVal,
+		}
 	}
 	return strVal, nil
 }
@@ -230,7 +239,7 @@ func populateChunkDownloader(
 	ctx context.Context,
 	sc *snowflakeConn,
 	data execResponseData) chunkDownloader {
-	if useStreamDownloader(ctx) && data.QueryResultFormat == "json" {
+	if useStreamDownloader(ctx) && resultFormat(data.QueryResultFormat) == jsonFormat {
 		// stream chunk downloading only works for row based data formats, i.e. json
 		fetcher := &httpStreamChunkFetcher{
 			ctx:      ctx,
@@ -246,6 +255,7 @@ func populateChunkDownloader(
 	return &snowflakeChunkDownloader{
 		sc:                 sc,
 		ctx:                ctx,
+		pool:               getAllocator(ctx),
 		CurrentChunk:       make([]chunkRowType, len(data.RowSet)),
 		ChunkMetas:         data.Chunks,
 		Total:              data.Total,
