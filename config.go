@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -43,7 +43,7 @@ func Read(path string) (File, error) {
 	}
 	defer fh.Close()
 
-	buf, err := ioutil.ReadAll(fh)
+	buf, err := io.ReadAll(fh)
 	if err != nil {
 		return f, err
 	}
