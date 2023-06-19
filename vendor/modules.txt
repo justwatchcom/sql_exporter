@@ -4,8 +4,6 @@ github.com/99designs/go-keychain
 # github.com/99designs/keyring v1.2.2
 ## explicit; go 1.19
 github.com/99designs/keyring
-# github.com/Azure/azure-pipeline-go v0.2.3
-## explicit; go 1.14
 # github.com/Azure/azure-sdk-for-go/sdk/azcore v1.4.0
 ## explicit; go 1.18
 github.com/Azure/azure-sdk-for-go/sdk/azcore
@@ -46,8 +44,6 @@ github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/internal/shared
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/pageblob
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/service
-# github.com/Azure/azure-storage-blob-go v0.14.0
-## explicit; go 1.15
 # github.com/ClickHouse/ch-go v0.52.1
 ## explicit; go 1.18
 github.com/ClickHouse/ch-go/compress
@@ -66,17 +62,9 @@ github.com/ClickHouse/clickhouse-go/v2/resources
 # github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c
 ## explicit
 github.com/JohnCGriffin/overflow
-# github.com/Masterminds/semver v1.5.0
-## explicit
-# github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751
-## explicit
-# github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137
-## explicit; go 1.15
 # github.com/andybalholm/brotli v1.0.5
 ## explicit; go 1.12
 github.com/andybalholm/brotli
-# github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40
-## explicit; go 1.15
 # github.com/apache/arrow/go/v12 v12.0.0
 ## explicit; go 1.18
 github.com/apache/arrow/go/v12/arrow
@@ -331,10 +319,6 @@ github.com/golang/snappy
 # github.com/google/flatbuffers v23.1.21+incompatible
 ## explicit
 github.com/google/flatbuffers/go
-# github.com/google/go-github/v25 v25.1.3
-## explicit
-# github.com/google/go-querystring v1.1.0
-## explicit; go 1.10
 # github.com/google/uuid v1.3.0
 ## explicit
 github.com/google/uuid
@@ -374,8 +358,6 @@ github.com/klauspost/cpuid/v2
 github.com/lib/pq
 github.com/lib/pq/oid
 github.com/lib/pq/scram
-# github.com/mattn/go-ieproxy v0.0.1
-## explicit; go 1.14
 # github.com/matttproud/golang_protobuf_extensions v1.0.4
 ## explicit; go 1.9
 github.com/matttproud/golang_protobuf_extensions/pbutil
@@ -423,13 +405,9 @@ github.com/prometheus/common/version
 github.com/prometheus/procfs
 github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
-# github.com/prometheus/promu v0.14.0
-## explicit; go 1.18
 # github.com/robfig/cron/v3 v3.0.1
 ## explicit; go 1.12
 github.com/robfig/cron/v3
-# github.com/satori/go.uuid v1.2.0
-## explicit
 # github.com/segmentio/asm v1.2.0
 ## explicit; go 1.18
 github.com/segmentio/asm/bswap
@@ -470,8 +448,6 @@ go.opentelemetry.io/otel/internal/attribute
 # go.opentelemetry.io/otel/trace v1.13.0
 ## explicit; go 1.18
 go.opentelemetry.io/otel/trace
-# go.uber.org/atomic v1.11.0
-## explicit; go 1.18
 # golang.org/x/crypto v0.10.0
 ## explicit; go 1.17
 golang.org/x/crypto/md4
@@ -492,8 +468,6 @@ golang.org/x/net/html
 golang.org/x/net/html/atom
 golang.org/x/net/http/httpguts
 golang.org/x/net/idna
-# golang.org/x/oauth2 v0.9.0
-## explicit; go 1.17
 # golang.org/x/sync v0.2.0
 ## explicit
 golang.org/x/sync/errgroup
@@ -541,8 +515,6 @@ golang.org/x/tools/internal/typesinternal
 ## explicit; go 1.17
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
-# google.golang.org/appengine v1.6.7
-## explicit; go 1.11
 # google.golang.org/protobuf v1.30.0
 ## explicit; go 1.11
 google.golang.org/protobuf/encoding/prototext
@@ -573,8 +545,6 @@ google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
 google.golang.org/protobuf/types/descriptorpb
 google.golang.org/protobuf/types/known/timestamppb
-# gopkg.in/alecthomas/kingpin.v2 v2.2.6
-## explicit
 # gopkg.in/yaml.v2 v2.4.0
 ## explicit; go 1.15
 gopkg.in/yaml.v2
