@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,27 +21,30 @@ type authOKTARequest struct {
 }
 
 type authOKTAResponse struct {
-	CookieToken string `json:"cookieToken"`
+	CookieToken  string `json:"cookieToken"`
+	SessionToken string `json:"sessionToken"`
 }
 
 /*
 authenticateBySAML authenticates a user by SAML
 SAML Authentication
-1.  query GS to obtain IDP token and SSO url
-2.  IMPORTANT Client side validation:
-	validate both token url and sso url contains same prefix
-	(protocol + host + port) as the given authenticator url.
-	Explanation:
-	This provides a way for the user to 'authenticate' the IDP it is
-	sending his/her credentials to.  Without such a check, the user could
-	be coerced to provide credentials to an IDP impersonator.
-3.  query IDP token url to authenticate and retrieve access token
-4.  given access token, query IDP URL snowflake app to get SAML response
-5.  IMPORTANT Client side validation:
-	validate the post back url come back with the SAML response
-	contains the same prefix as the Snowflake's server url, which is the
-	intended destination url to Snowflake.
+ 1. query GS to obtain IDP token and SSO url
+ 2. IMPORTANT Client side validation:
+    validate both token url and sso url contains same prefix
+    (protocol + host + port) as the given authenticator url.
+    Explanation:
+    This provides a way for the user to 'authenticate' the IDP it is
+    sending his/her credentials to.  Without such a check, the user could
+    be coerced to provide credentials to an IDP impersonator.
+ 3. query IDP token url to authenticate and retrieve access token
+ 4. given access token, query IDP URL snowflake app to get SAML response
+ 5. IMPORTANT Client side validation:
+    validate the post back url come back with the SAML response
+    contains the same prefix as the Snowflake's server url, which is the
+    intended destination url to Snowflake.
+
 Explanation:
+
 	This emulates the behavior of IDP initiated login flow in the user
 	browser where the IDP instructs the browser to POST the SAML
 	assertion to the specific SP endpoint.  This is critical in
@@ -135,7 +138,13 @@ func authenticateBySAML(
 	logger.WithContext(ctx).Info("step 4: query IDP URL snowflake app to get SAML response")
 	params = &url.Values{}
 	params.Add("RelayState", "/some/deep/link")
-	params.Add("onetimetoken", respa.CookieToken)
+	var oneTimeToken string
+	if respa.SessionToken != "" {
+		oneTimeToken = respa.SessionToken
+	} else {
+		oneTimeToken = respa.CookieToken
+	}
+	params.Add("onetimetoken", oneTimeToken)
 
 	headers = make(map[string]string)
 	headers[httpHeaderAccept] = "*/*"
@@ -239,7 +248,7 @@ func postAuthSAML(
 			MessageArgs: []interface{}{resp.StatusCode, fullURL},
 		}
 	}
-	_, err = ioutil.ReadAll(resp.Body)
+	_, err = io.ReadAll(resp.Body)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
@@ -279,7 +288,7 @@ func postAuthOKTA(
 		}
 		return &respd, nil
 	}
-	_, err = ioutil.ReadAll(resp.Body)
+	_, err = io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
@@ -313,7 +322,7 @@ func getSSO(
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err

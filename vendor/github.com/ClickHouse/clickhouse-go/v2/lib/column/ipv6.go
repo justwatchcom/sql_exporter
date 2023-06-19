@@ -19,14 +19,23 @@ package column
 
 import (
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"net"
+	"net/netip"
 	"reflect"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
 type IPv6 struct {
-	data []byte
+	col  proto.ColIPv6
+	name string
+}
+
+func (col *IPv6) Reset() {
+	col.col.Reset()
+}
+
+func (col *IPv6) Name() string {
+	return col.name
 }
 
 func (col *IPv6) Type() Type {
@@ -38,10 +47,10 @@ func (col *IPv6) ScanType() reflect.Type {
 }
 
 func (col *IPv6) Rows() int {
-	return len(col.data) / net.IPv6len
+	return col.col.Rows()
 }
 
-func (col *IPv6) Row(i int, ptr bool) interface{} {
+func (col *IPv6) Row(i int, ptr bool) any {
 	value := col.row(i)
 	if ptr {
 		return &value
@@ -49,13 +58,33 @@ func (col *IPv6) Row(i int, ptr bool) interface{} {
 	return value
 }
 
-func (col *IPv6) ScanRow(dest interface{}, row int) error {
+func (col *IPv6) ScanRow(dest any, row int) error {
 	switch d := dest.(type) {
+	case *string:
+		*d = col.row(row).String()
+	case **string:
+		*d = new(string)
+		**d = col.row(row).String()
 	case *net.IP:
 		*d = col.row(row)
 	case **net.IP:
 		*d = new(net.IP)
 		**d = col.row(row)
+	case *[]byte:
+		*d = col.row(row)
+	case **[]byte:
+		*d = new([]byte)
+		**d = col.row(row)
+	case *proto.IPv6:
+		*d = col.col.Row(row)
+	case **proto.IPv6:
+		*d = new(proto.IPv6)
+		**d = col.col.Row(row)
+	case *[16]byte:
+		*d = col.col.Row(row)
+	case **[16]byte:
+		*d = new([16]byte)
+		**d = col.col.Row(row)
 	default:
 		return &ColumnConverterError{
 			Op:   "ScanRow",
@@ -66,34 +95,134 @@ func (col *IPv6) ScanRow(dest interface{}, row int) error {
 	return nil
 }
 
-func (col *IPv6) Append(v interface{}) (nulls []uint8, err error) {
+func strToIPV6(strIp string) (netip.Addr, error) {
+	ip, err := netip.ParseAddr(strIp)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return ip, nil
+}
+
+func (col *IPv6) AppendV6IPs(ips []netip.Addr) {
+	for i := range ips {
+		col.col.Append(proto.ToIPv6(ips[i]))
+	}
+}
+
+func (col *IPv6) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
+	case []string:
+		nulls = make([]uint8, len(v))
+		ips := make([]netip.Addr, len(v), len(v))
+		for i := range v {
+			ip, err := strToIPV6(v[i])
+			if err != nil {
+				return nulls, &ColumnConverterError{
+					Op:   "Append",
+					To:   "IPv6",
+					Hint: "invalid IP format",
+				}
+			}
+			ips[i] = ip
+		}
+		col.AppendV6IPs(ips)
+	case []*string:
+		nulls = make([]uint8, len(v))
+		ips := make([]netip.Addr, len(v), len(v))
+		for i := range v {
+			switch {
+			case v[i] != nil:
+				ip, err := strToIPV6(*v[i])
+				if err != nil {
+					return nulls, &ColumnConverterError{
+						Op:   "Append",
+						To:   "IPv6",
+						Hint: "invalid IP format",
+					}
+				}
+				ips[i] = ip
+			default:
+				ips[i] = netip.Addr{}
+				nulls[i] = 1
+			}
+		}
+		col.AppendV6IPs(ips)
+	case []netip.Addr:
+		nulls = make([]uint8, len(v))
+		for _, v := range v {
+			col.col.Append(proto.ToIPv6(v))
+		}
+	case []*netip.Addr:
+		nulls = make([]uint8, len(v))
+		for i, v := range v {
+			switch {
+			case v != nil:
+				col.col.Append(proto.ToIPv6(*v))
+			default:
+				nulls[i] = 1
+				col.col.Append([16]byte{})
+			}
+		}
 	case []net.IP:
 		nulls = make([]uint8, len(v))
 		for _, v := range v {
-			if len(v) != net.IPv6len {
-				return nil, &Error{
-					ColumnType: string(col.Type()),
-					Err:        fmt.Errorf("invalid size. expected %d got %d", net.IPv6len, len(v)),
-				}
-			}
-			col.data = append(col.data, v[:]...)
+			col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(v))))
 		}
 	case []*net.IP:
 		nulls = make([]uint8, len(v))
 		for i, v := range v {
 			switch {
 			case v != nil:
-				if len(*v) != net.IPv6len {
-					return nil, &Error{
-						ColumnType: string(col.Type()),
-						Err:        fmt.Errorf("invalid size. expected %d got %d", net.IPv6len, len(*v)),
-					}
-				}
-				tmp := *v
-				col.data = append(col.data, tmp[:]...)
+				col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(*v))))
 			default:
-				col.data, nulls[i] = append(col.data, make([]byte, net.IPv6len)...), 1
+				nulls[i] = 1
+				col.col.Append([16]byte{})
+			}
+		}
+	case [][]byte:
+		nulls = make([]uint8, len(v))
+		for _, v := range v {
+			col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(v))))
+		}
+	case []*[]byte:
+		nulls = make([]uint8, len(v))
+		for i, v := range v {
+			switch {
+			case v != nil:
+				col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(*v))))
+			default:
+				nulls[i] = 1
+				col.col.Append([16]byte{})
+			}
+		}
+	case [][16]byte:
+		for _, v := range v {
+			col.col.Append(v)
+		}
+	case []*[16]byte:
+		nulls = make([]uint8, len(v))
+		for i, v := range v {
+			switch {
+			case v != nil:
+				col.col.Append(*v)
+			default:
+				nulls[i] = 1
+				col.col.Append([16]byte{})
+			}
+		}
+	case []proto.IPv6:
+		for _, v := range v {
+			col.col.Append(v)
+		}
+	case []*proto.IPv6:
+		nulls = make([]uint8, len(v))
+		for i, v := range v {
+			switch {
+			case v != nil:
+				col.col.Append(*v)
+			default:
+				nulls[i] = 1
+				col.col.Append([16]byte{})
 			}
 		}
 	default:
@@ -106,20 +235,80 @@ func (col *IPv6) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (col *IPv6) AppendRow(v interface{}) error {
-	var ip net.IP
+func (col *IPv6) AppendRow(v any) (err error) {
 	switch v := v.(type) {
+	case string:
+		ip, err := strToIPV6(v)
+		if err != nil {
+			return &ColumnConverterError{
+				Op:   "Append",
+				To:   "IPv6",
+				Hint: "invalid IP format",
+			}
+		}
+		col.col.Append(ip.As16())
+	case *string:
+		switch {
+		case v != nil:
+			ip, err := strToIPV6(*v)
+			if err != nil {
+				return &ColumnConverterError{
+					Op:   "Append",
+					To:   "IPv6",
+					Hint: "invalid IP format",
+				}
+			}
+			col.col.Append(ip.As16())
+		default:
+			col.col.Append([16]byte{})
+		}
+	case netip.Addr:
+		col.col.Append(proto.ToIPv6(v))
+	case *netip.Addr:
+		switch {
+		case v != nil:
+			col.col.Append(proto.ToIPv6(*v))
+		default:
+			col.col.Append([16]byte{})
+		}
 	case net.IP:
-		ip = v
+		col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(v))))
 	case *net.IP:
 		switch {
 		case v != nil:
-			ip = *v
+			col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(*v))))
 		default:
-			ip = make(net.IP, net.IPv6len)
+			col.col.Append([16]byte{})
+		}
+	case []byte:
+		col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(v))))
+	case *[]byte:
+		switch {
+		case v != nil:
+			col.col.Append(proto.ToIPv6(netip.AddrFrom16(IPv6ToBytes(*v))))
+		default:
+			col.col.Append([16]byte{})
+		}
+	case [16]byte:
+		col.col.Append(v)
+	case *[16]byte:
+		switch {
+		case v != nil:
+			col.col.Append(*v)
+		default:
+			col.col.Append([16]byte{})
+		}
+	case proto.IPv6:
+		col.col.Append(v)
+	case *proto.IPv6:
+		switch {
+		case v != nil:
+			col.col.Append(*v)
+		default:
+			col.col.Append([16]byte{})
 		}
 	case nil:
-		ip = make(net.IP, net.IPv6len)
+		col.col.Append([16]byte{})
 	default:
 		return &ColumnConverterError{
 			Op:   "AppendRow",
@@ -127,27 +316,28 @@ func (col *IPv6) AppendRow(v interface{}) error {
 			From: fmt.Sprintf("%T", v),
 		}
 	}
-	if len(ip) != net.IPv6len {
-		return &Error{
-			ColumnType: string(col.Type()),
-			Err:        fmt.Errorf("invalid size. expected %d got %d", net.IPv6len, len(ip)),
-		}
+	return
+}
+
+func (col *IPv6) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
+}
+
+func (col *IPv6) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
+}
+
+func IPv6ToBytes(ip net.IP) [16]byte {
+	if len(ip) == 4 {
+		ip = ip.To16()
 	}
-	col.data = append(col.data, ip[:]...)
-	return nil
+	return [16]byte{ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7], ip[8], ip[9], ip[10], ip[11], ip[12], ip[13], ip[14], ip[15]}
 }
 
-func (col *IPv6) Decode(decoder *binary.Decoder, rows int) error {
-	col.data = make([]byte, net.IPv6len*rows)
-	return decoder.Raw(col.data)
-}
-
-func (col *IPv6) Encode(encoder *binary.Encoder) error {
-	return encoder.Raw(col.data)
-}
-
+// TODO: This should probably return an netip.Addr
 func (col *IPv6) row(i int) net.IP {
-	return col.data[i*net.IPv6len : (i+1)*net.IPv6len]
+	src := col.col.Row(i)
+	return src[:]
 }
 
 var _ Interface = (*IPv6)(nil)

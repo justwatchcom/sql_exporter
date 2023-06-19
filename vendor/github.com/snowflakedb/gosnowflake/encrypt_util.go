@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strconv"
 )
@@ -71,22 +70,35 @@ func encryptStream(
 
 	mode := cipher.NewCBCEncrypter(block, ivData)
 	cipherText := make([]byte, chunkSize)
+	chunk := make([]byte, chunkSize)
 
 	// encrypt file with CBC
+	padded := false
 	for {
-		chunk := make([]byte, chunkSize)
+		// read the stream buffer up to len(chunk) bytes into chunk
+		// note that all spaces in chunk may be used even if Read() returns n < len(chunk)
 		n, err := src.Read(chunk)
 		if n == 0 || err != nil {
 			break
-		} else if n%aes.BlockSize != 0 || n != chunkSize {
+		} else if n%aes.BlockSize != 0 {
+			// add padding to the end of the chunk and update the length n
 			chunk = padBytesLength(chunk[:n], aes.BlockSize)
+			n = len(chunk)
+			padded = true
 		}
-		mode.CryptBlocks(cipherText, chunk)
-		out.Write(cipherText[:len(chunk)])
-
+		// make sure only n bytes of chunk is used
+		mode.CryptBlocks(cipherText, chunk[:n])
+		out.Write(cipherText[:n])
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// add padding if not yet added
+	if !padded {
+		padding := bytes.Repeat([]byte(string(rune(aes.BlockSize))), aes.BlockSize)
+		mode.CryptBlocks(cipherText, padding)
+		out.Write(cipherText[:len(padding)])
 	}
 
 	// encrypt key with ECB
@@ -160,7 +172,7 @@ func encryptFile(
 	if chunkSize == 0 {
 		chunkSize = aes.BlockSize * 4 * 1024
 	}
-	tmpOutputFile, err := ioutil.TempFile(tmpDir, baseName(filename)+"#")
+	tmpOutputFile, err := os.CreateTemp(tmpDir, baseName(filename)+"#")
 	if err != nil {
 		return nil, "", err
 	}
@@ -203,7 +215,10 @@ func decryptFile(
 	if err = decryptECB(decryptedKey, keyBytes, decodedKey); err != nil {
 		return "", err
 	}
-	decryptedKey = paddingTrim(decryptedKey)
+	decryptedKey, err = paddingTrim(decryptedKey)
+	if err != nil {
+		return "", err
+	}
 
 	// decrypt file
 	block, err := aes.NewCipher(decryptedKey)
@@ -212,7 +227,7 @@ func decryptFile(
 	}
 	mode := cipher.NewCBCDecrypter(block, ivBytes)
 
-	tmpOutputFile, err := ioutil.TempFile(tmpDir, baseName(filename)+"#")
+	tmpOutputFile, err := os.CreateTemp(tmpDir, baseName(filename)+"#")
 	if err != nil {
 		return "", err
 	}
@@ -229,6 +244,10 @@ func decryptFile(
 		n, err := infile.Read(chunk)
 		if n == 0 || err != nil {
 			break
+		} else if n%aes.BlockSize != 0 {
+			// add padding to the end of the chunk and update the length n
+			chunk = padBytesLength(chunk[:n], aes.BlockSize)
+			n = len(chunk)
 		}
 		totalFileSize += n
 		chunk = chunk[:n]
@@ -272,9 +291,16 @@ func padBytesLength(src []byte, blockSize int) []byte {
 	return append(src, padText...)
 }
 
-func paddingTrim(src []byte) []byte {
+func paddingTrim(src []byte) ([]byte, error) {
 	unpadding := src[len(src)-1]
-	return src[:len(src)-int(unpadding)]
+	n := int(unpadding)
+	if n == 0 || n > len(src) {
+		return nil, &SnowflakeError{
+			Number:  ErrInvalidPadding,
+			Message: errMsgInvalidPadding,
+		}
+	}
+	return src[:len(src)-n], nil
 }
 
 func paddingOffset(src []byte) int {

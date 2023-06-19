@@ -6,12 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -56,8 +54,8 @@ func (hc *heartbeat) stop() {
 func (hc *heartbeat) heartbeatMain() error {
 	logger.Info("Heartbeating!")
 	params := &url.Values{}
-	params.Add(requestIDKey, uuid.New().String())
-	params.Add(requestGUIDKey, uuid.New().String())
+	params.Add(requestIDKey, NewUUID().String())
+	params.Add(requestGUIDKey, NewUUID().String())
 	headers := getHeaders()
 	token, _, _ := hc.restful.TokenAccessor.GetTokens()
 	headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
@@ -85,7 +83,7 @@ func (hc *heartbeat) heartbeatMain() error {
 		}
 		return nil
 	}
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("failed to extract HTTP response body. err: %v", err)
 		return err

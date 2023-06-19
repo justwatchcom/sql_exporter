@@ -82,10 +82,10 @@ were args are one of the following:
 |                |                                    | 'server-strict' = server must support SSL |
 | locator        | host and port of the Vertica connection | (default) localhost:5433
 | user           | Vertica user ID | (default) the userid of the running user |
-| password       | Vertica password for the connecting user | (default) (empty)
-|
+| password       | Vertica password for the connecting user | (default) (empty) |
+| oauth_access_token | the OAuth Access Token to connect to Vertica, only used for OAuth Authentication tests | (default) (empty) |
 
-**NOTE:** Since it's often a bad idea to put your password on the command line, you can set the VERTICA_TEST_PASSWORD environment variable. Even if environment variable is set, the "--password" flag will supercede it.
+**NOTE:** Since it's often a bad idea to put your password on the command line, you can set the VERTICA_TEST_PASSWORD environment variable. Even if environment variable is set, the "--password" flag will supercede it. Similarly, you can set the VERTICA_TEST_OAUTH_ACCESS_TOKEN environment variable instead of "--oauth_access_token" flag.
 
 For example:
 
@@ -121,7 +121,7 @@ At this point, you're ready to make your changes! Feel free to ask for help; eve
 Every file in this project must use the following Apache 2.0 header (with the appropriate year or years in the "[yyyy]" box; if a copyright statement from another party is already present in the code, you may add the statement on top of the existing copyright statement):
 
 ```
-Copyright (c) [yyyy] Micro Focus or one of its affiliates.
+Copyright (c) [yyyy] Open Text.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

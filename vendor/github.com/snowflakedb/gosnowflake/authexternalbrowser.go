@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -42,7 +41,7 @@ func buildResponse(application string) bytes.Buffer {
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,
-		Body:          ioutil.NopCloser(bytes.NewBufferString(body)),
+		Body:          io.NopCloser(bytes.NewBufferString(body)),
 		ContentLength: int64(len(body)),
 		Request:       nil,
 		Header:        make(http.Header),
@@ -121,6 +120,20 @@ func getIdpURLProofKey(
 	if err != nil {
 		return "", "", err
 	}
+	if !respd.Success {
+		logger.Errorln("Authentication FAILED")
+		sr.TokenAccessor.SetTokens("", "", -1)
+		code, err := strconv.Atoi(respd.Code)
+		if err != nil {
+			code = -1
+			return "", "", err
+		}
+		return "", "", &SnowflakeError{
+			Number:   code,
+			SQLState: SQLStateConnectionRejected,
+			Message:  respd.Message,
+		}
+	}
 	return respd.Data.SSOURL, respd.Data.ProofKey, nil
 }
 
@@ -147,20 +160,20 @@ func getTokenFromResponse(response string) (string, error) {
 			MessageArgs: []interface{}{response},
 		}
 	}
-	token := strings.TrimLeft(arr[0], start)
+	token := strings.TrimPrefix(arr[0], start)
 	token = strings.Split(token, " ")[0]
 	return token, nil
 }
 
 // Authentication by an external browser takes place via the following:
-// - the golang snowflake driver communicates to Snowflake that the user wishes to
-//   authenticate via external browser
-// - snowflake sends back the IDP Url configured at the Snowflake side for the
-//   provided account
-// - the default browser is opened to that URL
-// - user authenticates at the IDP, and is redirected to Snowflake
-// - Snowflake directs the user back to the driver
-// - authenticate is complete!
+//   - the golang snowflake driver communicates to Snowflake that the user wishes to
+//     authenticate via external browser
+//   - snowflake sends back the IDP Url configured at the Snowflake side for the
+//     provided account
+//   - the default browser is opened to that URL
+//   - user authenticates at the IDP, and is redirected to Snowflake
+//   - Snowflake directs the user back to the driver
+//   - authenticate is complete!
 func authenticateByExternalBrowser(
 	ctx context.Context,
 	sr *snowflakeRestful,

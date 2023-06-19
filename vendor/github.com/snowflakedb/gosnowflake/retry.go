@@ -11,12 +11,11 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 var random *rand.Rand
@@ -75,13 +74,14 @@ type requestGUIDReplace struct {
 	urlValues url.Values
 }
 
-/**
+/*
+*
 This function would replace they value of the requestGUIDKey in a url with a newly
-generated uuid
+generated UUID
 */
 func (replacer *requestGUIDReplace) replace() *url.URL {
 	replacer.urlValues.Del(requestGUIDKey)
-	replacer.urlValues.Add(requestGUIDKey, uuid.New().String())
+	replacer.urlValues.Add(requestGUIDKey, NewUUID().String())
 	replacer.urlPtr.RawQuery = replacer.urlValues.Encode()
 	return replacer.urlPtr
 }
@@ -216,6 +216,7 @@ func (r *retryHTTP) execute() (res *http.Response, err error) {
 	var rUpdater retryCounterUpdater
 
 	for {
+		logger.Debugf("retry count: %v", retryCounter)
 		req, err := r.req(r.method, r.fullURL.String(), bytes.NewReader(r.body))
 		if err != nil {
 			return nil, err
@@ -238,7 +239,7 @@ func (r *retryHTTP) execute() (res *http.Response, err error) {
 			logger.WithContext(r.ctx).Warningf(
 				"failed http connection. no response is returned. err: %v. retrying...\n", err)
 		} else {
-			if res.StatusCode == http.StatusOK || r.raise4XX && res != nil && res.StatusCode >= 400 && res.StatusCode < 500 {
+			if res.StatusCode == http.StatusOK || r.raise4XX && res != nil && res.StatusCode >= 400 && res.StatusCode < 500 && res.StatusCode != 429 {
 				// exit if success
 				// or
 				// abort connection if raise4XX flag is enabled and the range of HTTP status code are 4XX.
@@ -308,6 +309,11 @@ func (r *retryHTTP) isRetryableError(err error) (bool, error) {
 		}
 		if _, ok := urlError.Err.(x509.UnknownAuthorityError); ok {
 			// Certificate is self-signed
+			return true, err
+		}
+		errString := urlError.Err.Error()
+		if runtime.GOOS == "darwin" && strings.HasPrefix(errString, "x509:") && strings.HasSuffix(errString, "certificate is expired") {
+			// Certificate is expired
 			return true, err
 		}
 

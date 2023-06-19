@@ -27,7 +27,6 @@ const (
 	reasonKey        = "reason"
 	errorNumberKey   = "ErrorNumber"
 	stacktraceKey    = "Stacktrace"
-	exceptionKey     = "Exception"
 )
 
 const (
@@ -103,6 +102,7 @@ func (st *snowflakeTelemetry) sendBatch() error {
 		logger.Info("failed to upload metrics to telemetry. err: %v", err)
 		return err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		err = fmt.Errorf("non-successful response from telemetry server: %v. "+
 			"disabling telemetry", resp.StatusCode)

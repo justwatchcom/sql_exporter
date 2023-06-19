@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"reflect"
@@ -52,7 +51,7 @@ import (
 )
 
 type rowStore interface {
-	AddRow(msg *msgs.BEDataRowMsg)
+	AddRow(msg *msgs.BEDataRowMsg) error
 	GetRow() *msgs.BEDataRowMsg
 	Peek() *msgs.BEDataRowMsg
 	Close() error
@@ -71,6 +70,7 @@ var (
 	paddingString        = "000000"
 	defaultRowBufferSize = 256
 	rowLogger            = logger.New("row")
+	endsWithHalfHour     = regexp.MustCompile(".*:\\d{2}$")
 )
 
 // Columns returns the names of all of the columns
@@ -126,8 +126,25 @@ func (r *rows) Next(dest []driver.Value) error {
 			dest[idx], err = parseTimestampTZColumn("0000-01-01 " + string(colVal))
 		case common.ColTypeInterval, common.ColTypeIntervalYM: // stays string
 			dest[idx] = string(colVal)
-		case common.ColTypeVarBinary, common.ColTypeLongVarBinary, common.ColTypeBinary: // to HEX string
-			dest[idx] = hex.EncodeToString(colVal)
+		case common.ColTypeVarBinary, common.ColTypeLongVarBinary, common.ColTypeBinary:
+			// to []byte; convert escaped octal (e.g. \261) into byte with \\ for \
+			var out []byte
+			for len(colVal) > 0 {
+				c := colVal[0]
+				if c == '\\' {
+					if colVal[1] == '\\' { // escaped \
+						colVal = colVal[2:]
+					} else { // A \xxx octal string
+						x, _ := strconv.ParseInt(string(colVal[1:4]), 8, 32)
+						c = byte(x)
+						colVal = colVal[4:]
+					}
+				} else {
+					colVal = colVal[1:]
+				}
+				out = append(out, c)
+			}
+			dest[idx] = out
 		default:
 			dest[idx] = string(colVal)
 		}
@@ -172,7 +189,6 @@ func parseTimestampTZColumn(fullString string) (driver.Value, error) {
 		fullString = strings.Replace(fullString, " BC", "", -1)
 	}
 
-	endsWithHalfHour, _ := regexp.Compile(".*:\\d{2}$")
 	if !endsWithHalfHour.MatchString(fullString) {
 		fullString = fullString + ":00"
 	}
@@ -196,12 +212,12 @@ func parseTimestampTZColumn(fullString string) (driver.Value, error) {
 	return result, err
 }
 
-func (r *rows) finalize() {
-	r.resultData.Finalize()
+func (r *rows) finalize() error {
+	return r.resultData.Finalize()
 }
 
-func (r *rows) addRow(rowData *msgs.BEDataRowMsg) {
-	r.resultData.AddRow(rowData)
+func (r *rows) addRow(rowData *msgs.BEDataRowMsg) error {
+	return r.resultData.AddRow(rowData)
 }
 
 func newRows(ctx context.Context, columnsDefsMsg *msgs.BERowDescMsg, tzOffset string) *rows {

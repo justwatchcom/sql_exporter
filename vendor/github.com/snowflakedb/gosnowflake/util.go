@@ -6,12 +6,11 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 type contextKey string
@@ -25,6 +24,8 @@ const (
 	fileStreamFile        contextKey = "STREAMING_PUT_FILE"
 	fileTransferOptions   contextKey = "FILE_TRANSFER_OPTIONS"
 	enableHigherPrecision contextKey = "ENABLE_HIGHER_PRECISION"
+	arrowBatches          contextKey = "ARROW_BATCHES"
+	arrowAlloc            contextKey = "ARROW_ALLOC"
 )
 
 const (
@@ -49,7 +50,7 @@ func WithQueryIDChan(ctx context.Context, c chan<- string) context.Context {
 }
 
 // WithRequestID returns a new context with the specified snowflake request id
-func WithRequestID(ctx context.Context, requestID uuid.UUID) context.Context {
+func WithRequestID(ctx context.Context, requestID UUID) context.Context {
 	return context.WithValue(ctx, snowflakeRequestIDKey, requestID)
 }
 
@@ -85,13 +86,26 @@ func WithHigherPrecision(ctx context.Context) context.Context {
 	return context.WithValue(ctx, enableHigherPrecision, true)
 }
 
+// WithArrowBatches returns a context that allows users to retrieve
+// arrow.Record download workers upon querying
+func WithArrowBatches(ctx context.Context) context.Context {
+	return context.WithValue(ctx, arrowBatches, true)
+}
+
+// WithArrowAllocator returns a context embedding the provided allocator
+// which will be utilized by chunk downloaders when constructing Arrow
+// objects.
+func WithArrowAllocator(ctx context.Context, pool memory.Allocator) context.Context {
+	return context.WithValue(ctx, arrowAlloc, pool)
+}
+
 // Get the request ID from the context if specified, otherwise generate one
-func getOrGenerateRequestIDFromContext(ctx context.Context) uuid.UUID {
-	requestID, ok := ctx.Value(snowflakeRequestIDKey).(uuid.UUID)
-	if ok && requestID != uuid.Nil {
+func getOrGenerateRequestIDFromContext(ctx context.Context) UUID {
+	requestID, ok := ctx.Value(snowflakeRequestIDKey).(UUID)
+	if ok && requestID != nilUUID {
 		return requestID
 	}
-	return uuid.New()
+	return NewUUID()
 }
 
 // integer min
@@ -207,14 +221,4 @@ func escapeForCSV(value string) string {
 		return "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
 	}
 	return value
-}
-
-func randomString(n int) string {
-	rand.Seed(time.Now().UnixNano())
-	alpha := []rune("abcdefghijklmnopqrstuvwxyz")
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = alpha[rand.Intn(len(alpha))]
-	}
-	return string(b)
 }

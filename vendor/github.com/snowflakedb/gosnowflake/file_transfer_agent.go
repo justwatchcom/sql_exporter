@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/url"
 	"os"
@@ -242,12 +241,11 @@ func (sfa *snowflakeFileTransferAgent) parseCommand() error {
 			}
 		} else if len(sfa.encryptionMaterial) != 0 {
 			return (&SnowflakeError{
-				Number:   ErrInternalNotMatchEncryptMaterial,
-				SQLState: sfa.data.SQLState,
-				QueryID:  sfa.data.QueryID,
-				Message: fmt.Sprintf("number of downlodading files doesn't "+
-					"match the encryption materials. files=%v, encmat=%v",
-					len(sfa.data.SrcLocations), len(sfa.encryptionMaterial)),
+				Number:      ErrInternalNotMatchEncryptMaterial,
+				SQLState:    sfa.data.SQLState,
+				QueryID:     sfa.data.QueryID,
+				Message:     errMsgInternalNotMatchEncryptMaterial,
+				MessageArgs: []interface{}{len(sfa.data.SrcLocations), len(sfa.encryptionMaterial)},
 			}).exceptionTelemetry(sfa.sc)
 		}
 
@@ -255,13 +253,13 @@ func (sfa *snowflakeFileTransferAgent) parseCommand() error {
 		if err != nil {
 			return err
 		}
-		if fi, err := os.Stat(sfa.localLocation); !fi.IsDir() || err != nil {
+		if fi, err := os.Stat(sfa.localLocation); err != nil || !fi.IsDir() {
 			return (&SnowflakeError{
-				Number:   ErrLocalPathNotDirectory,
-				SQLState: sfa.data.SQLState,
-				QueryID:  sfa.data.QueryID,
-				Message: fmt.Sprintf("the local path is not a directory: %v",
-					sfa.localLocation),
+				Number:      ErrLocalPathNotDirectory,
+				SQLState:    sfa.data.SQLState,
+				QueryID:     sfa.data.QueryID,
+				Message:     errMsgLocalPathNotDirectory,
+				MessageArgs: []interface{}{sfa.localLocation},
 			}).exceptionTelemetry(sfa.sc)
 		}
 	}
@@ -280,11 +278,11 @@ func (sfa *snowflakeFileTransferAgent) parseCommand() error {
 
 	if sfa.getStorageClient(sfa.stageLocationType) == nil {
 		return (&SnowflakeError{
-			Number:   ErrInvalidStageFs,
-			SQLState: sfa.data.SQLState,
-			QueryID:  sfa.data.QueryID,
-			Message: fmt.Sprintf("destination location type is not valid: %v",
-				sfa.stageLocationType),
+			Number:      ErrInvalidStageFs,
+			SQLState:    sfa.data.SQLState,
+			QueryID:     sfa.data.QueryID,
+			Message:     errMsgInvalidStageFs,
+			MessageArgs: []interface{}{sfa.stageLocationType},
 		}).exceptionTelemetry(sfa.sc)
 	}
 	return nil
@@ -346,10 +344,11 @@ func (sfa *snowflakeFileTransferAgent) initFileMetadata() error {
 		if len(sfa.srcFiles) == 0 {
 			fileName := sfa.data.SrcLocations
 			return (&SnowflakeError{
-				Number:   ErrFileNotExists,
-				SQLState: sfa.data.SQLState,
-				QueryID:  sfa.data.QueryID,
-				Message:  fmt.Sprintf("file does not exist: %v", fileName),
+				Number:      ErrFileNotExists,
+				SQLState:    sfa.data.SQLState,
+				QueryID:     sfa.data.QueryID,
+				Message:     errMsgFileNotExists,
+				MessageArgs: []interface{}{fileName},
 			}).exceptionTelemetry(sfa.sc)
 		}
 		if sfa.sourceStream != nil {
@@ -368,17 +367,19 @@ func (sfa *snowflakeFileTransferAgent) initFileMetadata() error {
 				fi, err := os.Stat(fileName)
 				if os.IsNotExist(err) {
 					return (&SnowflakeError{
-						Number:   ErrFileNotExists,
-						SQLState: sfa.data.SQLState,
-						QueryID:  sfa.data.QueryID,
-						Message:  fmt.Sprintf("file does not exist: %v", fileName),
+						Number:      ErrFileNotExists,
+						SQLState:    sfa.data.SQLState,
+						QueryID:     sfa.data.QueryID,
+						Message:     errMsgFileNotExists,
+						MessageArgs: []interface{}{fileName},
 					}).exceptionTelemetry(sfa.sc)
 				} else if fi.IsDir() {
 					return (&SnowflakeError{
-						Number:   ErrFileNotExists,
-						SQLState: sfa.data.SQLState,
-						QueryID:  sfa.data.QueryID,
-						Message:  fmt.Sprintf("not a file but a directory: %v", fileName),
+						Number:      ErrFileNotExists,
+						SQLState:    sfa.data.SQLState,
+						QueryID:     sfa.data.QueryID,
+						Message:     errMsgFileNotExists,
+						MessageArgs: []interface{}{fileName},
 					}).exceptionTelemetry(sfa.sc)
 				}
 				sfa.fileMetadata = append(sfa.fileMetadata, &fileMetadata{
@@ -440,11 +441,11 @@ func (sfa *snowflakeFileTransferAgent) processFileCompressionType() error {
 		userSpecifiedSourceCompression = lookupByMimeSubType(sfa.srcCompression)
 		if userSpecifiedSourceCompression == nil || !userSpecifiedSourceCompression.isSupported {
 			return (&SnowflakeError{
-				Number:   ErrCompressionNotSupported,
-				SQLState: sfa.data.SQLState,
-				QueryID:  sfa.data.QueryID,
-				Message: fmt.Sprintf("feature is not supported: %v",
-					userSpecifiedSourceCompression),
+				Number:      ErrCompressionNotSupported,
+				SQLState:    sfa.data.SQLState,
+				QueryID:     sfa.data.QueryID,
+				Message:     errMsgFeatureNotSupported,
+				MessageArgs: []interface{}{userSpecifiedSourceCompression},
 			}).exceptionTelemetry(sfa.sc)
 		}
 		autoDetect = false
@@ -465,7 +466,7 @@ func (sfa *snowflakeFileTransferAgent) processFileCompressionType() error {
 					if err != nil {
 						return err
 					}
-					ioutil.ReadAll(r) // flush out tee buffer
+					io.ReadAll(r) // flush out tee buffer
 				} else {
 					mtype, err = mimetype.DetectFile(fileName)
 					if err != nil {
@@ -477,11 +478,11 @@ func (sfa *snowflakeFileTransferAgent) processFileCompressionType() error {
 
 			if currentFileCompressionType != nil && !currentFileCompressionType.isSupported {
 				return (&SnowflakeError{
-					Number:   ErrCompressionNotSupported,
-					SQLState: sfa.data.SQLState,
-					QueryID:  sfa.data.QueryID,
-					Message: fmt.Sprintf("feature is not supported: %v",
-						currentFileCompressionType),
+					Number:      ErrCompressionNotSupported,
+					SQLState:    sfa.data.SQLState,
+					QueryID:     sfa.data.QueryID,
+					Message:     errMsgFeatureNotSupported,
+					MessageArgs: []interface{}{userSpecifiedSourceCompression},
 				}).exceptionTelemetry(sfa.sc)
 			}
 		} else {
@@ -496,11 +497,11 @@ func (sfa *snowflakeFileTransferAgent) processFileCompressionType() error {
 				meta.dstFileName = meta.name
 			} else {
 				return (&SnowflakeError{
-					Number:   ErrCompressionNotSupported,
-					SQLState: sfa.data.SQLState,
-					QueryID:  sfa.data.QueryID,
-					Message: fmt.Sprintf("feature is not supported: %v",
-						currentFileCompressionType),
+					Number:      ErrCompressionNotSupported,
+					SQLState:    sfa.data.SQLState,
+					QueryID:     sfa.data.QueryID,
+					Message:     errMsgFeatureNotSupported,
+					MessageArgs: []interface{}{userSpecifiedSourceCompression},
 				}).exceptionTelemetry(sfa.sc)
 			}
 		} else {
@@ -574,9 +575,10 @@ func (sfa *snowflakeFileTransferAgent) updateFileMetadataWithPresignedURL() erro
 			}
 		} else {
 			return (&SnowflakeError{
+				Number:      ErrCommandNotRecognized,
 				SQLState:    sfa.data.SQLState,
 				QueryID:     sfa.data.QueryID,
-				Message:     "%v command not recognized",
+				Message:     errMsgCommandNotRecognized,
 				MessageArgs: []interface{}{sfa.commandType},
 			}).exceptionTelemetry(sfa.sc)
 		}
@@ -598,9 +600,10 @@ func (sfa *snowflakeFileTransferAgent) transferAccelerateConfig() error {
 		client, ok := s3Cli.(*s3.Client)
 		if !ok {
 			return (&SnowflakeError{
+				Number:   ErrFailedToConvertToS3Client,
 				SQLState: sfa.data.SQLState,
 				QueryID:  sfa.data.QueryID,
-				Message:  "failed to convert interface to s3 client",
+				Message:  errMsgFailedToConvertToS3Client,
 			}).exceptionTelemetry(sfa.sc)
 		}
 		ret, err := client.GetBucketAccelerateConfiguration(context.Background(), &s3.GetBucketAccelerateConfigurationInput{
@@ -611,6 +614,8 @@ func (sfa *snowflakeFileTransferAgent) transferAccelerateConfig() error {
 			var ae smithy.APIError
 			if errors.As(err, &ae) {
 				if ae.ErrorCode() == "AccessDenied" {
+					return nil
+				} else if ae.ErrorCode() == "MethodNotAllowed" {
 					return nil
 				}
 			}
@@ -650,9 +655,8 @@ func (sfa *snowflakeFileTransferAgent) getLocalFilePathFromCommand(command strin
 		}
 		filePathEndIdx = -1
 		if getMin(indexList) != -1 {
-			filePathEndIdx = getMin(indexList)
+			filePathEndIdx = filePathBeginIdx + getMin(indexList)
 		}
-
 		if filePathEndIdx > filePathBeginIdx {
 			filePath = command[filePathBeginIdx:filePathEndIdx]
 		} else {
@@ -678,11 +682,13 @@ func (sfa *snowflakeFileTransferAgent) upload(
 	}
 
 	if len(smallFileMetadata) > 0 {
+		logger.Infof("uploading %v small files", len(smallFileMetadata))
 		if err = sfa.uploadFilesParallel(smallFileMetadata); err != nil {
 			return err
 		}
 	}
 	if len(largeFileMetadata) > 0 {
+		logger.Infof("uploading %v large files", len(largeFileMetadata))
 		if err = sfa.uploadFilesSequential(largeFileMetadata); err != nil {
 			return err
 		}
@@ -825,7 +831,7 @@ func (sfa *snowflakeFileTransferAgent) uploadFilesSequential(fileMetas []*fileMe
 
 func (sfa *snowflakeFileTransferAgent) uploadOneFile(meta *fileMetadata) (*fileMetadata, error) {
 	meta.realSrcFileName = meta.srcFileName
-	tmpDir, err := ioutil.TempDir("", "")
+	tmpDir, err := os.MkdirTemp("", "")
 	if err != nil {
 		return nil, err
 	}
@@ -846,15 +852,15 @@ func (sfa *snowflakeFileTransferAgent) uploadOneFile(meta *fileMetadata) (*fileM
 
 	if meta.srcStream != nil {
 		if meta.realSrcStream != nil {
-			meta.sha256Digest, meta.uploadSize = fileUtil.getDigestAndSizeForStream(&meta.realSrcStream)
+			meta.sha256Digest, meta.uploadSize, err = fileUtil.getDigestAndSizeForStream(&meta.realSrcStream)
 		} else {
-			meta.sha256Digest, meta.uploadSize = fileUtil.getDigestAndSizeForStream(&meta.srcStream)
+			meta.sha256Digest, meta.uploadSize, err = fileUtil.getDigestAndSizeForStream(&meta.srcStream)
 		}
 	} else {
 		meta.sha256Digest, meta.uploadSize, err = fileUtil.getDigestAndSizeForFile(meta.realSrcFileName)
-		if err != nil {
-			return meta, err
-		}
+	}
+	if err != nil {
+		return meta, err
 	}
 
 	client := sfa.getStorageClient(sfa.stageLocationType)
@@ -972,7 +978,7 @@ func (sfa *snowflakeFileTransferAgent) downloadFilesSequential(fileMetas []*file
 }
 
 func (sfa *snowflakeFileTransferAgent) downloadOneFile(meta *fileMetadata) (*fileMetadata, error) {
-	tmpDir, err := ioutil.TempDir("", "")
+	tmpDir, err := os.MkdirTemp("", "")
 	if err != nil {
 		return nil, err
 	}
@@ -1151,10 +1157,10 @@ func (sfa *snowflakeFileTransferAgent) result() (*execResponse, error) {
 		}
 	}
 	return nil, (&SnowflakeError{
-		Number:   -1,
+		Number:   ErrNotImplemented,
 		SQLState: sfa.data.SQLState,
 		QueryID:  sfa.data.QueryID,
-		Message:  "not implemented",
+		Message:  errMsgNotImplemented,
 	}).exceptionTelemetry(sfa.sc)
 }
 

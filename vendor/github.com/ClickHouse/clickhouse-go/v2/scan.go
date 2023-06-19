@@ -26,7 +26,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
 
-func (ch *clickhouse) Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+func (ch *clickhouse) Select(ctx context.Context, dest any, query string, args ...any) error {
 	value := reflect.ValueOf(dest)
 	if value.Kind() != reflect.Ptr {
 		return &OpError{
@@ -43,6 +43,11 @@ func (ch *clickhouse) Select(ctx context.Context, dest interface{}, query string
 	direct := reflect.Indirect(value)
 	if direct.Kind() != reflect.Slice {
 		return fmt.Errorf("must pass a slice to Select destination")
+	}
+	if direct.Len() != 0 {
+		// dest should point to empty slice
+		// to make select result correct
+		direct.Set(reflect.MakeSlice(direct.Type(), 0, direct.Cap()))
 	}
 	var (
 		base      = direct.Type().Elem()
@@ -65,7 +70,7 @@ func (ch *clickhouse) Select(ctx context.Context, dest interface{}, query string
 	return rows.Err()
 }
 
-func scan(block *proto.Block, row int, dest ...interface{}) error {
+func scan(block *proto.Block, row int, dest ...any) error {
 	columns := block.Columns
 	if len(columns) != len(dest) {
 		return &OpError{

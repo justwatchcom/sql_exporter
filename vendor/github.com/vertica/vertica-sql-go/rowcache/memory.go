@@ -1,6 +1,6 @@
 package rowcache
 
-// Copyright (c) 2020-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2020-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -51,8 +51,9 @@ func NewMemoryCache(size int) *MemoryCache {
 }
 
 // AddRow adds a row to the store
-func (m *MemoryCache) AddRow(msg *msgs.BEDataRowMsg) {
+func (m *MemoryCache) AddRow(msg *msgs.BEDataRowMsg) error {
 	m.resultData = append(m.resultData, msg)
+	return nil
 }
 
 // Finalize signals the end of new rows, a noop for the memory cache

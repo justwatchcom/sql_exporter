@@ -19,14 +19,23 @@ package column
 
 import (
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 	"github.com/paulmach/orb"
 )
 
 type Ring struct {
-	set *Array
+	set  *Array
+	name string
+}
+
+func (col *Ring) Reset() {
+	col.set.Reset()
+}
+
+func (col *Ring) Name() string {
+	return col.name
 }
 
 func (col *Ring) Type() Type {
@@ -41,7 +50,7 @@ func (col *Ring) Rows() int {
 	return col.set.Rows()
 }
 
-func (col *Ring) Row(i int, ptr bool) interface{} {
+func (col *Ring) Row(i int, ptr bool) any {
 	value := col.row(i)
 	if ptr {
 		return &value
@@ -49,7 +58,7 @@ func (col *Ring) Row(i int, ptr bool) interface{} {
 	return value
 }
 
-func (col *Ring) ScanRow(dest interface{}, row int) error {
+func (col *Ring) ScanRow(dest any, row int) error {
 	switch d := dest.(type) {
 	case *orb.Ring:
 		*d = col.row(row)
@@ -67,7 +76,7 @@ func (col *Ring) ScanRow(dest interface{}, row int) error {
 	return nil
 }
 
-func (col *Ring) Append(v interface{}) (nulls []uint8, err error) {
+func (col *Ring) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []orb.Ring:
 		values := make([][]orb.Point, 0, len(v))
@@ -75,7 +84,12 @@ func (col *Ring) Append(v interface{}) (nulls []uint8, err error) {
 			values = append(values, v)
 		}
 		return col.set.Append(values)
-
+	case []*orb.Ring:
+		values := make([][]orb.Point, 0, len(v))
+		for _, v := range v {
+			values = append(values, *v)
+		}
+		return col.set.Append(values)
 	default:
 		return nil, &ColumnConverterError{
 			Op:   "Append",
@@ -85,10 +99,12 @@ func (col *Ring) Append(v interface{}) (nulls []uint8, err error) {
 	}
 }
 
-func (col *Ring) AppendRow(v interface{}) error {
+func (col *Ring) AppendRow(v any) error {
 	switch v := v.(type) {
 	case orb.Ring:
 		return col.set.AppendRow([]orb.Point(v))
+	case *orb.Ring:
+		return col.set.AppendRow([]orb.Point(*v))
 	default:
 		return &ColumnConverterError{
 			Op:   "AppendRow",
@@ -98,12 +114,12 @@ func (col *Ring) AppendRow(v interface{}) error {
 	}
 }
 
-func (col *Ring) Decode(decoder *binary.Decoder, rows int) error {
-	return col.set.Decode(decoder, rows)
+func (col *Ring) Decode(reader *proto.Reader, rows int) error {
+	return col.set.Decode(reader, rows)
 }
 
-func (col *Ring) Encode(encoder *binary.Encoder) error {
-	return col.set.Encode(encoder)
+func (col *Ring) Encode(buffer *proto.Buffer) {
+	col.set.Encode(buffer)
 }
 
 func (col *Ring) row(i int) orb.Ring {

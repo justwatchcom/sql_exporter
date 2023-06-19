@@ -18,47 +18,60 @@
 package column
 
 import (
+	"database/sql"
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
 type Enum8 struct {
-	iv     map[string]uint8
-	vi     map[uint8]string
+	iv     map[string]proto.Enum8
+	vi     map[proto.Enum8]string
 	chType Type
-	values UInt8
+	name   string
+	col    proto.ColEnum8
 }
 
-func (e *Enum8) Type() Type {
-	return e.chType
+func (col *Enum8) Reset() {
+	col.col.Reset()
+}
+
+func (col *Enum8) Name() string {
+	return col.name
+}
+
+func (col *Enum8) Type() Type {
+	return col.chType
 }
 
 func (col *Enum8) ScanType() reflect.Type {
 	return scanTypeString
 }
 
-func (e *Enum8) Rows() int {
-	return len(e.values)
+func (col *Enum8) Rows() int {
+	return col.col.Rows()
 }
 
-func (e *Enum8) Row(i int, ptr bool) interface{} {
-	value := e.vi[e.values[i]]
+func (col *Enum8) Row(i int, ptr bool) any {
+	value := col.vi[col.col.Row(i)]
 	if ptr {
 		return &value
 	}
 	return value
 }
 
-func (e *Enum8) ScanRow(dest interface{}, row int) error {
+func (col *Enum8) ScanRow(dest any, row int) error {
+	v := col.col.Row(row)
 	switch d := dest.(type) {
 	case *string:
-		*d = e.vi[e.values[row]]
+		*d = col.vi[v]
 	case **string:
 		*d = new(string)
-		**d = e.vi[e.values[row]]
+		**d = col.vi[v]
 	default:
+		if scan, ok := dest.(sql.Scanner); ok {
+			return scan.Scan(col.vi[v])
+		}
 		return &ColumnConverterError{
 			Op:   "ScanRow",
 			To:   fmt.Sprintf("%T", dest),
@@ -68,35 +81,76 @@ func (e *Enum8) ScanRow(dest interface{}, row int) error {
 	return nil
 }
 
-func (e *Enum8) Append(v interface{}) (nulls []uint8, err error) {
+func (col *Enum8) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
+	case []int8:
+		nulls = make([]uint8, len(v))
+		for _, elem := range v {
+			if err = col.AppendRow(elem); err != nil {
+				return nil, err
+			}
+		}
+	case []*int8:
+		nulls = make([]uint8, len(v))
+		for i, elem := range v {
+			switch {
+			case elem != nil:
+				if err = col.AppendRow(elem); err != nil {
+					return nil, err
+				}
+			default:
+				col.col.Append(0)
+				nulls[i] = 1
+			}
+		}
+	case []int:
+		nulls = make([]uint8, len(v))
+		for _, elem := range v {
+			if err = col.AppendRow(elem); err != nil {
+				return nil, err
+			}
+		}
+	case []*int:
+		nulls = make([]uint8, len(v))
+		for i, elem := range v {
+			switch {
+			case elem != nil:
+				if err = col.AppendRow(elem); err != nil {
+					return nil, err
+				}
+			default:
+				col.col.Append(0)
+				nulls[i] = 1
+			}
+		}
 	case []string:
 		nulls = make([]uint8, len(v))
 		for _, elem := range v {
-			v, ok := e.iv[elem]
+			val, ok := col.iv[elem]
 			if !ok {
 				return nil, &Error{
 					Err:        fmt.Errorf("unknown element %q", elem),
-					ColumnType: string(e.chType),
+					ColumnType: string(col.chType),
 				}
 			}
-			e.values = append(e.values, v)
+			col.col.Append(val)
 		}
 	case []*string:
 		nulls = make([]uint8, len(v))
 		for i, elem := range v {
 			switch {
 			case elem != nil:
-				v, ok := e.iv[*elem]
+				val, ok := col.iv[*elem]
 				if !ok {
 					return nil, &Error{
 						Err:        fmt.Errorf("unknown element %q", *elem),
-						ColumnType: string(e.chType),
+						ColumnType: string(col.chType),
 					}
 				}
-				e.values = append(e.values, v)
+				col.col.Append(val)
 			default:
-				e.values, nulls[i] = append(e.values, 0), 1
+				col.col.Append(0)
+				nulls[i] = 1
 			}
 		}
 	default:
@@ -109,49 +163,82 @@ func (e *Enum8) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (e *Enum8) AppendRow(elem interface{}) error {
+func (col *Enum8) AppendRow(elem any) error {
 	switch elem := elem.(type) {
+	case int8:
+		return col.AppendRow(int(elem))
+	case *int8:
+		return col.AppendRow(int(*elem))
+	case int:
+		v := proto.Enum8(elem)
+		_, ok := col.vi[v]
+		if !ok {
+			return &Error{
+				Err:        fmt.Errorf("unknown element %v", elem),
+				ColumnType: string(col.chType),
+			}
+		}
+		col.col.Append(v)
+	case *int:
+		switch {
+		case elem != nil:
+			v := proto.Enum8(*elem)
+			_, ok := col.vi[v]
+			if !ok {
+				return &Error{
+					Err:        fmt.Errorf("unknown element %v", *elem),
+					ColumnType: string(col.chType),
+				}
+			}
+			col.col.Append(v)
+		default:
+			col.col.Append(0)
+		}
 	case string:
-		v, ok := e.iv[elem]
+		v, ok := col.iv[elem]
 		if !ok {
 			return &Error{
 				Err:        fmt.Errorf("unknown element %q", elem),
-				ColumnType: string(e.chType),
+				ColumnType: string(col.chType),
 			}
 		}
-		e.values = append(e.values, v)
+		col.col.Append(v)
 	case *string:
 		switch {
 		case elem != nil:
-			v, ok := e.iv[*elem]
+			v, ok := col.iv[*elem]
 			if !ok {
 				return &Error{
 					Err:        fmt.Errorf("unknown element %q", *elem),
-					ColumnType: string(e.chType),
+					ColumnType: string(col.chType),
 				}
 			}
-			e.values = append(e.values, v)
+			col.col.Append(v)
 		default:
-			e.values = append(e.values, 0)
+			col.col.Append(0)
 		}
 	case nil:
-		e.values = append(e.values, 0)
+		col.col.Append(0)
 	default:
-		return &ColumnConverterError{
-			Op:   "AppendRow",
-			To:   "Enum8",
-			From: fmt.Sprintf("%T", elem),
+		if s, ok := elem.(fmt.Stringer); ok {
+			return col.AppendRow(s.String())
+		} else {
+			return &ColumnConverterError{
+				Op:   "AppendRow",
+				To:   "Enum8",
+				From: fmt.Sprintf("%T", elem),
+			}
 		}
 	}
 	return nil
 }
 
-func (e *Enum8) Decode(decoder *binary.Decoder, rows int) error {
-	return e.values.Decode(decoder, rows)
+func (col *Enum8) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
 }
 
-func (e *Enum8) Encode(encoder *binary.Encoder) error {
-	return e.values.Encode(encoder)
+func (col *Enum8) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
 }
 
 var _ Interface = (*Enum8)(nil)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -69,6 +70,7 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 	if !ok {
 		return nil, fmt.Errorf("could not parse client to s3.Client")
 	}
+	// for testing only
 	if meta.mockHeader != nil {
 		s3Cli = meta.mockHeader
 	}
@@ -147,6 +149,7 @@ func (util *snowflakeS3Client) uploadFile(
 		u.Concurrency = maxConcurrency
 		u.PartSize = int64Max(multiPartThreshold, manager.DefaultUploadPartSize)
 	})
+	// for testing only
 	if meta.mockUploader != nil {
 		uploader = meta.mockUploader
 	}
@@ -197,6 +200,10 @@ func (util *snowflakeS3Client) uploadFile(
 	return nil
 }
 
+type s3DownloadAPI interface {
+	Download(ctx context.Context, w io.WriterAt, params *s3.GetObjectInput, optFns ...func(*manager.Downloader)) (int64, error)
+}
+
 // cloudUtil implementation
 func (util *snowflakeS3Client) nativeDownloadFile(
 	meta *fileMetadata,
@@ -215,9 +222,14 @@ func (util *snowflakeS3Client) nativeDownloadFile(
 		return err
 	}
 	defer f.Close()
-	downloader := manager.NewDownloader(client, func(u *manager.Downloader) {
+	var downloader s3DownloadAPI
+	downloader = manager.NewDownloader(client, func(u *manager.Downloader) {
 		u.Concurrency = int(maxConcurrency)
 	})
+	// for testing only
+	if meta.mockDownloader != nil {
+		downloader = meta.mockDownloader
+	}
 	if _, err = downloader.Download(context.Background(), f, &s3.GetObjectInput{
 		Bucket: s3Obj.Bucket,
 		Key:    s3Obj.Key,

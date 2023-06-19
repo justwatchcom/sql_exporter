@@ -20,6 +20,7 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"github.com/pkg/errors"
 	"os"
 	"regexp"
 	"strings"
@@ -31,9 +32,23 @@ import (
 )
 
 var splitInsertRe = regexp.MustCompile(`(?i)\sVALUES\s*\(`)
+var columnMatch = regexp.MustCompile(`.*\((?P<Columns>.+)\)$`)
 
-func (c *connect) prepareBatch(ctx context.Context, query string, release func(*connect, error)) (*batch, error) {
+func (c *connect) prepareBatch(ctx context.Context, query string, release func(*connect, error)) (driver.Batch, error) {
+	//defer func() {
+	//	if err := recover(); err != nil {
+	//		fmt.Printf("panic occurred on %d:\n", c.num)
+	//	}
+	//}()
 	query = splitInsertRe.Split(query, -1)[0]
+	colMatch := columnMatch.FindStringSubmatch(query)
+	var columns []string
+	if len(colMatch) == 2 {
+		columns = strings.Split(colMatch[1], ",")
+		for i := range columns {
+			columns[i] = strings.Trim(strings.TrimSpace(columns[i]), "`")
+		}
+	}
 	if !strings.HasSuffix(strings.TrimSpace(strings.ToUpper(query)), "VALUES") {
 		query += " VALUES"
 	}
@@ -54,25 +69,36 @@ func (c *connect) prepareBatch(ctx context.Context, query string, release func(*
 		release(c, err)
 		return nil, err
 	}
+	// resort batch to specified columns
+	if err = block.SortColumns(columns); err != nil {
+		return nil, err
+	}
 	return &batch{
-		ctx:   ctx,
-		conn:  c,
-		block: block,
-		release: func(err error) {
-			release(c, err)
-		},
-		onProcess: onProcess,
+		ctx:         ctx,
+		conn:        c,
+		block:       block,
+		released:    false,
+		connRelease: release,
+		onProcess:   onProcess,
 	}, nil
 }
 
 type batch struct {
-	err       error
-	ctx       context.Context
-	conn      *connect
-	sent      bool
-	block     *proto.Block
-	release   func(error)
-	onProcess *onProcess
+	err         error
+	ctx         context.Context
+	conn        *connect
+	sent        bool
+	released    bool
+	block       *proto.Block
+	connRelease func(*connect, error)
+	onProcess   *onProcess
+}
+
+func (b *batch) release(err error) {
+	if !b.released {
+		b.released = true
+		b.connRelease(b.conn, err)
+	}
 }
 
 func (b *batch) Abort() error {
@@ -86,23 +112,34 @@ func (b *batch) Abort() error {
 	return nil
 }
 
-func (b *batch) Append(v ...interface{}) error {
+func (b *batch) Append(v ...any) error {
 	if b.sent {
 		return ErrBatchAlreadySent
 	}
+	if b.err != nil {
+		return b.err
+	}
 	if err := b.block.Append(v...); err != nil {
+		b.err = errors.Wrap(ErrBatchInvalid, err.Error())
 		b.release(err)
 		return err
 	}
 	return nil
 }
 
-func (b *batch) AppendStruct(v interface{}) error {
+func (b *batch) AppendStruct(v any) error {
+	if b.err != nil {
+		return b.err
+	}
 	values, err := b.conn.structMap.Map("AppendStruct", b.block.ColumnsNames(), v, false)
 	if err != nil {
 		return err
 	}
 	return b.Append(values...)
+}
+
+func (b *batch) IsSent() bool {
+	return b.sent
 }
 
 func (b *batch) Column(idx int) driver.BatchColumn {
@@ -144,24 +181,37 @@ func (b *batch) Send() (err error) {
 	if err = b.conn.sendData(&proto.Block{}, ""); err != nil {
 		return err
 	}
-	if err = b.conn.encoder.Flush(); err != nil {
-		return err
-	}
 	if err = b.conn.process(b.ctx, b.onProcess); err != nil {
 		return err
 	}
 	return nil
 }
 
+func (b *batch) Flush() error {
+	if b.sent {
+		return ErrBatchAlreadySent
+	}
+	if b.err != nil {
+		return b.err
+	}
+	if b.block.Rows() != 0 {
+		if err := b.conn.sendData(b.block, ""); err != nil {
+			return err
+		}
+	}
+	b.block.Reset()
+	return nil
+}
+
 type batchColumn struct {
 	err     error
-	batch   *batch
+	batch   driver.Batch
 	column  column.Interface
 	release func(error)
 }
 
-func (b *batchColumn) Append(v interface{}) (err error) {
-	if b.batch.sent {
+func (b *batchColumn) Append(v any) (err error) {
+	if b.batch.IsSent() {
 		return ErrBatchAlreadySent
 	}
 	if b.err != nil {
@@ -169,6 +219,21 @@ func (b *batchColumn) Append(v interface{}) (err error) {
 		return b.err
 	}
 	if _, err = b.column.Append(v); err != nil {
+		b.release(err)
+		return err
+	}
+	return nil
+}
+
+func (b *batchColumn) AppendRow(v any) (err error) {
+	if b.batch.IsSent() {
+		return ErrBatchAlreadySent
+	}
+	if b.err != nil {
+		b.release(b.err)
+		return b.err
+	}
+	if err = b.column.AppendRow(v); err != nil {
 		b.release(err)
 		return err
 	}

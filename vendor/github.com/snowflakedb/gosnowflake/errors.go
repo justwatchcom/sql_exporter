@@ -80,6 +80,24 @@ func (se *SnowflakeError) exceptionTelemetry(sc *snowflakeConn) *SnowflakeError 
 	return se
 }
 
+// return populated error fields replacing the default response
+func populateErrorFields(code int, data *execResponse) *SnowflakeError {
+	err := ErrUnknownError
+	if code != -1 {
+		err.Number = code
+	}
+	if data.Data.SQLState != "" {
+		err.SQLState = data.Data.SQLState
+	}
+	if data.Message != "" {
+		err.Message = data.Message
+	}
+	if data.Data.QueryID != "" {
+		err.QueryID = data.Data.QueryID
+	}
+	return err
+}
+
 const (
 	/* connection */
 
@@ -163,6 +181,14 @@ const (
 	ErrCompressionNotSupported = 264007
 	// ErrInternalNotMatchEncryptMaterial is an error code denoting the encryption material specified does not match
 	ErrInternalNotMatchEncryptMaterial = 264008
+	// ErrCommandNotRecognized is an error code denoting the PUT/GET command was not recognized
+	ErrCommandNotRecognized = 264009
+	// ErrFailedToConvertToS3Client is an error code denoting the failure of an interface to s3.Client conversion
+	ErrFailedToConvertToS3Client = 264010
+	// ErrNotImplemented is an error code denoting the file transfer feature is not implemented
+	ErrNotImplemented = 264011
+	// ErrInvalidPadding is an error code denoting the invalid padding of decryption key
+	ErrInvalidPadding = 264012
 
 	/* binding */
 
@@ -170,6 +196,16 @@ const (
 	ErrBindSerialization = 265001
 	// ErrBindUpload is an error code for the uploading process of bind elements to the stage
 	ErrBindUpload = 265002
+
+	/* async */
+
+	// ErrAsync is an error code for an unknown async error
+	ErrAsync = 266001
+
+	/* multi-statement */
+
+	// ErrNoResultIDs is an error code for empty result IDs for multi statement queries
+	ErrNoResultIDs = 267001
 
 	/* converter */
 
@@ -192,7 +228,7 @@ const (
 	// ErrOCSPNoOCSPResponderURL is an error code for the case where the OCSP responder URL is not attached.
 	ErrOCSPNoOCSPResponderURL = 269004
 
-	/* Query Status*/
+	/* query Status*/
 
 	// ErrQueryStatus when check the status of a query, receive error or no status
 	ErrQueryStatus = 279001
@@ -241,6 +277,17 @@ const (
 	errMsgOCSPInvalidValidity                = "invalid validity: producedAt: %v, thisUpdate: %v, nextUpdate: %v"
 	errMsgOCSPNoOCSPResponderURL             = "no OCSP server is attached to the certificate. %v"
 	errMsgBindColumnMismatch                 = "column %v has a different number of binds (%v) than column 1 (%v)"
+	errMsgNotImplemented                     = "not implemented"
+	errMsgFeatureNotSupported                = "feature is not supported: %v"
+	errMsgCommandNotRecognized               = "%v command not recognized"
+	errMsgLocalPathNotDirectory              = "the local path is not a directory: %v"
+	errMsgFileNotExists                      = "file does not exist: %v"
+	errMsgInvalidStageFs                     = "destination location type is not valid: %v"
+	errMsgInternalNotMatchEncryptMaterial    = "number of downloading files doesn't match the encryption materials. files=%v, encmat=%v"
+	errMsgFailedToConvertToS3Client          = "failed to convert interface to s3 client"
+	errMsgNoResultIDs                        = "no result IDs returned with the multi-statement query"
+	errMsgQueryStatus                        = "server ErrorCode=%s, ErrorMessage=%s"
+	errMsgInvalidPadding                     = "invalid padding on input"
 )
 
 var (
@@ -263,4 +310,12 @@ var (
 	ErrInvalidRegion = &SnowflakeError{
 		Number:  ErrCodeRegionOverlap,
 		Message: "two regions specified"}
+
+	// ErrUnknownError is returned if the server side returns an error without meaningful message.
+	ErrUnknownError = &SnowflakeError{
+		Number:   -1,
+		SQLState: "-1",
+		Message:  "an unknown server side error occurred",
+		QueryID:  "-1",
+	}
 )

@@ -18,13 +18,28 @@
 package column
 
 import (
+	"database/sql"
+	"database/sql/driver"
+	"encoding"
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
-type String []string
+type String struct {
+	name string
+	col  proto.ColStr
+}
+
+func (col *String) Reset() {
+	col.col.Reset()
+}
+
+func (col String) Name() string {
+	return col.name
+}
 
 func (String) Type() Type {
 	return "String"
@@ -35,26 +50,33 @@ func (String) ScanType() reflect.Type {
 }
 
 func (col *String) Rows() int {
-	return len(*col)
+	return col.col.Rows()
 }
 
-func (col *String) Row(i int, ptr bool) interface{} {
-	value := *col
+func (col *String) Row(i int, ptr bool) any {
+	val := col.col.Row(i)
 	if ptr {
-		return &value[i]
+		return &val
 	}
-	return value[i]
+	return val
 }
 
-func (col *String) ScanRow(dest interface{}, row int) error {
-	v := *col
+func (col *String) ScanRow(dest any, row int) error {
+	val := col.Row(row, false).(string)
 	switch d := dest.(type) {
 	case *string:
-		*d = v[row]
+		*d = val
 	case **string:
 		*d = new(string)
-		**d = v[row]
+		**d = val
+	case *sql.NullString:
+		return d.Scan(val)
+	case encoding.BinaryUnmarshaler:
+		return d.UnmarshalBinary(binary.Str2Bytes(val, len(val)))
 	default:
+		if scan, ok := dest.(sql.Scanner); ok {
+			return scan.Scan(val)
+		}
 		return &ColumnConverterError{
 			Op:   "ScanRow",
 			To:   fmt.Sprintf("%T", dest),
@@ -64,19 +86,105 @@ func (col *String) ScanRow(dest interface{}, row int) error {
 	return nil
 }
 
-func (col *String) Append(v interface{}) (nulls []uint8, err error) {
+func (col *String) AppendRow(v any) error {
+	switch v := v.(type) {
+	case string:
+		col.col.Append(v)
+	case *string:
+		switch {
+		case v != nil:
+			col.col.Append(*v)
+		default:
+			col.col.Append("")
+		}
+	case sql.NullString:
+		switch v.Valid {
+		case true:
+			col.col.Append(v.String)
+		default:
+			col.col.Append("")
+		}
+	case *sql.NullString:
+		switch v.Valid {
+		case true:
+			col.col.Append(v.String)
+		default:
+			col.col.Append("")
+		}
+	case []byte:
+		col.col.Append(string(v))
+	case nil:
+		col.col.Append("")
+	default:
+		if s, ok := v.(driver.Valuer); ok {
+			val, err := s.Value()
+			if err != nil {
+				return &ColumnConverterError{
+					Op:   "AppendRow",
+					To:   "String",
+					From: fmt.Sprintf("%T", s),
+					Hint: "could not get driver.Valuer value",
+				}
+			}
+
+			if s, ok := val.(string); ok {
+				return col.AppendRow(s)
+			}
+
+			return &ColumnConverterError{
+				Op:   "AppendRow",
+				To:   "String",
+				From: fmt.Sprintf("%T", v),
+				Hint: "driver.Valuer value is not a string",
+			}
+		}
+
+		if s, ok := v.(fmt.Stringer); ok {
+			return col.AppendRow(s.String())
+		}
+
+		return &ColumnConverterError{
+			Op:   "AppendRow",
+			To:   "String",
+			From: fmt.Sprintf("%T", v),
+		}
+	}
+	return nil
+}
+
+func (col *String) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []string:
-		*col, nulls = append(*col, v...), make([]uint8, len(v))
+		col.col.AppendArr(v)
+		nulls = make([]uint8, len(v))
 	case []*string:
 		nulls = make([]uint8, len(v))
-		for i, v := range v {
+		for i := range v {
 			switch {
-			case v != nil:
-				*col = append(*col, *v)
+			case v[i] != nil:
+				col.col.Append(*v[i])
 			default:
-				*col, nulls[i] = append(*col, ""), 1
+				col.col.Append("")
+				nulls[i] = 1
 			}
+		}
+	case []sql.NullString:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			col.AppendRow(v[i])
+		}
+	case []*sql.NullString:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			if v[i] == nil {
+				nulls[i] = 1
+			}
+			col.AppendRow(v[i])
+		}
+	case [][]byte:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			col.col.Append(string(v[i]))
 		}
 	default:
 		return nil, &ColumnConverterError{
@@ -88,47 +196,12 @@ func (col *String) Append(v interface{}) (nulls []uint8, err error) {
 	return
 }
 
-func (col *String) AppendRow(v interface{}) error {
-	switch v := v.(type) {
-	case string:
-		*col = append(*col, v)
-	case *string:
-		switch {
-		case v != nil:
-			*col = append(*col, *v)
-		default:
-			*col = append(*col, "")
-		}
-	case nil:
-		*col = append(*col, "")
-	default:
-		return &ColumnConverterError{
-			Op:   "AppendRow",
-			To:   "String",
-			From: fmt.Sprintf("%T", v),
-		}
-	}
-	return nil
+func (col *String) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
 }
 
-func (col *String) Decode(decoder *binary.Decoder, rows int) error {
-	for i := 0; i < int(rows); i++ {
-		v, err := decoder.String()
-		if err != nil {
-			return err
-		}
-		*col = append(*col, v)
-	}
-	return nil
-}
-
-func (col *String) Encode(encoder *binary.Encoder) error {
-	for _, v := range *col {
-		if err := encoder.String(v); err != nil {
-			return err
-		}
-	}
-	return nil
+func (col *String) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
 }
 
 var _ Interface = (*String)(nil)
