@@ -46,7 +46,7 @@ docker run \
   -d \
   -p 9237:9237 \
   --name sql_exporter \
-  justwatch/sql_exporter
+  ghcr.io/justwatchcom/sql_exporter
 ```
 
 Manual `scrape_configs` snippet:
