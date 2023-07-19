@@ -19,6 +19,7 @@ Currently supported:
 - MySQL
 - Snowflake
 - Vertica
+- Materialize
 
 
 What does it look like?
