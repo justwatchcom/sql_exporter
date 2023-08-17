@@ -58,3 +58,18 @@ func ParseCloudSQLUrl(u string) (*CloudSQLUrl, error) {
 	}
 	return cloudSQLUrl, nil
 }
+
+func (u *CloudSQLUrl) GetConnectionURL(driver, instance, database string) (string, error) {
+	pass, isSet := u.User.Password()
+	if !isSet {
+		return "", fmt.Errorf("invalid url: cannot find password")
+	}
+
+	switch driver {
+	case CLOUDSQL_POSTGRES:
+		return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable", instance, u.User.Username(), pass, database), nil
+	case CLOUDSQL_MYSQL:
+		return fmt.Sprintf("%s@cloudsql-mysql(%s)/%s", u.User, instance, database), nil
+	}
+	return "", fmt.Errorf("driver not supported: %s", driver)
+}

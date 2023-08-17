@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -14,12 +15,15 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
+	"github.com/gobwas/glob"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
 	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
+	"golang.org/x/oauth2/google"
+	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
 var (
@@ -102,35 +106,102 @@ func (j *Job) updateConnections() {
 				if parsedU.User != nil {
 					user = parsedU.User.Username()
 				}
-				newConn := &connection{
-					conn:     nil,
-					url:      conn,
-					driver:   cloudsqlDriver,
-					host:     parsedU.Host,
-					database: strings.TrimPrefix(parsedU.Path, "/"),
-					user:     user,
-				}
+
+				database := strings.TrimPrefix(parsedU.Path, "/")
 
 				if strings.ContainsRune(parsedU.Instance, '*') {
 					// We have a glob for the instance.
 					//	List all CloudSQL instance and figure out which ones match
-					TODO
+					ctx := context.Background()
+					instanceGlob := glob.MustCompile(parsedU.Instance)
+					databaseGlob := glob.MustCompile(database)
+
+					// Create an http.Client that uses Application Default Credentials.
+					hc, err := google.DefaultClient(ctx, sqladmin.SqlserviceAdminScope)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not create google client", "conn", conn, "err", err)
+						continue
+					}
+
+					// Create the Google Cloud SQL service.
+					service, err := sqladmin.New(hc)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not create sqladmin client", "conn", conn, "err", err)
+						continue
+					}
+
+					// List instances for the project ID.
+					instances, err := service.Instances.List(parsedU.Project).Do()
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not list cloudsql instances", "conn", conn, "err", err)
+						continue
+					}
+
+					for _, instance := range instances.Items {
+
+						if !instanceGlob.Match(instance.Name) || parsedU.Region != instance.Region {
+							continue
+						}
+
+						if strings.ContainsRune(database, '*') {
+							// We have a glob for the database.
+							//	List all databases in instance and figure out which ones match
+
+							// List databases for the instance.
+							databases, err := service.Databases.List(parsedU.Project, instance.Name).Do()
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not list cloudsql databases", "instance", instance.Name, "err", err)
+								continue
+							}
+
+							for _, db := range databases.Items {
+								if databaseGlob.Match(db.Name) {
+									connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.Name, db.Name)
+									if err != nil {
+										level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+										continue
+									}
+									newConn := &connection{
+										conn:     nil,
+										url:      connectionURL,
+										driver:   cloudsqlDriver,
+										host:     parsedU.Host,
+										database: db.Name,
+										user:     user,
+									}
+									j.conns = append(j.conns, newConn)
+								}
+							}
+						} else {
+							connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.Name, database)
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+								continue
+							}
+
+							newConn := &connection{
+								conn:     nil,
+								url:      connectionURL,
+								driver:   cloudsqlDriver,
+								host:     parsedU.Host,
+								database: database,
+								user:     user,
+							}
+							j.conns = append(j.conns, newConn)
+						}
+					}
+
+				} else {
+					newConn := &connection{
+						conn:     nil,
+						url:      conn,
+						driver:   cloudsqlDriver,
+						host:     parsedU.Host,
+						database: database,
+						user:     user,
+					}
+					j.conns = append(j.conns, newConn)
 				}
-
-				if strings.ContainsRune(newConn.database, '*') {
-					// We have a glob for the database.
-					//	List all databases in instance and figure out which ones match
-
-					TODO
-				}
-
-				switch cloudsqlDriver {
-				case CLOUDSQL_POSTGRES:
-				case CLOUDSQL_MYSQL:
-
-				}
-
-				j.conns = append(j.conns, newConn)
 
 				continue
 			}
