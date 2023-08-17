@@ -6,7 +6,6 @@ cloud.google.com/go/cloudsqlconn/internal/cloudsql
 cloud.google.com/go/cloudsqlconn/internal/trace
 cloud.google.com/go/cloudsqlconn/mysql/mysql
 cloud.google.com/go/cloudsqlconn/postgres/pgxv4
-cloud.google.com/go/cloudsqlconn/sqlserver/mssql
 # cloud.google.com/go/compute v1.20.1
 ## explicit; go 1.19
 cloud.google.com/go/compute/internal
@@ -307,6 +306,16 @@ github.com/go-logfmt/logfmt
 # github.com/go-sql-driver/mysql v1.7.1
 ## explicit; go 1.13
 github.com/go-sql-driver/mysql
+# github.com/gobwas/glob v0.2.3
+## explicit
+github.com/gobwas/glob
+github.com/gobwas/glob/compiler
+github.com/gobwas/glob/match
+github.com/gobwas/glob/syntax
+github.com/gobwas/glob/syntax/ast
+github.com/gobwas/glob/syntax/lexer
+github.com/gobwas/glob/util/runes
+github.com/gobwas/glob/util/strings
 # github.com/goccy/go-json v0.10.0
 ## explicit; go 1.12
 github.com/goccy/go-json
@@ -448,14 +457,6 @@ github.com/lib/pq/scram
 github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/microsoft/go-mssqldb v1.3.0
 ## explicit; go 1.13
-github.com/microsoft/go-mssqldb
-github.com/microsoft/go-mssqldb/integratedauth
-github.com/microsoft/go-mssqldb/integratedauth/ntlm
-github.com/microsoft/go-mssqldb/integratedauth/winsspi
-github.com/microsoft/go-mssqldb/internal/cp
-github.com/microsoft/go-mssqldb/internal/decimal
-github.com/microsoft/go-mssqldb/internal/querytext
-github.com/microsoft/go-mssqldb/msdsn
 # github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8
 ## explicit
 github.com/minio/asm2plan9s
