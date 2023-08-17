@@ -26,6 +26,8 @@ var (
 	// MetricNameRE matches any invalid metric name
 	// characters, see github.com/prometheus/common/model.MetricNameRE
 	MetricNameRE = regexp.MustCompile("[^a-zA-Z0-9_:]+")
+	// CloudSQLPrefix is the prefix which trigger the connection to be done via the cloudsql connection client
+	CloudSQLPrefix = "cloudsql+"
 )
 
 // Init will initialize the metric descriptors
@@ -77,16 +79,62 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 func (j *Job) updateConnections() {
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
-		level.Error(j.log).Log("msg", "No connections for job", "job", j.Name)
-		return
+		level.Error(j.log).Log("msg", "no connections for job", "job_name", j.Name)
 	}
 	// make space for the connection objects
 	if j.conns == nil {
 		j.conns = make([]*connection, 0, len(j.Connections))
 	}
-	// parse the connection URLs and create an connection object for each
+	// parse the connection URLs and create a connection object for each
 	if len(j.conns) < len(j.Connections) {
 		for _, conn := range j.Connections {
+
+			// Check if we need to use cloudsql driver
+			if useCloudSQL, cloudsqlDriver := isValidCloudSQLDriver(conn); useCloudSQL {
+				// Do CloudSQL stuff
+				parsedU, err := ParseCloudSQLUrl(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "could not parse cloudsql conn", "conn", conn)
+					continue
+				}
+
+				user := ""
+				if parsedU.User != nil {
+					user = parsedU.User.Username()
+				}
+				newConn := &connection{
+					conn:     nil,
+					url:      conn,
+					driver:   cloudsqlDriver,
+					host:     parsedU.Host,
+					database: strings.TrimPrefix(parsedU.Path, "/"),
+					user:     user,
+				}
+
+				if strings.ContainsRune(parsedU.Instance, '*') {
+					// We have a glob for the instance.
+					//	List all CloudSQL instance and figure out which ones match
+					TODO
+				}
+
+				if strings.ContainsRune(newConn.database, '*') {
+					// We have a glob for the database.
+					//	List all databases in instance and figure out which ones match
+
+					TODO
+				}
+
+				switch cloudsqlDriver {
+				case CLOUDSQL_POSTGRES:
+				case CLOUDSQL_MYSQL:
+
+				}
+
+				j.conns = append(j.conns, newConn)
+
+				continue
+			}
+
 			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
 			if strings.HasPrefix(conn, "mysql://") {
 				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
@@ -104,6 +152,7 @@ func (j *Job) updateConnections() {
 				})
 				continue
 			}
+
 			u, err := url.Parse(conn)
 			if err != nil {
 				level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
@@ -165,6 +214,7 @@ func (j *Job) updateConnections() {
 					continue
 				}
 			}
+
 			j.conns = append(j.conns, newConn)
 		}
 	}

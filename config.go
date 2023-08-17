@@ -73,10 +73,19 @@ func Read(path string) (File, error) {
 	return f, nil
 }
 
+// CloudSQLConfig is required for configuring the cloudsql connections.
+//
+//	If it is not set, no CloudSQL connection will be created
+type CloudSQLConfig struct {
+	// If KeyFile is set, then we load the IAM key from there
+	KeyFile string `yaml:"key_file"`
+}
+
 // File is a collection of jobs
 type File struct {
-	Jobs    []*Job            `yaml:"jobs"`
-	Queries map[string]string `yaml:"queries"`
+	Jobs           []*Job            `yaml:"jobs"`
+	Queries        map[string]string `yaml:"queries"`
+	CloudSQLConfig *CloudSQLConfig   `yaml:"cloudsql_config"`
 }
 
 type cronConfig struct {

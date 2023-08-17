@@ -1,17 +1,25 @@
 package main
 
 import (
+	"cloud.google.com/go/cloudsqlconn"
+	"cloud.google.com/go/cloudsqlconn/mysql/mysql"
+	"cloud.google.com/go/cloudsqlconn/postgres/pgxv4"
+	"context"
+	"fmt"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/robfig/cron/v3"
+	"google.golang.org/api/option"
+	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
 // Exporter collects SQL metrics. It implements prometheus.Collector.
 type Exporter struct {
-	jobs          []*Job
-	logger        log.Logger
-	cronScheduler *cron.Cron
+	jobs            []*Job
+	logger          log.Logger
+	cronScheduler   *cron.Cron
+	sqladminService *sqladmin.Service
 }
 
 // NewExporter returns a new SQL Exporter for the provided config.
@@ -30,6 +38,36 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 		jobs:          make([]*Job, 0, len(cfg.Jobs)),
 		logger:        logger,
 		cronScheduler: cron.New(),
+	}
+
+	if cfg.CloudSQLConfig != nil {
+		if cfg.CloudSQLConfig.KeyFile == "" {
+			return nil, fmt.Errorf("as cloudsql_config is not empty, then cloudsql_config.key_file must be set")
+		}
+
+		// We currently only support keyfile. Additional authentication options would be via automatic IAM
+		//	 with cloudsqlconn.WithIAMAuthN()
+		cloudsqlconnection := cloudsqlconn.WithCredentialsFile(cfg.CloudSQLConfig.KeyFile)
+		sqladminService, err := sqladmin.NewService(context.Background(), option.WithAPIKey(cfg.CloudSQLConfig.KeyFile))
+		if err != nil {
+			return nil, fmt.Errorf("could not create new cloud sqladmin service: %w", err)
+		}
+		exp.sqladminService = sqladminService
+
+		//
+		// Register all possible cloudsql drivers
+
+		// drop cleanup as we don't really know when to end this
+		_, err = pgxv4.RegisterDriver(CLOUDSQL_POSTGRES, cloudsqlconnection)
+		if err != nil {
+			return nil, fmt.Errorf("could not register cloudsql-postgres driver: %w", err)
+		}
+
+		// drop cleanup as we don't really know when to end this
+		_, err = mysql.RegisterDriver(CLOUDSQL_MYSQL, cloudsqlconnection)
+		if err != nil {
+			return nil, fmt.Errorf("could not register cloudsql-mysql driver: %w", err)
+		}
 	}
 
 	// dispatch all jobs
