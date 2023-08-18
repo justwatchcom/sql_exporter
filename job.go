@@ -22,7 +22,6 @@ import (
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
 	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
-	"golang.org/x/oauth2/google"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
@@ -116,15 +115,8 @@ func (j *Job) updateConnections() {
 					instanceGlob := glob.MustCompile(parsedU.Instance)
 					databaseGlob := glob.MustCompile(database)
 
-					// Create an http.Client that uses Application Default Credentials.
-					hc, err := google.DefaultClient(ctx, sqladmin.SqlserviceAdminScope)
-					if err != nil {
-						level.Error(j.log).Log("msg", "could not create google client", "conn", conn, "err", err)
-						continue
-					}
-
 					// Create the Google Cloud SQL service.
-					service, err := sqladmin.New(hc)
+					service, err := sqladmin.NewService(ctx)
 					if err != nil {
 						level.Error(j.log).Log("msg", "could not create sqladmin client", "conn", conn, "err", err)
 						continue
