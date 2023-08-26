@@ -148,7 +148,7 @@ func (j *Job) updateConnections() {
 
 							for _, db := range databases.Items {
 								if databaseGlob.Match(db.Name) {
-									connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.Name, db.Name)
+									connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, db.Name)
 									if err != nil {
 										level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
 										continue
@@ -157,7 +157,7 @@ func (j *Job) updateConnections() {
 										conn:     nil,
 										url:      connectionURL,
 										driver:   cloudsqlDriver,
-										host:     parsedU.Host,
+										host:     instance.Name,
 										database: db.Name,
 										user:     user,
 									}
@@ -165,7 +165,7 @@ func (j *Job) updateConnections() {
 								}
 							}
 						} else {
-							connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.Name, database)
+							connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, database)
 							if err != nil {
 								level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
 								continue
@@ -175,7 +175,7 @@ func (j *Job) updateConnections() {
 								conn:     nil,
 								url:      connectionURL,
 								driver:   cloudsqlDriver,
-								host:     parsedU.Host,
+								host:     instance.Name,
 								database: database,
 								user:     user,
 							}
@@ -300,7 +300,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 	// connect to DB if not connected already
 	if err := conn.connect(j); err != nil {
-		level.Warn(j.log).Log("msg", "Failed to connect", "err", err)
+		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
 		return
 	}
