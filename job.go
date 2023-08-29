@@ -184,9 +184,15 @@ func (j *Job) updateConnections() {
 					}
 
 				} else {
+					connectionName := fmt.Sprintf("%s:%s:%s", parsedU.Project, parsedU.Region, parsedU.Instance)
+					connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, connectionName, database)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+						continue
+					}
 					newConn := &connection{
 						conn:     nil,
-						url:      conn,
+						url:      connectionURL,
 						driver:   cloudsqlDriver,
 						host:     parsedU.Host,
 						database: database,
