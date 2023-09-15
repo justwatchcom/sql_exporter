@@ -12,7 +12,7 @@ WORKDIR /src
 RUN GOGC=off go build -mod=vendor -v -o /sql_exporter .
 
 # multistage
-FROM alpine:latest
+FROM alpine:3.18.3
 
 RUN apk --update upgrade && \
     apk add curl ca-certificates && \
