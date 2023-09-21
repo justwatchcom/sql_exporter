@@ -20,6 +20,7 @@ Currently supported:
 - Snowflake
 - Vertica
 - Materialize
+- CloudSQL
 
 
 What does it look like?
