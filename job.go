@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -14,18 +15,22 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
+	"github.com/gobwas/glob"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
 	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
+	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
 var (
 	// MetricNameRE matches any invalid metric name
 	// characters, see github.com/prometheus/common/model.MetricNameRE
 	MetricNameRE = regexp.MustCompile("[^a-zA-Z0-9_:]+")
+	// CloudSQLPrefix is the prefix which trigger the connection to be done via the cloudsql connection client
+	CloudSQLPrefix = "cloudsql+"
 )
 
 // Init will initialize the metric descriptors
@@ -77,16 +82,128 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 func (j *Job) updateConnections() {
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
-		level.Error(j.log).Log("msg", "No connections for job", "job", j.Name)
-		return
+		level.Error(j.log).Log("msg", "no connections for job", "job_name", j.Name)
 	}
 	// make space for the connection objects
 	if j.conns == nil {
 		j.conns = make([]*connection, 0, len(j.Connections))
 	}
-	// parse the connection URLs and create an connection object for each
+	// parse the connection URLs and create a connection object for each
 	if len(j.conns) < len(j.Connections) {
 		for _, conn := range j.Connections {
+
+			// Check if we need to use cloudsql driver
+			if useCloudSQL, cloudsqlDriver := isValidCloudSQLDriver(conn); useCloudSQL {
+				// Do CloudSQL stuff
+				parsedU, err := ParseCloudSQLUrl(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "could not parse cloudsql conn", "conn", conn)
+					continue
+				}
+
+				user := ""
+				if parsedU.User != nil {
+					user = parsedU.User.Username()
+				}
+
+				database := strings.TrimPrefix(parsedU.Path, "/")
+
+				if strings.ContainsRune(parsedU.Instance, '*') {
+					// We have a glob for the instance.
+					//	List all CloudSQL instance and figure out which ones match
+					ctx := context.Background()
+					instanceGlob := glob.MustCompile(parsedU.Instance)
+					databaseGlob := glob.MustCompile(database)
+
+					// Create the Google Cloud SQL service.
+					service, err := sqladmin.NewService(ctx)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not create sqladmin client", "conn", conn, "err", err)
+						continue
+					}
+
+					// List instances for the project ID.
+					instances, err := service.Instances.List(parsedU.Project).Do()
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not list cloudsql instances", "conn", conn, "err", err)
+						continue
+					}
+
+					for _, instance := range instances.Items {
+
+						if !instanceGlob.Match(instance.Name) || parsedU.Region != instance.Region {
+							continue
+						}
+
+						if strings.ContainsRune(database, '*') {
+							// We have a glob for the database.
+							//	List all databases in instance and figure out which ones match
+
+							// List databases for the instance.
+							databases, err := service.Databases.List(parsedU.Project, instance.Name).Do()
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not list cloudsql databases", "instance", instance.Name, "err", err)
+								continue
+							}
+
+							for _, db := range databases.Items {
+								if databaseGlob.Match(db.Name) {
+									connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, db.Name)
+									if err != nil {
+										level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+										continue
+									}
+									newConn := &connection{
+										conn:     nil,
+										url:      connectionURL,
+										driver:   cloudsqlDriver,
+										host:     instance.Name,
+										database: db.Name,
+										user:     user,
+									}
+									j.conns = append(j.conns, newConn)
+								}
+							}
+						} else {
+							connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, database)
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+								continue
+							}
+
+							newConn := &connection{
+								conn:     nil,
+								url:      connectionURL,
+								driver:   cloudsqlDriver,
+								host:     instance.Name,
+								database: database,
+								user:     user,
+							}
+							j.conns = append(j.conns, newConn)
+						}
+					}
+
+				} else {
+					connectionName := fmt.Sprintf("%s:%s:%s", parsedU.Project, parsedU.Region, parsedU.Instance)
+					connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, connectionName, database)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+						continue
+					}
+					newConn := &connection{
+						conn:     nil,
+						url:      connectionURL,
+						driver:   cloudsqlDriver,
+						host:     parsedU.Host,
+						database: database,
+						user:     user,
+					}
+					j.conns = append(j.conns, newConn)
+				}
+
+				continue
+			}
+
 			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
 			if strings.HasPrefix(conn, "mysql://") {
 				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
@@ -104,6 +221,7 @@ func (j *Job) updateConnections() {
 				})
 				continue
 			}
+
 			u, err := url.Parse(conn)
 			if err != nil {
 				level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
@@ -165,6 +283,7 @@ func (j *Job) updateConnections() {
 					continue
 				}
 			}
+
 			j.conns = append(j.conns, newConn)
 		}
 	}
@@ -187,7 +306,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 	// connect to DB if not connected already
 	if err := conn.connect(j); err != nil {
-		level.Warn(j.log).Log("msg", "Failed to connect", "err", err)
+		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
 		return
 	}
