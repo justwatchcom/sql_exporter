@@ -17,6 +17,14 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+func getenv(key, defaultVal string) string {
+	if val, found := os.LookupEnv(key); found {
+		return val
+	} else {
+		return defaultVal
+	}
+}
+
 var (
 	failedScrapes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -25,7 +33,9 @@ var (
 		},
 		[]string{"driver", "host", "database", "user", "sql_job", "query"},
 	)
-	reEnvironmentPlaceholders = regexp.MustCompile(`{{.+?}}`)
+	tmplStart                 = getenv("TEMPLATE_START", "{{")
+	tmplEnd                   = getenv("TEMPLATE_END", "}}")
+	reEnvironmentPlaceholders = regexp.MustCompile(fmt.Sprintf("%s.+?%s", tmplStart, tmplEnd))
 )
 
 func init() {
@@ -49,7 +59,7 @@ func Read(path string) (File, error) {
 	}
 
 	placeholders := reEnvironmentPlaceholders.FindAllString(string(buf), -1)
-	replacer := strings.NewReplacer("{{", "", "}}", "")
+	replacer := strings.NewReplacer(tmplStart, "", tmplEnd, "")
 	var replacements []string
 	for _, placeholder := range placeholders {
 		environmentVariableName := strings.ToUpper(replacer.Replace(placeholder))
