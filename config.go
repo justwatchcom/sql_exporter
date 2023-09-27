@@ -20,9 +20,8 @@ import (
 func getenv(key, defaultVal string) string {
 	if val, found := os.LookupEnv(key); found {
 		return val
-	} else {
-		return defaultVal
 	}
+	return defaultVal
 }
 
 var (

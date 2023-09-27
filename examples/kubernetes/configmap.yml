@@ -227,6 +227,7 @@ data:
       - 'postgres://postgres_exporter@postgres/db1?sslmode=disable'
       - 'postgres://postgres_exporter@postgres/db2?sslmode=disable'
       - 'postgres://postgres_exporter@postgres/db3?sslmode=disable'
+      - '[[ POSTGRES_CONNECTION_DB4 ]]'
       queries:
       - name: "pg_stat_user_tables"
         help: "Table stats"
