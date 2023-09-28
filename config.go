@@ -34,7 +34,13 @@ var (
 	)
 	tmplStart                 = getenv("TEMPLATE_START", "{{")
 	tmplEnd                   = getenv("TEMPLATE_END", "}}")
-	reEnvironmentPlaceholders = regexp.MustCompile(fmt.Sprintf("%s.+?%s", tmplStart, tmplEnd))
+	reEnvironmentPlaceholders = regexp.MustCompile(
+		fmt.Sprintf(
+			"%s.+?%s",
+			regexp.QuoteMeta(tmplStart),
+			regexp.QuoteMeta(tmplEnd),
+		),
+	)
 )
 
 func init() {
