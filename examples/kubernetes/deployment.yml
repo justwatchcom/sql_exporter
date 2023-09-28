@@ -26,6 +26,12 @@ spec:
           value: /config/config.yml
         - name: PGPASSFILE
           value: /pgpass/pgpass
+        - name: TEMPLATE_START
+          value: '[['
+        - name: TEMPLATE_END
+          value: ']]'
+        - name: POSTGRES_CONNECTION_DB4
+          value: postgres://postgres_exporter@postgres/db4?sslmode=disable
         image: ghcr.io/justwatchcom/sql_exporter:latest
         livenessProbe:
           httpGet:
