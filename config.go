@@ -61,7 +61,9 @@ func Read(path string) (File, error) {
 	replacer := strings.NewReplacer(tmplStart, "", tmplEnd, "")
 	var replacements []string
 	for _, placeholder := range placeholders {
-		environmentVariableName := strings.ToUpper(replacer.Replace(placeholder))
+		environmentVariableName := strings.TrimSpace(
+			strings.ToUpper(replacer.Replace(placeholder)),
+		)
 		environmentVariableValue := os.Getenv(environmentVariableName)
 
 		// We extracted a placeholder and found the value in the env variables to replace it with
