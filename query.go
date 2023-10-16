@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -165,5 +166,24 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 	// create a new immutable const metric that can be cached and returned on
 	// every scrape. Remember that the order of the lable values in the labels
 	// slice must match the order of the label names in the descriptor!
-	return prometheus.NewConstMetric(q.desc, prometheus.GaugeValue, value, labels...)
+	metric, err := prometheus.NewConstMetric(
+		q.desc, prometheus.GaugeValue, value, labels...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if q.Timestamp != "" {
+		if tsRaw, ok := res[q.Timestamp]; ok {
+			switch ts := tsRaw.(type) {
+			case time.Time:
+				return prometheus.NewMetricWithTimestamp(ts, metric), nil
+			default:
+				level.Warn(q.log).Log(
+					"msg", "timestamp label %q is of type %T, expected time.Time",
+					"column", tsRaw,
+				)
+			}
+		}
+	}
+	return metric, nil
 }

@@ -140,6 +140,9 @@ jobs:
     # used by the Prometheus server. Important: Must be the same for all metrics
     # with the same name!
     help: "Number of running queries"
+    # Optional: Column to use as a metric timestamp source.
+    # Leave unset if it's not needed
+    timestamp: "created_at"
     # Labels is an array of columns which will be used as additional labels.
     # Must be the same for all metrics with the same name!
     # All labels columns should be of type text, varchar or string
@@ -153,8 +156,8 @@ jobs:
     # Query is the SQL query that is run unalterted on the each of the connections
     # for this job
     query:  |
-            SELECT datname::text, usename::text, COUNT(*)::float AS count
-            FROM pg_stat_activity GROUP BY datname, usename;
+            SELECT created_at, datname::text, usename::text, COUNT(*)::float AS count
+            FROM pg_stat_activity GROUP BY created_at, datname, usename;
     # Consider the query failed if it returns zero rows
     allow_zero_rows: false
 ```
