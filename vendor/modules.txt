@@ -36,6 +36,8 @@ github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime
 github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming
 github.com/Azure/azure-sdk-for-go/sdk/azcore/to
 github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing
+# github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.3.0
+## explicit; go 1.18
 # github.com/Azure/azure-sdk-for-go/sdk/internal v1.3.0
 ## explicit; go 1.18
 github.com/Azure/azure-sdk-for-go/sdk/internal/diag
@@ -455,8 +457,6 @@ github.com/lib/pq/scram
 # github.com/matttproud/golang_protobuf_extensions v1.0.4
 ## explicit; go 1.9
 github.com/matttproud/golang_protobuf_extensions/pbutil
-# github.com/microsoft/go-mssqldb v1.3.0
-## explicit; go 1.13
 # github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8
 ## explicit
 github.com/minio/asm2plan9s
