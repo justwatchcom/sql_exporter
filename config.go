@@ -156,6 +156,7 @@ type Query struct {
 	Help          string   `yaml:"help"`      // the prometheus metric help text
 	Labels        []string `yaml:"labels"`    // expose these columns as labels per gauge
 	Values        []string `yaml:"values"`    // expose each of these as an gauge
+	Timestamp     string   `yaml:"timestamp"` // expose as metric timestamp
 	Query         string   `yaml:"query"`     // a literal query
 	QueryRef      string   `yaml:"query_ref"` // references an query in the query map
 }
