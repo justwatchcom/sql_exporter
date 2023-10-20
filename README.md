@@ -156,7 +156,7 @@ jobs:
     # Query is the SQL query that is run unalterted on the each of the connections
     # for this job
     query:  |
-            SELECT created_at, datname::text, usename::text, COUNT(*)::float AS count
+            SELECT now() as created_at, datname::text, usename::text, COUNT(*)::float AS count
             FROM pg_stat_activity GROUP BY created_at, datname, usename;
     # Consider the query failed if it returns zero rows
     allow_zero_rows: false
