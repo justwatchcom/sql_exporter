@@ -25,6 +25,10 @@ import (
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
+const (
+	defaultMetricNamePrefix string = "sql_"
+)
+
 var (
 	// MetricNameRE matches any invalid metric name
 	// characters, see github.com/prometheus/common/model.MetricNameRE
@@ -60,7 +64,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 			q.metrics = make(map[*connection][]prometheus.Metric, len(j.Queries))
 		}
 		// try to satisfy prometheus naming restrictions
-		name := MetricNameRE.ReplaceAllString("sql_"+q.Name, "")
+		name := MetricNameRE.ReplaceAllString(j.metricName(q.Name), "")
 		help := q.Help
 		// prepare a new metrics descriptor
 		//
@@ -77,6 +81,16 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	}
 	j.updateConnections()
 	return nil
+}
+
+func (j *Job) metricName(queryName string) string {
+	prefix := defaultMetricNamePrefix
+	if jmp := j.MetricNamePrefix; jmp != nil {
+		prefix = *jmp
+	}
+
+	name := prefix + queryName
+	return name
 }
 
 func (j *Job) updateConnections() {
