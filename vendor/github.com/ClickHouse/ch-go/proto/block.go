@@ -169,7 +169,7 @@ func (b Block) EncodeRawBlock(buf *Buffer, version int, input []InputColumn) err
 		col.EncodeStart(buf, version)
 		if v, ok := col.Data.(Preparable); ok {
 			if err := v.Prepare(); err != nil {
-				return errors.Wrap(err, "prepare")
+				return errors.Wrapf(err, "prepare %q", col.Name)
 			}
 		}
 		if col.Data.Rows() == 0 {
@@ -279,7 +279,7 @@ func (b *Block) DecodeBlock(r *Reader, version int, target Result) error {
 		}
 	}
 	if err := b.DecodeRawBlock(r, version, target); err != nil {
-		return err
+		return errors.Wrap(err, "raw block")
 	}
 
 	return nil

@@ -37,6 +37,11 @@ func (c *ColUInt128) Append(v UInt128) {
 	*c = append(*c, v)
 }
 
+// Append UInt128 slice to column.
+func (c *ColUInt128) AppendArr(vs []UInt128) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for UInt128 .
 func (c *ColUInt128) LowCardinality() *ColLowCardinality[UInt128] {
 	return &ColLowCardinality[UInt128]{

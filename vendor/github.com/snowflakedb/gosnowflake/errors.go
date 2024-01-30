@@ -66,7 +66,7 @@ func (se *SnowflakeError) generateTelemetryExceptionData() *telemetryData {
 }
 
 func (se *SnowflakeError) sendExceptionTelemetry(sc *snowflakeConn, data *telemetryData) error {
-	if sc != nil {
+	if sc != nil && sc.telemetry != nil {
 		return sc.telemetry.addLog(data)
 	}
 	return nil // TODO oob telemetry
@@ -82,7 +82,7 @@ func (se *SnowflakeError) exceptionTelemetry(sc *snowflakeConn) *SnowflakeError 
 
 // return populated error fields replacing the default response
 func populateErrorFields(code int, data *execResponse) *SnowflakeError {
-	err := ErrUnknownError
+	err := errUnknownError()
 	if code != -1 {
 		err.Number = code
 	}
@@ -125,6 +125,8 @@ const (
 	ErrCodePrivateKeyParseError = 260010
 	// ErrCodeFailedToParseAuthenticator is an error code for the case where a DNS includes an invalid authenticator
 	ErrCodeFailedToParseAuthenticator = 260011
+	// ErrCodeClientConfigFailed is an error code for the case where clientConfigFile is invalid or applying client configuration fails
+	ErrCodeClientConfigFailed = 260012
 
 	/* network */
 
@@ -216,6 +218,8 @@ const (
 	ErrInvalidOffsetStr = 268001
 	// ErrInvalidBinaryHexForm is an error code for the case where a binary data in hex form is invalid.
 	ErrInvalidBinaryHexForm = 268002
+	// ErrTooHighTimestampPrecision is an error code for the case where cannot convert Snowflake timestamp to arrow.Timestamp
+	ErrTooHighTimestampPrecision = 268003
 
 	/* OCSP */
 
@@ -288,34 +292,55 @@ const (
 	errMsgNoResultIDs                        = "no result IDs returned with the multi-statement query"
 	errMsgQueryStatus                        = "server ErrorCode=%s, ErrorMessage=%s"
 	errMsgInvalidPadding                     = "invalid padding on input"
+	errMsgClientConfigFailed                 = "client configuration failed: %v"
 )
 
-var (
-	// ErrEmptyAccount is returned if a DNS doesn't include account parameter.
-	ErrEmptyAccount = &SnowflakeError{
+// Returned if a DNS doesn't include account parameter.
+func errEmptyAccount() *SnowflakeError {
+	return &SnowflakeError{
 		Number:  ErrCodeEmptyAccountCode,
 		Message: "account is empty",
 	}
-	// ErrEmptyUsername is returned if a DNS doesn't include user parameter.
-	ErrEmptyUsername = &SnowflakeError{
+}
+
+// Returned if a DNS doesn't include user parameter.
+func errEmptyUsername() *SnowflakeError {
+	return &SnowflakeError{
 		Number:  ErrCodeEmptyUsernameCode,
 		Message: "user is empty",
 	}
-	// ErrEmptyPassword is returned if a DNS doesn't include password parameter.
-	ErrEmptyPassword = &SnowflakeError{
+}
+
+// Returned if a DNS doesn't include password parameter.
+func errEmptyPassword() *SnowflakeError {
+	return &SnowflakeError{
 		Number:  ErrCodeEmptyPasswordCode,
-		Message: "password is empty"}
+		Message: "password is empty",
+	}
+}
 
-	// ErrInvalidRegion is returned if a DSN's implicit region from account parameter and explicit region parameter conflict.
-	ErrInvalidRegion = &SnowflakeError{
+// Returned if a DSN's implicit region from account parameter and explicit region parameter conflict.
+func errInvalidRegion() *SnowflakeError {
+	return &SnowflakeError{
 		Number:  ErrCodeRegionOverlap,
-		Message: "two regions specified"}
+		Message: "two regions specified",
+	}
+}
 
-	// ErrUnknownError is returned if the server side returns an error without meaningful message.
-	ErrUnknownError = &SnowflakeError{
+// Returned if a DSN includes an invalid authenticator.
+func errFailedToParseAuthenticator() *SnowflakeError {
+	return &SnowflakeError{
+		Number:  ErrCodeFailedToParseAuthenticator,
+		Message: "failed to parse an authenticator",
+	}
+}
+
+// Returned if the server side returns an error without meaningful message.
+func errUnknownError() *SnowflakeError {
+	return &SnowflakeError{
 		Number:   -1,
 		SQLState: "-1",
 		Message:  "an unknown server side error occurred",
 		QueryID:  "-1",
 	}
-)
+}

@@ -20,18 +20,11 @@ package windows
 import (
 	"time"
 
-	"github.com/pkg/errors"
-
-	windows "github.com/elastic/go-windows"
+	"golang.org/x/sys/windows"
 )
 
 func BootTime() (time.Time, error) {
-	msSinceBoot, err := windows.GetTickCount64()
-	if err != nil {
-		return time.Time{}, errors.Wrap(err, "failed to get boot time")
-	}
-
-	bootTime := time.Now().Add(-1 * time.Duration(msSinceBoot) * time.Millisecond)
+	bootTime := time.Now().Add(-1 * windows.DurationSinceBoot())
 
 	// According to GetTickCount64, the resolution of the value is limited to
 	// the resolution of the system timer, which is typically in the range of

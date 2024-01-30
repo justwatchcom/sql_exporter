@@ -19,6 +19,10 @@ func (c *ColBool) Append(v bool) {
 	*c = append(*c, v)
 }
 
+func (c *ColBool) AppendArr(vs []bool) {
+	*c = append(*c, vs...)
+}
+
 // Type returns ColumnType of Bool.
 func (ColBool) Type() ColumnType {
 	return ColumnTypeBool

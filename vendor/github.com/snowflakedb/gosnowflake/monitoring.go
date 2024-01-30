@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"time"
 )
 
 const urlQueriesResultFmt = "/queries/%s/result"
@@ -137,7 +136,7 @@ func (sc *snowflakeConn) checkQueryStatus(
 	if tok, _, _ := sc.rest.TokenAccessor.GetTokens(); tok != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, tok)
 	}
-	resultPath := fmt.Sprintf("/monitoring/queries/%s", qid)
+	resultPath := fmt.Sprintf("%s/%s", monitoringQueriesPath, qid)
 	url := sc.rest.getFullURL(resultPath, &param)
 
 	res, err := sc.rest.FuncGet(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
@@ -208,7 +207,7 @@ func (sc *snowflakeConn) getQueryResultResp(
 	paramsMutex.Unlock()
 	param := make(url.Values)
 	param.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	param.Add("clientStartTime", strconv.FormatInt(time.Now().Unix(), 10))
+	param.Add("clientStartTime", strconv.FormatInt(sc.currentTimeProvider.currentTime(), 10))
 	param.Add(requestGUIDKey, NewUUID().String())
 	token, _, _ := sc.rest.TokenAccessor.GetTokens()
 	if token != "" {
@@ -266,6 +265,6 @@ func (sc *snowflakeConn) buildRowsForRunningQuery(
 	if err := sc.rowsForRunningQuery(ctx, qid, rows); err != nil {
 		return nil, err
 	}
-	rows.ChunkDownloader.start()
-	return rows, nil
+	err := rows.ChunkDownloader.start()
+	return rows, err
 }

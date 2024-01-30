@@ -59,30 +59,27 @@ type pgDriver struct {
 //
 // "host=my-project:us-central1:my-db-instance user=myuser password=mypass"
 func (p *pgDriver) Open(name string) (driver.Conn, error) {
-	var (
-		dbURI string
-		ok    bool
-	)
-
-	p.mu.RLock()
-	dbURI, ok = p.dbURIs[name]
-	p.mu.RUnlock()
-
-	if ok {
-		return stdlib.GetDefaultDriver().Open(dbURI)
+	dbURI, err := p.dbURI(name)
+	if err != nil {
+		return nil, err
 	}
+	return stdlib.GetDefaultDriver().Open(dbURI)
 
+}
+
+// dbURI registers a driver using the provided DSN. If the name has already
+// been registered, dbURI returns the existing registration.
+func (p *pgDriver) dbURI(name string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Recheck to ensure dbURI wasn't created between locks
-	dbURI, ok = p.dbURIs[name]
+	dbURI, ok := p.dbURIs[name]
 	if ok {
-		return stdlib.GetDefaultDriver().Open(dbURI)
+		return dbURI, nil
 	}
 
 	config, err := pgx.ParseConfig(name)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	instConnName := config.Config.Host // Extract instance connection name
 	config.Config.Host = "localhost"   // Replace it with a default value
@@ -93,5 +90,5 @@ func (p *pgDriver) Open(name string) (driver.Conn, error) {
 	dbURI = stdlib.RegisterConnConfig(config)
 	p.dbURIs[name] = dbURI
 
-	return stdlib.GetDefaultDriver().Open(dbURI)
+	return dbURI, nil
 }

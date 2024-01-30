@@ -24,20 +24,24 @@ func (sc *snowflakeConn) isClientSessionKeepAliveEnabled() bool {
 }
 
 func (sc *snowflakeConn) startHeartBeat() {
-	if !sc.isClientSessionKeepAliveEnabled() {
+	if sc.cfg != nil && !sc.isClientSessionKeepAliveEnabled() {
 		return
 	}
-	sc.rest.HeartBeat = &heartbeat{
-		restful: sc.rest,
+	if sc.rest != nil {
+		sc.rest.HeartBeat = &heartbeat{
+			restful: sc.rest,
+		}
+		sc.rest.HeartBeat.start()
 	}
-	sc.rest.HeartBeat.start()
 }
 
 func (sc *snowflakeConn) stopHeartBeat() {
-	if !sc.isClientSessionKeepAliveEnabled() {
+	if sc.cfg != nil && !sc.isClientSessionKeepAliveEnabled() {
 		return
 	}
-	sc.rest.HeartBeat.stop()
+	if sc.rest != nil && sc.rest.HeartBeat != nil {
+		sc.rest.HeartBeat.stop()
+	}
 }
 
 func (sc *snowflakeConn) getArrayBindStageThreshold() int {
@@ -193,7 +197,14 @@ func isDml(v int64) bool {
 	return statementTypeIDDml <= v && v <= statementTypeIDMultiTableInsert
 }
 
+func isDql(data *execResponseData) bool {
+	return data.StatementTypeID == statementTypeIDSelect && !isMultiStmt(data)
+}
+
 func updateRows(data execResponseData) (int64, error) {
+	if data.RowSet == nil {
+		return 0, nil
+	}
 	var count int64
 	for i, n := 0, len(data.RowType); i < n; i++ {
 		v, err := strconv.ParseInt(*data.RowSet[0][i], 10, 64)
@@ -209,8 +220,8 @@ func updateRows(data execResponseData) (int64, error) {
 // Note that the statement type code is also equivalent to type INSERT, so an
 // additional check of the name is required
 func isMultiStmt(data *execResponseData) bool {
-	return data.StatementTypeID == statementTypeIDMulti &&
-		data.RowType[0].Name == "multiple statement execution"
+	var isMultistatementByReturningSelect = data.StatementTypeID == statementTypeIDSelect && data.RowType[0].Name == "multiple statement execution"
+	return isMultistatementByReturningSelect || data.StatementTypeID == statementTypeIDMultistatement
 }
 
 func getResumeQueryID(ctx context.Context) (string, error) {
@@ -277,12 +288,19 @@ func populateChunkDownloader(
 
 func (sc *snowflakeConn) setupOCSPPrivatelink(app string, host string) error {
 	ocspCacheServer := fmt.Sprintf("http://ocsp.%v/ocsp_response_cache.json", host)
+	logger.Debugf("OCSP Cache Server for Privatelink: %v\n", ocspCacheServer)
 	if err := os.Setenv(cacheServerURLEnv, ocspCacheServer); err != nil {
 		return err
 	}
-	ocspRetryHost := fmt.Sprintf("http://ocsp.%v/retry/", host) + "%v/%v"
-	if err := os.Setenv(ocspRetryURLEnv, ocspRetryHost); err != nil {
+	ocspRetryHostTemplate := fmt.Sprintf("http://ocsp.%v/retry/", host) + "%v/%v"
+	logger.Debugf("OCSP Retry URL for Privatelink: %v\n", ocspRetryHostTemplate)
+	if err := os.Setenv(ocspRetryURLEnv, ocspRetryHostTemplate); err != nil {
 		return err
 	}
 	return nil
+}
+
+func isStatementContext(ctx context.Context) bool {
+	v := ctx.Value(executionType)
+	return v == executionTypeStatement
 }

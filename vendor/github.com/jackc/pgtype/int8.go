@@ -50,12 +50,6 @@ func (dst *Int8) Set(src interface{}) error {
 		}
 		*dst = Int8{Int: int64(value), Status: Present}
 	case int:
-		if int64(value) < math.MinInt64 {
-			return fmt.Errorf("%d is greater than maximum value for Int8", value)
-		}
-		if int64(value) > math.MaxInt64 {
-			return fmt.Errorf("%d is greater than maximum value for Int8", value)
-		}
 		*dst = Int8{Int: int64(value), Status: Present}
 	case uint:
 		if uint64(value) > math.MaxInt64 {

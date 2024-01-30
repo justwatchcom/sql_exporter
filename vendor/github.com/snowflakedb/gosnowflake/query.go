@@ -3,6 +3,7 @@
 package gosnowflake
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -27,6 +28,22 @@ type execRequest struct {
 	Parameters   map[string]interface{}       `json:"parameters,omitempty"`
 	Bindings     map[string]execBindParameter `json:"bindings,omitempty"`
 	BindStage    string                       `json:"bindStage,omitempty"`
+	QueryContext requestQueryContext          `json:"queryContextDTO,omitempty"`
+}
+
+type requestQueryContext struct {
+	Entries []requestQueryContextEntry `json:"entries,omitempty"`
+}
+
+type requestQueryContextEntry struct {
+	Context   contextData `json:"context,omitempty"`
+	ID        int         `json:"id"`
+	Priority  int         `json:"priority"`
+	Timestamp int64       `json:"timestamp,omitempty"`
+}
+
+type contextData struct {
+	Base64Data string `json:"base64Data,omitempty"`
 }
 
 type execResponseRowType struct {
@@ -110,6 +127,7 @@ type execResponseData struct {
 	Parallel                int64                 `json:"parallel,omitempty"`
 	Threshold               int64                 `json:"threshold,omitempty"`
 	AutoCompress            bool                  `json:"autoCompress,omitempty"`
+	Overwrite               bool                  `json:"overwrite,omitempty"`
 	SourceCompression       string                `json:"sourceCompression,omitempty"`
 	ShowEncryptionParameter bool                  `json:"clientShowEncryptionParameter,omitempty"`
 	EncryptionMaterial      encryptionWrapper     `json:"encryptionMaterial,omitempty"`
@@ -118,6 +136,9 @@ type execResponseData struct {
 	Command                 string                `json:"command,omitempty"`
 	Kind                    string                `json:"kind,omitempty"`
 	Operation               string                `json:"operation,omitempty"`
+
+	// HTAP
+	QueryContext json.RawMessage `json:"queryContext,omitempty"`
 }
 
 type execResponse struct {

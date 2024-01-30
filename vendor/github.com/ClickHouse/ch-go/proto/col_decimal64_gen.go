@@ -37,6 +37,11 @@ func (c *ColDecimal64) Append(v Decimal64) {
 	*c = append(*c, v)
 }
 
+// Append Decimal64 slice to column.
+func (c *ColDecimal64) AppendArr(vs []Decimal64) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for Decimal64 .
 func (c *ColDecimal64) LowCardinality() *ColLowCardinality[Decimal64] {
 	return &ColLowCardinality[Decimal64]{

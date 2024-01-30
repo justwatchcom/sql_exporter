@@ -63,28 +63,49 @@ func (sr *snowflakeRestful) getAsync(
 	defer close(errChannel)
 	token, _, _ := sr.TokenAccessor.GetTokens()
 	headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
-	resp, err := sr.FuncGet(ctx, sr, URL, headers, timeout)
-	if err != nil {
-		logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
-		sfError.Message = err.Error()
-		errChannel <- sfError
-		return err
-	}
-	if resp.Body != nil {
+
+	var err error
+	var respd execResponse
+	retry := 0
+	retryPattern := []int32{1, 1, 2, 3, 4, 8, 10}
+
+	for {
+		resp, err := sr.FuncGet(ctx, sr, URL, headers, timeout)
+		if err != nil {
+			logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
+			sfError.Message = err.Error()
+			errChannel <- sfError
+			return err
+		}
 		defer resp.Body.Close()
+
+		respd = execResponse{} // reset the response
+		err = json.NewDecoder(resp.Body).Decode(&respd)
+		if err != nil {
+			logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
+			sfError.Message = err.Error()
+			errChannel <- sfError
+			return err
+		}
+		if respd.Code != queryInProgressAsyncCode {
+			// If the query takes longer than 45 seconds to complete the results are not returned.
+			// If the query is still in progress after 45 seconds, retry the request to the /results endpoint.
+			// For all other scenarios continue processing results response
+			break
+		} else {
+			// Sleep before retrying get result request. Exponential backoff up to 5 seconds.
+			// Once 5 second backoff is reached it will keep retrying with this sleeptime.
+			sleepTime := time.Millisecond * time.Duration(500*retryPattern[retry])
+			logger.WithContext(ctx).Infof("Query execution still in progress. Sleep for %v ms", sleepTime)
+			time.Sleep(sleepTime)
+		}
+		if retry < len(retryPattern)-1 {
+			retry++
+		}
+
 	}
 
-	respd := execResponse{}
-	err = json.NewDecoder(resp.Body).Decode(&respd)
-	resp.Body.Close()
-	if err != nil {
-		logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
-		sfError.Message = err.Error()
-		errChannel <- sfError
-		return err
-	}
-
-	sc := &snowflakeConn{rest: sr, cfg: cfg}
+	sc := &snowflakeConn{rest: sr, cfg: cfg, queryContextCache: (&queryContextCache{}).init(), currentTimeProvider: defaultTimeProvider}
 	if respd.Success {
 		if resType == execResultType {
 			res.insertID = -1
@@ -113,12 +134,17 @@ func (sr *snowflakeRestful) getAsync(
 			if isMultiStmt(&respd.Data) {
 				if err = sc.handleMultiQuery(ctx, respd.Data, rows); err != nil {
 					rows.errChannel <- err
+					close(rows.errChannel)
 					return err
 				}
 			} else {
 				rows.addDownloader(populateChunkDownloader(ctx, sc, respd.Data))
 			}
-			rows.ChunkDownloader.start()
+			if err = rows.ChunkDownloader.start(); err != nil {
+				rows.errChannel <- err
+				close(rows.errChannel)
+				return err
+			}
 			rows.errChannel <- nil // mark query status complete
 		}
 	} else {

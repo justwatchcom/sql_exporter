@@ -47,7 +47,7 @@ func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 			return nil
 		}
 	}
-	output, err := os.OpenFile(filepath.Join(user, meta.dstFileName), os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	output, err := os.OpenFile(filepath.Join(user, meta.dstFileName), os.O_CREATE|os.O_WRONLY, readWriteFileMode)
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,7 @@ func (util *localUtil) downloadOneFile(meta *fileMetadata) error {
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(fullDstFileName, data, os.ModePerm); err != nil {
+	if err = os.WriteFile(fullDstFileName, data, readWriteFileMode); err != nil {
 		return err
 	}
 	fi, err := os.Stat(fullDstFileName)

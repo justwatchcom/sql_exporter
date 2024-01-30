@@ -111,6 +111,16 @@ func (c *ColDateTime64) Append(v time.Time) {
 	c.AppendRaw(ToDateTime64(v, c.Precision))
 }
 
+func (c *ColDateTime64) AppendArr(v []time.Time) {
+	if !c.PrecisionSet {
+		panic("DateTime64: no precision set")
+	}
+
+	for _, item := range v {
+		c.AppendRaw(ToDateTime64(item, c.Precision))
+	}
+}
+
 // Raw version of ColDateTime64 for ColumnOf[DateTime64].
 func (c ColDateTime64) Raw() *ColDateTime64Raw {
 	return &ColDateTime64Raw{ColDateTime64: c}
@@ -132,4 +142,9 @@ type ColDateTime64Raw struct {
 }
 
 func (c *ColDateTime64Raw) Append(v DateTime64) { c.AppendRaw(v) }
+func (c *ColDateTime64Raw) AppendArr(vs []DateTime64) {
+	for _, v := range vs {
+		c.AppendRaw(v)
+	}
+}
 func (c ColDateTime64Raw) Row(i int) DateTime64 { return c.Data[i] }

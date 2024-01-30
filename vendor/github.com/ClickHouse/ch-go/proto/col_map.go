@@ -1,6 +1,8 @@
 package proto
 
 import (
+	"strings"
+
 	"github.com/go-faster/errors"
 )
 
@@ -78,6 +80,38 @@ func (c ColMap[K, V]) Row(i int) map[K]V {
 	return m
 }
 
+// RowKV returns a slice of KV[K, V] for a given row.
+func (c ColMap[K, V]) RowKV(i int) []KV[K, V] {
+	var start int
+	end := int(c.Offsets[i])
+	if i > 0 {
+		start = int(c.Offsets[i-1])
+	}
+	v := make([]KV[K, V], 0, end-start)
+	for idx := start; idx < end; idx++ {
+		v = append(v, KV[K, V]{
+			Key:   c.Keys.Row(idx),
+			Value: c.Values.Row(idx),
+		})
+	}
+	return v
+}
+
+// KV is a key-value pair.
+type KV[K comparable, V any] struct {
+	Key   K
+	Value V
+}
+
+// AppendKV is a convenience method for appending a slice of KV[K, V].
+func (c *ColMap[K, V]) AppendKV(kv []KV[K, V]) {
+	for _, v := range kv {
+		c.Keys.Append(v.Key)
+		c.Values.Append(v.Value)
+	}
+	c.Offsets.Append(uint64(c.Keys.Rows()))
+}
+
 func (c *ColMap[K, V]) Append(m map[K]V) {
 	for k, v := range m {
 		c.Keys.Append(k)
@@ -128,4 +162,40 @@ func (c ColMap[K, V]) EncodeColumn(b *Buffer) {
 	c.Offsets.EncodeColumn(b)
 	c.Keys.EncodeColumn(b)
 	c.Values.EncodeColumn(b)
+}
+
+// Prepare ensures Preparable column propagation.
+func (c ColMap[K, V]) Prepare() error {
+	if v, ok := c.Keys.(Preparable); ok {
+		if err := v.Prepare(); err != nil {
+			return errors.Wrap(err, "prepare data")
+		}
+	}
+	if v, ok := c.Values.(Preparable); ok {
+		if err := v.Prepare(); err != nil {
+			return errors.Wrap(err, "prepare data")
+		}
+	}
+	return nil
+}
+
+// Infer ensures Inferable column propagation.
+func (c *ColMap[K, V]) Infer(t ColumnType) error {
+	elems := strings.Split(string(t.Elem()), ",")
+	if len(elems) != 2 {
+		return errors.New("invalid map type")
+	}
+	if v, ok := c.Keys.(Inferable); ok {
+		ct := ColumnType(strings.TrimSpace(elems[0]))
+		if err := v.Infer(ct); err != nil {
+			return errors.Wrap(err, "infer data")
+		}
+	}
+	if v, ok := c.Values.(Inferable); ok {
+		ct := ColumnType(strings.TrimSpace(elems[1]))
+		if err := v.Infer(ct); err != nil {
+			return errors.Wrap(err, "infer data")
+		}
+	}
+	return nil
 }

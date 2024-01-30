@@ -598,12 +598,10 @@ func (b *CompositeBinaryBuilder) Finish() ([]byte, error) {
 }
 
 type CompositeTextBuilder struct {
-	ci         *ConnInfo
-	buf        []byte
-	startIdx   int
-	fieldCount uint32
-	err        error
-	fieldBuf   [32]byte
+	ci       *ConnInfo
+	buf      []byte
+	err      error
+	fieldBuf [32]byte
 }
 
 func NewCompositeTextBuilder(ci *ConnInfo, buf []byte) *CompositeTextBuilder {

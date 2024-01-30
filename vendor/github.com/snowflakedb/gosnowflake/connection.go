@@ -22,7 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/apache/arrow/go/v12/arrow/ipc"
+	"github.com/apache/arrow/go/v14/arrow/ipc"
 )
 
 const (
@@ -34,12 +34,15 @@ const (
 	httpHeaderHost             = "Host"
 	httpHeaderValueOctetStream = "application/octet-stream"
 	httpHeaderContentEncoding  = "Content-Encoding"
+	httpClientAppID            = "CLIENT_APP_ID"
+	httpClientAppVersion       = "CLIENT_APP_VERSION"
 )
 
 const (
-	statementTypeIDMulti            = int64(0x1000)
+	statementTypeIDSelect           = int64(0x1000)
 	statementTypeIDDml              = int64(0x3000)
 	statementTypeIDMultiTableInsert = statementTypeIDDml + int64(0x500)
+	statementTypeIDMultistatement   = int64(0xA000)
 )
 
 const (
@@ -57,17 +60,24 @@ const (
 	queryResultType     resultType = "query"
 )
 
+type execKey string
+
+const (
+	executionType          execKey = "executionType"
+	executionTypeStatement string  = "statement"
+)
+
 const privateLinkSuffix = "privatelink.snowflakecomputing.com"
 
 type snowflakeConn struct {
-	ctx             context.Context
-	cfg             *Config
-	rest            *snowflakeRestful
-	SequenceCounter uint64
-	QueryID         string
-	SQLState        string
-	telemetry       *snowflakeTelemetry
-	internal        InternalClient
+	ctx                 context.Context
+	cfg                 *Config
+	rest                *snowflakeRestful
+	SequenceCounter     uint64
+	telemetry           *snowflakeTelemetry
+	internal            InternalClient
+	queryContextCache   *queryContextCache
+	currentTimeProvider currentTimeProvider
 }
 
 var (
@@ -86,6 +96,10 @@ func (sc *snowflakeConn) exec(
 	var err error
 	counter := atomic.AddUint64(&sc.SequenceCounter, 1) // query sequence counter
 
+	queryContext, err := buildQueryContext(sc.queryContextCache)
+	if err != nil {
+		logger.Errorf("error while building query context: %v", err)
+	}
 	req := execRequest{
 		SQLText:      query,
 		AsyncExec:    noResult,
@@ -93,9 +107,13 @@ func (sc *snowflakeConn) exec(
 		IsInternal:   isInternal,
 		DescribeOnly: describeOnly,
 		SequenceID:   counter,
+		QueryContext: queryContext,
 	}
 	if key := ctx.Value(multiStatementCount); key != nil {
 		req.Parameters[string(multiStatementCount)] = key
+	}
+	if tag := ctx.Value(queryTag); tag != nil {
+		req.Parameters[string(queryTag)] = tag
 	}
 	logger.WithContext(ctx).Infof("parameters: %v", req.Parameters)
 
@@ -138,7 +156,17 @@ func (sc *snowflakeConn) exec(
 	}
 	logger.WithContext(ctx).Infof("Success: %v, Code: %v", data.Success, code)
 	if !data.Success {
-		return nil, (populateErrorFields(code, data)).exceptionTelemetry(sc)
+		err = (populateErrorFields(code, data)).exceptionTelemetry(sc)
+		return nil, err
+	}
+
+	if !sc.cfg.DisableQueryContextCache && data.Data.QueryContext != nil {
+		queryContext, err := extractQueryContext(data)
+		if err != nil {
+			logger.Errorf("error while decoding query context: ", err)
+		} else {
+			sc.queryContextCache.add(sc, queryContext.Entries...)
+		}
 	}
 
 	// handle PUT/GET commands
@@ -150,14 +178,47 @@ func (sc *snowflakeConn) exec(
 	}
 
 	logger.WithContext(ctx).Info("Exec/Query SUCCESS")
-	sc.cfg.Database = data.Data.FinalDatabaseName
-	sc.cfg.Schema = data.Data.FinalSchemaName
-	sc.cfg.Role = data.Data.FinalRoleName
-	sc.cfg.Warehouse = data.Data.FinalWarehouseName
-	sc.QueryID = data.Data.QueryID
-	sc.SQLState = data.Data.SQLState
+	if data.Data.FinalDatabaseName != "" {
+		sc.cfg.Database = data.Data.FinalDatabaseName
+	}
+	if data.Data.FinalSchemaName != "" {
+		sc.cfg.Schema = data.Data.FinalSchemaName
+	}
+	if data.Data.FinalWarehouseName != "" {
+		sc.cfg.Warehouse = data.Data.FinalWarehouseName
+	}
+	if data.Data.FinalRoleName != "" {
+		sc.cfg.Role = data.Data.FinalRoleName
+	}
 	sc.populateSessionParameters(data.Data.Parameters)
 	return data, err
+}
+
+func extractQueryContext(data *execResponse) (queryContext, error) {
+	var queryContext queryContext
+	err := json.Unmarshal(data.Data.QueryContext, &queryContext)
+	return queryContext, err
+}
+
+func buildQueryContext(qcc *queryContextCache) (requestQueryContext, error) {
+	rqc := requestQueryContext{}
+	if qcc == nil || len(qcc.entries) == 0 {
+		logger.Debugf("empty qcc")
+		return rqc, nil
+	}
+	for _, qce := range qcc.entries {
+		contextData := contextData{}
+		if qce.Context == "" {
+			contextData.Base64Data = qce.Context
+		}
+		rqc.Entries = append(rqc.Entries, requestQueryContextEntry{
+			ID:        qce.ID,
+			Priority:  qce.Priority,
+			Timestamp: qce.Timestamp,
+			Context:   contextData,
+		})
+	}
+	return rqc, nil
 }
 
 func (sc *snowflakeConn) Begin() (driver.Tx, error) {
@@ -209,7 +270,7 @@ func (sc *snowflakeConn) Close() (err error) {
 	sc.stopHeartBeat()
 	defer sc.cleanup()
 
-	if !sc.cfg.KeepSessionAlive {
+	if sc.cfg != nil && !sc.cfg.KeepSessionAlive {
 		if err = sc.rest.FuncCloseSession(sc.ctx, sc.rest, sc.rest.RequestTimeout); err != nil {
 			logger.Error(err)
 		}
@@ -278,12 +339,21 @@ func (sc *snowflakeConn) ExecContext(
 		return &snowflakeResult{
 			affectedRows: updatedRows,
 			insertID:     -1,
-			queryID:      sc.QueryID,
+			queryID:      data.Data.QueryID,
 		}, nil // last insert id is not supported by Snowflake
 	} else if isMultiStmt(&data.Data) {
 		return sc.handleMultiExec(ctx, data.Data)
+	} else if isDql(&data.Data) {
+		logger.WithContext(ctx).Debugf("DQL")
+		if isStatementContext(ctx) {
+			return &snowflakeResultNoRows{queryID: data.Data.QueryID}, nil
+		}
+		return driver.ResultNoRows, nil
 	}
 	logger.Debug("DDL")
+	if isStatementContext(ctx) {
+		return &snowflakeResultNoRows{queryID: data.Data.QueryID}, nil
+	}
 	return driver.ResultNoRows, nil
 }
 
@@ -349,7 +419,7 @@ func (sc *snowflakeConn) queryContextInternal(
 
 	rows := new(snowflakeRows)
 	rows.sc = sc
-	rows.queryID = sc.QueryID
+	rows.queryID = data.Data.QueryID
 
 	if isMultiStmt(&data.Data) {
 		// handleMultiQuery is responsible to fill rows with childResults
@@ -360,7 +430,7 @@ func (sc *snowflakeConn) queryContextInternal(
 		rows.addDownloader(populateChunkDownloader(ctx, sc, data.Data))
 	}
 
-	rows.ChunkDownloader.start()
+	err = rows.ChunkDownloader.start()
 	return rows, err
 }
 
@@ -390,6 +460,7 @@ func (sc *snowflakeConn) Ping(ctx context.Context) error {
 	noResult := isAsyncMode(ctx)
 	isDesc := isDescribeOnly(ctx)
 	// TODO: handle isInternal
+	ctx = setResultType(ctx, execResultType)
 	_, err := sc.exec(ctx, "SELECT 1", noResult, false, /* isInternal */
 		isDesc, []driver.NamedValue{})
 	return err
@@ -398,10 +469,10 @@ func (sc *snowflakeConn) Ping(ctx context.Context) error {
 // CheckNamedValue determines which types are handled by this driver aside from
 // the instances captured by driver.Value
 func (sc *snowflakeConn) CheckNamedValue(nv *driver.NamedValue) error {
-	if supported := supportedArrayBind(nv); !supported {
-		return driver.ErrSkip
+	if supportedNullBind(nv) || supportedArrayBind(nv) {
+		return nil
 	}
-	return nil
+	return driver.ErrSkip
 }
 
 func (sc *snowflakeConn) GetQueryStatus(
@@ -430,7 +501,8 @@ func (sc *snowflakeConn) GetQueryStatus(
 func (sc *snowflakeConn) QueryArrowStream(ctx context.Context, query string, bindings ...driver.NamedValue) (ArrowStreamLoader, error) {
 	ctx = WithArrowBatches(context.WithValue(ctx, asyncMode, false))
 	ctx = setResultType(ctx, queryResultType)
-	data, err := sc.exec(ctx, query, false, false /* isinternal */, false, bindings)
+	isDesc := isDescribeOnly(ctx)
+	data, err := sc.exec(ctx, query, false, false /* isinternal */, isDesc, bindings)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("error: %v", err)
 		if data != nil {
@@ -574,11 +646,18 @@ func (asb *ArrowStreamBatch) GetStream(ctx context.Context) (io.ReadCloser, erro
 
 // ArrowStreamLoader is a convenience interface for downloading
 // Snowflake results via multiple Arrow Record Batch streams.
+//
+// Some queries from Snowflake do not return Arrow data regardless
+// of the settings, such as "SHOW WAREHOUSES". In these cases,
+// you'll find TotalRows() > 0 but GetBatches returns no batches
+// and no errors. In this case, the data is accessible via JSONData
+// with the actual types matching up to the metadata in RowTypes.
 type ArrowStreamLoader interface {
 	GetBatches() ([]ArrowStreamBatch, error)
 	TotalRows() int64
 	RowTypes() []execResponseRowType
 	Location() *time.Location
+	JSONData() [][]*string
 }
 
 type snowflakeArrowStreamChunkDownloader struct {
@@ -600,6 +679,9 @@ func (scd *snowflakeArrowStreamChunkDownloader) Location() *time.Location {
 func (scd *snowflakeArrowStreamChunkDownloader) TotalRows() int64 { return scd.Total }
 func (scd *snowflakeArrowStreamChunkDownloader) RowTypes() []execResponseRowType {
 	return scd.RowSet.RowType
+}
+func (scd *snowflakeArrowStreamChunkDownloader) JSONData() [][]*string {
+	return scd.RowSet.JSON
 }
 
 // the server might have had an empty first batch, check if we can decode
@@ -669,10 +751,17 @@ func (scd *snowflakeArrowStreamChunkDownloader) GetBatches() (out []ArrowStreamB
 
 func buildSnowflakeConn(ctx context.Context, config Config) (*snowflakeConn, error) {
 	sc := &snowflakeConn{
-		SequenceCounter: 0,
-		ctx:             ctx,
-		cfg:             &config,
+		SequenceCounter:     0,
+		ctx:                 ctx,
+		cfg:                 &config,
+		queryContextCache:   (&queryContextCache{}).init(),
+		currentTimeProvider: defaultTimeProvider,
 	}
+	// Easy logging is temporarily disabled
+	//err := initEasyLogging(config.ClientConfigFile)
+	//if err != nil {
+	//	return nil, err
+	//}
 	var st http.RoundTripper = SnowflakeTransport
 	if sc.cfg.Transporter == nil {
 		if sc.cfg.InsecureMode {
@@ -714,11 +803,17 @@ func buildSnowflakeConn(ctx context.Context, config Config) (*snowflakeConn, err
 			Timeout:   sc.cfg.ClientTimeout,
 			Transport: st,
 		},
+		JWTClient: &http.Client{
+			Timeout:   sc.cfg.JWTClientTimeout,
+			Transport: st,
+		},
 		TokenAccessor:       tokenAccessor,
 		LoginTimeout:        sc.cfg.LoginTimeout,
 		RequestTimeout:      sc.cfg.RequestTimeout,
+		MaxRetryCount:       sc.cfg.MaxRetryCount,
 		FuncPost:            postRestful,
 		FuncGet:             getRestful,
+		FuncAuthPost:        postAuthRestful,
 		FuncPostQuery:       postRestfulQuery,
 		FuncPostQueryHelper: postRestfulQueryHelper,
 		FuncRenewSession:    renewRestfulSession,

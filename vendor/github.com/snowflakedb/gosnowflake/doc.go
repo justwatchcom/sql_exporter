@@ -7,6 +7,8 @@ Clients can use the database/sql package directly. For example:
 		"database/sql"
 
 		_ "github.com/snowflakedb/gosnowflake"
+
+		"log"
 	)
 
 	func main() {
@@ -118,6 +120,12 @@ The following connection parameters are supported:
   - tracing: Specifies the logging level to be used. Set to error by default.
     Valid values are trace, debug, info, print, warning, error, fatal, panic.
 
+  - disableQueryContextCache: disables parsing of query context returned from server and resending it to server as well.
+    Default value is false.
+
+  - clientConfigFile: specifies the location of the client configuration json file.
+    In this file you can configure Easy Logging feature.
+
 All other parameters are interpreted as session parameters (https://docs.snowflake.com/en/sql-reference/parameters.html).
 For example, the TIMESTAMP_OUTPUT_FORMAT session parameter can be set by adding:
 
@@ -159,6 +167,16 @@ Users can use SetLogger in driver.go to set a customized logger for gosnowflake 
 In order to enable debug logging for the driver, user could use SetLogLevel("debug") in SFLogger interface
 as shown in demo code at cmd/logger.go. To redirect the logs SFlogger.SetOutput method could do the work.
 
+# Query tag
+
+A custom query tag can be set in the context. Each query run with this context
+will include the custom query tag as metadata that will appear in the Query Tag
+column in the Query History log. For example:
+
+	queryTag := "my custom query tag"
+	ctxWithQueryTag := WithQueryTag(ctx, queryTag)
+	rows, err := db.QueryContext(ctxWithQueryTag, query)
+
 # Query request ID
 
 A specific query request ID can be set in the context and will be passed through
@@ -167,6 +185,36 @@ in place of the default randomized request ID. For example:
 	requestID := ParseUUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
 	ctxWithID := WithRequestID(ctx, requestID)
 	rows, err := db.QueryContext(ctxWithID, query)
+
+# Last query ID
+
+If you need query ID for your query you have to use raw connection.
+
+For queries:
+```
+
+	err := conn.Raw(func(x any) error {
+		stmt, err := x.(driver.ConnPrepareContext).PrepareContext(ctx, "SELECT 1")
+		rows, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, nil)
+		rows.(SnowflakeRows).GetQueryID()
+		stmt.(SnowflakeStmt).GetQueryID()
+		return nil
+	}
+
+```
+
+For execs:
+```
+
+	err := conn.Raw(func(x any) error {
+		stmt, err := x.(driver.ConnPrepareContext).PrepareContext(ctx, "INSERT INTO TestStatementQueryIdForExecs VALUES (1)")
+		result, err := stmt.(driver.StmtExecContext).ExecContext(ctx, nil)
+		result.(SnowflakeResult).GetQueryID()
+		stmt.(SnowflakeStmt).GetQueryID()
+		return nil
+	}
+
+```
 
 # Canceling Query by CtrlC
 
@@ -400,6 +448,15 @@ The “?“ inside the “VALUES“ clause specifies that the SQL statement uses
 Binding data that involves time zones can require special handling. For details, see the section
 titled "Timestamps with Time Zones".
 
+Version 1.6.23 (and later) of the driver takes advantage of sql.Null types which enables the proper handling of null parameters inside function calls, i.e.:
+
+	rows, err := db.Query("SELECT * FROM TABLE(SOMEFUNCTION(?))", sql.NullBool{})
+
+The timestamp nullability had to be achieved by wrapping the sql.NullTime type as the Snowflake provides several date and time types
+which are mapped to single Go time.Time type:
+
+	rows, err := db.Query("SELECT * FROM TABLE(SOMEFUNCTION(?))", sf.TypedNullTime{sql.NullTime{}, sf.TimestampLTZType})
+
 # Binding Parameters to Array Variables
 
 Version 1.3.9 (and later) of the Go Snowflake Driver supports the ability to bind an array variable to a parameter in a SQL
@@ -568,8 +625,8 @@ or using a Config structure specifying:
 
 	config := &Config{
 		...
-		Authenticator: "SNOWFLAKE_JWT"
-		PrivateKey:   "<your_private_key_struct in *rsa.PrivateKey type>"
+		Authenticator: AuthTypeJwt,
+		PrivateKey:   "<your_private_key_struct in *rsa.PrivateKey type>",
 	}
 
 The <your_private_key> should be a base64 URL encoded PKCS8 rsa private key string. One way to encode a byte slice to URL
@@ -598,6 +655,34 @@ To generate the valid key pair, you can execute the following commands in the sh
 Note: As of February 2020, Golang's official library does not support passcode-encrypted PKCS8 private key.
 For security purposes, Snowflake highly recommends that you store the passcode-encrypted private key on the disk and
 decrypt the key in your application using a library you trust.
+
+JWT tokens are recreated on each retry and they are valid (`exp` claim) for `jwtTimeout` seconds.
+Each retry timeout is configured by `jwtClientTimeout`.
+Retries are limited by total time of `loginTimeout`.
+
+# External browser authentication
+
+The driver allows to authenticate using the external browser.
+
+When a connection is created, the driver will open the browser window and ask the user to sign in.
+
+To enable this feature, construct the DSN with field "authenticator=EXTERNALBROWSER" or using a Config structure with
+following Authenticator specified:
+
+	config := &Config{
+		...
+		Authenticator: AuthTypeExternalBrowser,
+	}
+
+The external browser authentication implements timeout mechanism. This prevents the driver from hanging interminably when
+browser window was closed, or not responding.
+
+Timeout defaults to 120s and can be changed through setting DSN field "externalBrowserTimeout=240" (time in seconds)
+or using a Config structure with following ExternalBrowserTimeout specified:
+
+	config := &Config{
+		ExternalBrowserTimeout: 240 * time.Second, // Requires time.Duration
+	}
 
 # Executing Multiple Statements in One Call
 
@@ -775,12 +860,12 @@ Because the example code above executes only one query and no other activity, th
 no significant difference in behavior between asynchronous and synchronous behavior.
 The differences become significant if, for example, you want to perform some other
 activity after the query starts and before it completes. The example code below starts
-multiple queries, which run in the background, and then retrieves the results later.
+a query, which run in the background, and then retrieves the results later.
 
 This example uses small SELECT statements that do not retrieve enough data to require
 asynchronous handling. However, the technique works for larger data sets, and for
 situations where the programmer might want to do other work after starting the queries
-and before retrieving the results.
+and before retrieving the results. For a more elaborative example please see cmd/async/async.go
 
 		package gosnowflake
 
@@ -797,28 +882,26 @@ and before retrieving the results.
 		...
 
 		func DemonstrateAsyncMode(db *sql.DB) {
-			// Enable asynchronous mode.
-			ctx := WithAsyncMode(context.Background())
-			// Establish connection
-			conn, _ := db.Conn(ctx)
+			// Enable asynchronous mode
+			ctx := sf.WithAsyncMode(context.Background())
 
-			// Unwrap connection
-			err = conn.Raw(func(x interface{}) error {
-				// Execute asynchronous query
-				rows, _ := x.(driver.QueryerContext).QueryContext(ctx, "select 1", nil)
-				defer rows.Close()
+			// Run the query with asynchronous context
+			rows, err := db.QueryContext(ctx, "select 1")
+			if err != nil {
+				// handle error
+			}
 
-				// Retrieve and check results of the query after casting the result
-				status := rows.(SnowflakeResult).GetStatus()
-				if status == QueryStatusComplete {
-					// do something
-				} else if status == QueryStatusInProgress {
-					// do something
-				} else if status == QueryFailed {
-					// do something
-				}
-				return nil
-			})
+			// do something as the workflow continues whereas the query is computing in the background
+			...
+
+			// Get the data when you are ready to handle it
+			var val int
+			err = rows.Scan(&val)
+			if err != nil {
+				// handle error
+			}
+
+			...
 		}
 
 # Support For PUT and GET
@@ -834,7 +917,7 @@ See the following for information on the syntax and supported parameters:
   - PUT: https://docs.snowflake.com/en/sql-reference/sql/put.html
   - GET: https://docs.snowflake.com/en/sql-reference/sql/get.html
 
-# Using PUT
+## Using PUT
 
 The following example shows how to run a PUT command by passing a string to the
 db.Query() function:
@@ -854,7 +937,7 @@ both an escape character and as a separator in path names.
 To send information from a stream (rather than a file) use code similar to the code below.
 (The ReplaceAll() function is needed on Windows to handle backslashes in the path to the file.)
 
-	fileStream, _ := os.OpenFile(fname, os.O_RDONLY, os.ModePerm)
+	fileStream, _ := os.Open(fname)
 	defer func() {
 		if fileStream != nil {
 			fileStream.Close()
@@ -870,16 +953,30 @@ To send information from a stream (rather than a file) use code similar to the c
 
 Note: PUT statements are not supported for multi-statement queries.
 
-# Using GET
+## Using GET
 
 The following example shows how to run a GET command by passing a string to the
 db.Query() function:
 
-	db.Query("GET file://<local_file> <stage_identifier> <optional_parameters>")
+	db.Query("GET <internal_stage_identifier> file://<local_file> <optional_parameters>")
 
 "<local_file>" should include the file path as well as the name. Snowflake recommends using
 an absolute path rather than a relative path. For example:
 
-	db.Query("GET file:///tmp/my_data_file @~ auto_compress=false overwrite=false")
+	db.Query("GET @~ file:///tmp/my_data_file auto_compress=false overwrite=false")
+
+## Specifying temporary directory for encryption and compression
+
+Putting and getting requires compression and/or encryption, which is done in the OS temporary directory.
+If you cannot use default temporary directory for your OS or you want to specify it yourself, you can use "tmpDirPath" DSN parameter.
+Remember, to encode slashes.
+Example:
+
+	u:p@a.r.c.snowflakecomputing.com/db/s?account=a.r.c&tmpDirPath=%2Fother%2Ftmp
+
+## Using custom configuration for PUT/GET
+
+If you want to override some default configuration options, you can use `WithFileTransferOptions` context.
+There are multiple config parameters including progress bars or compression.
 */
 package gosnowflake

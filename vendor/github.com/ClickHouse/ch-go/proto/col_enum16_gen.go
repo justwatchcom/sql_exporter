@@ -37,6 +37,11 @@ func (c *ColEnum16) Append(v Enum16) {
 	*c = append(*c, v)
 }
 
+// Append Enum16 slice to column.
+func (c *ColEnum16) AppendArr(vs []Enum16) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for Enum16 .
 func (c *ColEnum16) LowCardinality() *ColLowCardinality[Enum16] {
 	return &ColLowCardinality[Enum16]{

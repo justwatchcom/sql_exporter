@@ -5,30 +5,53 @@ package gosnowflake
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+type waitAlgo struct {
+	mutex  *sync.Mutex // required for *rand.Rand usage
+	random *rand.Rand
+	base   time.Duration // base wait time
+	cap    time.Duration // maximum wait time
+}
+
 var random *rand.Rand
+var defaultWaitAlgo *waitAlgo
+
+var authEndpoints = []string{
+	loginRequestPath,
+	tokenRequestPath,
+	authenticatorRequestPath,
+}
+
+var clientErrorsStatusCodesEligibleForRetry = []int{
+	http.StatusTooManyRequests,
+	http.StatusRequestTimeout,
+}
 
 func init() {
 	random = rand.New(rand.NewSource(time.Now().UnixNano()))
+	defaultWaitAlgo = &waitAlgo{mutex: &sync.Mutex{}, random: random, base: 5 * time.Second, cap: 160 * time.Second}
 }
 
 const (
 	// requestGUIDKey is attached to every request against Snowflake
 	requestGUIDKey string = "request_guid"
-	// retryCounterKey is attached to query-request from the second time
-	retryCounterKey string = "retryCounter"
+	// retryCountKey is attached to query-request from the second time
+	retryCountKey string = "retryCount"
+	// retryReasonKey contains last HTTP status or 0 if timeout
+	retryReasonKey string = "retryReason"
+	// clientStartTime contains a time when client started request (first request, not retries)
+	clientStartTimeKey string = "clientStartTime"
 	// requestIDKey is attached to all requests to Snowflake
 	requestIDKey string = "requestId"
 )
@@ -86,56 +109,109 @@ func (replacer *requestGUIDReplace) replace() *url.URL {
 	return replacer.urlPtr
 }
 
-type retryCounterUpdater interface {
+type retryCountUpdater interface {
 	replaceOrAdd(retry int) *url.URL
 }
 
-type retryCounterUpdate struct {
+type retryCountUpdate struct {
 	urlPtr    *url.URL
 	urlValues url.Values
 }
 
 // this replacer does nothing but replace the url
-type transientReplaceOrAdd struct {
+type transientRetryCountUpdater struct {
 	urlPtr *url.URL
 }
 
-func (replaceOrAdder *transientReplaceOrAdd) replaceOrAdd(retry int) *url.URL {
+func (replaceOrAdder *transientRetryCountUpdater) replaceOrAdd(retry int) *url.URL {
 	return replaceOrAdder.urlPtr
 }
 
-func (replacer *retryCounterUpdate) replaceOrAdd(retry int) *url.URL {
-	replacer.urlValues.Del(retryCounterKey)
-	replacer.urlValues.Add(retryCounterKey, strconv.Itoa(retry))
+func (replacer *retryCountUpdate) replaceOrAdd(retry int) *url.URL {
+	replacer.urlValues.Del(retryCountKey)
+	replacer.urlValues.Add(retryCountKey, strconv.Itoa(retry))
 	replacer.urlPtr.RawQuery = replacer.urlValues.Encode()
 	return replacer.urlPtr
 }
 
-func newRetryUpdate(urlPtr *url.URL) retryCounterUpdater {
-	if !strings.HasPrefix(urlPtr.Path, queryRequestPath) {
+func newRetryCountUpdater(urlPtr *url.URL) retryCountUpdater {
+	if !isQueryRequest(urlPtr) {
 		// nop if not query-request
-		return &transientReplaceOrAdd{urlPtr}
+		return &transientRetryCountUpdater{urlPtr}
 	}
 	values, err := url.ParseQuery(urlPtr.RawQuery)
 	if err != nil {
 		// nop if the URL is not valid
-		return &transientReplaceOrAdd{urlPtr}
+		return &transientRetryCountUpdater{urlPtr}
 	}
-	return &retryCounterUpdate{urlPtr, values}
+	return &retryCountUpdate{urlPtr, values}
 }
 
-type waitAlgo struct {
-	mutex *sync.Mutex   // required for random.Int63n
-	base  time.Duration // base wait time
-	cap   time.Duration // maximum wait time
+type retryReasonUpdater interface {
+	replaceOrAdd(reason int) *url.URL
 }
 
-func randSecondDuration(n time.Duration) time.Duration {
-	return time.Duration(random.Int63n(int64(n/time.Second))) * time.Second
+type retryReasonUpdate struct {
+	url *url.URL
 }
 
-// decorrelated jitter backoff
-func (w *waitAlgo) decorr(attempt int, sleep time.Duration) time.Duration {
+func (retryReasonUpdater *retryReasonUpdate) replaceOrAdd(reason int) *url.URL {
+	query := retryReasonUpdater.url.Query()
+	query.Del(retryReasonKey)
+	query.Add(retryReasonKey, strconv.Itoa(reason))
+	retryReasonUpdater.url.RawQuery = query.Encode()
+	return retryReasonUpdater.url
+}
+
+type transientRetryReasonUpdater struct {
+	url *url.URL
+}
+
+func (retryReasonUpdater *transientRetryReasonUpdater) replaceOrAdd(_ int) *url.URL {
+	return retryReasonUpdater.url
+}
+
+func newRetryReasonUpdater(url *url.URL, cfg *Config) retryReasonUpdater {
+	// not a query request
+	if !isQueryRequest(url) {
+		return &transientRetryReasonUpdater{url}
+	}
+	// implicitly disabled retry reason
+	if cfg != nil && cfg.IncludeRetryReason == ConfigBoolFalse {
+		return &transientRetryReasonUpdater{url}
+	}
+	return &retryReasonUpdate{url}
+}
+
+func ensureClientStartTimeIsSet(url *url.URL, clientStartTime string) *url.URL {
+	if !isQueryRequest(url) {
+		// nop if not query-request
+		return url
+	}
+	query := url.Query()
+	if query.Has(clientStartTimeKey) {
+		return url
+	}
+	query.Add(clientStartTimeKey, clientStartTime)
+	url.RawQuery = query.Encode()
+	return url
+}
+
+func isQueryRequest(url *url.URL) bool {
+	return strings.HasPrefix(url.Path, queryRequestPath)
+}
+
+// jitter backoff in seconds
+func (w *waitAlgo) calculateWaitBeforeRetryForAuthRequest(attempt int, currWaitTimeDuration time.Duration) time.Duration {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	currWaitTimeInSeconds := currWaitTimeDuration.Seconds()
+	jitterAmount := w.getJitter(currWaitTimeInSeconds)
+	jitteredSleepTime := chooseRandomFromRange(currWaitTimeInSeconds+jitterAmount, math.Pow(2, float64(attempt))+jitterAmount)
+	return time.Duration(jitteredSleepTime * float64(time.Second))
+}
+
+func (w *waitAlgo) calculateWaitBeforeRetry(attempt int, sleep time.Duration) time.Duration {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	t := 3*sleep - w.base
@@ -148,10 +224,14 @@ func (w *waitAlgo) decorr(attempt int, sleep time.Duration) time.Duration {
 	return w.base
 }
 
-var defaultWaitAlgo = &waitAlgo{
-	mutex: &sync.Mutex{},
-	base:  5 * time.Second,
-	cap:   160 * time.Second,
+func randSecondDuration(n time.Duration) time.Duration {
+	return time.Duration(random.Int63n(int64(n/time.Second))) * time.Second
+}
+
+func (w *waitAlgo) getJitter(currWaitTime float64) float64 {
+	multiplicationFactor := chooseRandomFromRange(-1, 1)
+	jitterAmount := 0.5 * currWaitTime * multiplicationFactor
+	return jitterAmount
 }
 
 type requestFunc func(method, urlStr string, body io.Reader) (*http.Request, error)
@@ -161,15 +241,17 @@ type clientInterface interface {
 }
 
 type retryHTTP struct {
-	ctx      context.Context
-	client   clientInterface
-	req      requestFunc
-	method   string
-	fullURL  *url.URL
-	headers  map[string]string
-	body     []byte
-	timeout  time.Duration
-	raise4XX bool
+	ctx                 context.Context
+	client              clientInterface
+	req                 requestFunc
+	method              string
+	fullURL             *url.URL
+	headers             map[string]string
+	bodyCreator         bodyCreatorType
+	timeout             time.Duration
+	maxRetryCount       int
+	currentTimeProvider currentTimeProvider
+	cfg                 *Config
 }
 
 func newRetryHTTP(ctx context.Context,
@@ -177,7 +259,10 @@ func newRetryHTTP(ctx context.Context,
 	req requestFunc,
 	fullURL *url.URL,
 	headers map[string]string,
-	timeout time.Duration) *retryHTTP {
+	timeout time.Duration,
+	maxRetryCount int,
+	currentTimeProvider currentTimeProvider,
+	cfg *Config) *retryHTTP {
 	instance := retryHTTP{}
 	instance.ctx = ctx
 	instance.client = client
@@ -185,15 +270,12 @@ func newRetryHTTP(ctx context.Context,
 	instance.method = "GET"
 	instance.fullURL = fullURL
 	instance.headers = headers
-	instance.body = nil
 	instance.timeout = timeout
-	instance.raise4XX = false
+	instance.maxRetryCount = maxRetryCount
+	instance.bodyCreator = emptyBodyCreator
+	instance.currentTimeProvider = currentTimeProvider
+	instance.cfg = cfg
 	return &instance
-}
-
-func (r *retryHTTP) doRaise4XX(raise4XX bool) *retryHTTP {
-	r.raise4XX = raise4XX
-	return r
 }
 
 func (r *retryHTTP) doPost() *retryHTTP {
@@ -202,7 +284,14 @@ func (r *retryHTTP) doPost() *retryHTTP {
 }
 
 func (r *retryHTTP) setBody(body []byte) *retryHTTP {
-	r.body = body
+	r.bodyCreator = func() ([]byte, error) {
+		return body, nil
+	}
+	return r
+}
+
+func (r *retryHTTP) setBodyCreator(bodyCreator bodyCreatorType) *retryHTTP {
+	r.bodyCreator = bodyCreator
 	return r
 }
 
@@ -210,14 +299,20 @@ func (r *retryHTTP) execute() (res *http.Response, err error) {
 	totalTimeout := r.timeout
 	logger.WithContext(r.ctx).Infof("retryHTTP.totalTimeout: %v", totalTimeout)
 	retryCounter := 0
-	sleepTime := time.Duration(0)
+	sleepTime := time.Duration(time.Second)
+	clientStartTime := strconv.FormatInt(r.currentTimeProvider.currentTime(), 10)
 
-	var rIDReplacer requestGUIDReplacer
-	var rUpdater retryCounterUpdater
+	var requestGUIDReplacer requestGUIDReplacer
+	var retryCountUpdater retryCountUpdater
+	var retryReasonUpdater retryReasonUpdater
 
 	for {
 		logger.Debugf("retry count: %v", retryCounter)
-		req, err := r.req(r.method, r.fullURL.String(), bytes.NewReader(r.body))
+		body, err := r.bodyCreator()
+		if err != nil {
+			return nil, err
+		}
+		req, err := r.req(r.method, r.fullURL.String(), bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -229,54 +324,60 @@ func (r *retryHTTP) execute() (res *http.Response, err error) {
 			req.Header.Set(k, v)
 		}
 		res, err = r.client.Do(req)
+		// check if it can retry.
+		retryable, err := isRetryableError(req, res, err)
+		if !retryable {
+			return res, err
+		}
 		if err != nil {
-			// check if it can retry.
-			doExit, err := r.isRetryableError(err)
-			if doExit {
-				return res, err
-			}
-			// cannot just return 4xx and 5xx status as the error can be sporadic. run often helps.
 			logger.WithContext(r.ctx).Warningf(
-				"failed http connection. no response is returned. err: %v. retrying...\n", err)
+				"failed http connection. err: %v. retrying...\n", err)
 		} else {
-			if res.StatusCode == http.StatusOK || r.raise4XX && res != nil && res.StatusCode >= 400 && res.StatusCode < 500 && res.StatusCode != 429 {
-				// exit if success
-				// or
-				// abort connection if raise4XX flag is enabled and the range of HTTP status code are 4XX.
-				// This is currently used for Snowflake login. The caller must generate an error object based on HTTP status.
-				break
-			}
 			logger.WithContext(r.ctx).Warningf(
 				"failed http connection. HTTP Status: %v. retrying...\n", res.StatusCode)
 			res.Body.Close()
 		}
-		// uses decorrelated jitter backoff
-		sleepTime = defaultWaitAlgo.decorr(retryCounter, sleepTime)
+		// uses exponential jitter backoff
+		retryCounter++
+		if isLoginRequest(req) {
+			sleepTime = defaultWaitAlgo.calculateWaitBeforeRetryForAuthRequest(retryCounter, sleepTime)
+		} else {
+			sleepTime = defaultWaitAlgo.calculateWaitBeforeRetry(retryCounter, sleepTime)
+		}
 
 		if totalTimeout > 0 {
 			logger.WithContext(r.ctx).Infof("to timeout: %v", totalTimeout)
 			// if any timeout is set
 			totalTimeout -= sleepTime
-			if totalTimeout <= 0 {
+			if totalTimeout <= 0 || retryCounter > r.maxRetryCount {
 				if err != nil {
 					return nil, err
 				}
 				if res != nil {
-					return nil, fmt.Errorf("timeout after %s. HTTP Status: %v. Hanging?", r.timeout, res.StatusCode)
+					return nil, fmt.Errorf("timeout after %s and %v retries. HTTP Status: %v. Hanging?", r.timeout, retryCounter, res.StatusCode)
 				}
-				return nil, fmt.Errorf("timeout after %s. Hanging?", r.timeout)
+				return nil, fmt.Errorf("timeout after %s and %v retries. Hanging?", r.timeout, retryCounter)
 			}
 		}
-		retryCounter++
-		if rIDReplacer == nil {
-			rIDReplacer = newRequestGUIDReplace(r.fullURL)
+		if requestGUIDReplacer == nil {
+			requestGUIDReplacer = newRequestGUIDReplace(r.fullURL)
 		}
-		r.fullURL = rIDReplacer.replace()
-		if rUpdater == nil {
-			rUpdater = newRetryUpdate(r.fullURL)
+		r.fullURL = requestGUIDReplacer.replace()
+		if retryCountUpdater == nil {
+			retryCountUpdater = newRetryCountUpdater(r.fullURL)
 		}
-		r.fullURL = rUpdater.replaceOrAdd(retryCounter)
+		r.fullURL = retryCountUpdater.replaceOrAdd(retryCounter)
+		if retryReasonUpdater == nil {
+			retryReasonUpdater = newRetryReasonUpdater(r.fullURL, r.cfg)
+		}
+		retryReason := 0
+		if res != nil {
+			retryReason = res.StatusCode
+		}
+		r.fullURL = retryReasonUpdater.replaceOrAdd(retryReason)
+		r.fullURL = ensureClientStartTimeIsSet(r.fullURL, clientStartTime)
 		logger.WithContext(r.ctx).Infof("sleeping %v. to timeout: %v. retrying", sleepTime, totalTimeout)
+		logger.WithContext(r.ctx).Infof("retry count: %v, retry reason: %v", retryCounter, retryReason)
 
 		await := time.NewTimer(sleepTime)
 		select {
@@ -287,36 +388,22 @@ func (r *retryHTTP) execute() (res *http.Response, err error) {
 			return res, r.ctx.Err()
 		}
 	}
-	return res, err
 }
 
-func (r *retryHTTP) isRetryableError(err error) (bool, error) {
-	urlError, isURLError := err.(*url.Error)
-	if isURLError {
-		// context cancel or timeout
-		if urlError.Err == context.DeadlineExceeded || urlError.Err == context.Canceled {
-			return true, urlError.Err
-		}
-		if driverError, ok := urlError.Err.(*SnowflakeError); ok {
-			// Certificate Revoked
-			if driverError.Number == ErrOCSPStatusRevoked {
-				return true, err
-			}
-		}
-		if _, ok := urlError.Err.(x509.CertificateInvalidError); ok {
-			// Certificate is invalid
-			return true, err
-		}
-		if _, ok := urlError.Err.(x509.UnknownAuthorityError); ok {
-			// Certificate is self-signed
-			return true, err
-		}
-		errString := urlError.Err.Error()
-		if runtime.GOOS == "darwin" && strings.HasPrefix(errString, "x509:") && strings.HasSuffix(errString, "certificate is expired") {
-			// Certificate is expired
-			return true, err
-		}
-
+func isRetryableError(req *http.Request, res *http.Response, err error) (bool, error) {
+	if err != nil && res == nil { // Failed http connection. Most probably client timeout.
+		return true, err
 	}
-	return false, err
+	if res == nil || req == nil {
+		return false, err
+	}
+	return isRetryableStatus(res.StatusCode), err
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return (statusCode >= 500 && statusCode < 600) || contains(clientErrorsStatusCodesEligibleForRetry, statusCode)
+}
+
+func isLoginRequest(req *http.Request) bool {
+	return contains(authEndpoints, req.URL.Path)
 }

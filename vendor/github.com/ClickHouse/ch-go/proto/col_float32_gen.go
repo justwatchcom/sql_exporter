@@ -37,6 +37,11 @@ func (c *ColFloat32) Append(v float32) {
 	*c = append(*c, v)
 }
 
+// Append float32 slice to column.
+func (c *ColFloat32) AppendArr(vs []float32) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for Float32 .
 func (c *ColFloat32) LowCardinality() *ColLowCardinality[float32] {
 	return &ColLowCardinality[float32]{

@@ -43,6 +43,14 @@ type snowflakeRows struct {
 	status              queryStatus
 	err                 error
 	errChannel          chan error
+	location            *time.Location
+}
+
+func (rows *snowflakeRows) getLocation() *time.Location {
+	if rows.location == nil && rows.sc != nil && rows.sc.cfg != nil {
+		rows.location = getCurrentLocation(rows.sc.cfg.Params)
+	}
+	return rows.location
 }
 
 type snowflakeValue interface{}
@@ -140,7 +148,7 @@ func (rows *snowflakeRows) ColumnTypeScanType(index int) reflect.Type {
 		return nil
 	}
 	return snowflakeTypeToGo(
-		getSnowflakeType(strings.ToUpper(rows.ChunkDownloader.getRowType()[index].Type)),
+		getSnowflakeType(rows.ChunkDownloader.getRowType()[index].Type),
 		rows.ChunkDownloader.getRowType()[index].Scale)
 }
 
@@ -184,11 +192,7 @@ func (rows *snowflakeRows) Next(dest []driver.Value) (err error) {
 		for i, n := 0, len(row.RowSet); i < n; i++ {
 			// could move to chunk downloader so that each go routine
 			// can convert data
-			var loc *time.Location
-			if rows.sc != nil {
-				loc = getCurrentLocation(rows.sc.cfg.Params)
-			}
-			err = stringToValue(&dest[i], rows.ChunkDownloader.getRowType()[i], row.RowSet[i], loc)
+			err = stringToValue(&dest[i], rows.ChunkDownloader.getRowType()[i], row.RowSet[i], rows.getLocation())
 			if err != nil {
 				return err
 			}
@@ -213,7 +217,9 @@ func (rows *snowflakeRows) NextResultSet() error {
 			return io.EOF
 		}
 		rows.ChunkDownloader = rows.ChunkDownloader.getNextChunkDownloader()
-		rows.ChunkDownloader.start()
+		if err := rows.ChunkDownloader.start(); err != nil {
+			return err
+		}
 	}
 	return rows.ChunkDownloader.nextResultSet()
 }

@@ -6,8 +6,6 @@
 _obj
 
 *TEST.out
-main.retry
-testing/ssh_config
-testing/ve
 
 build/
+**/testdata/fuzz

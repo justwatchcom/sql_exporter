@@ -26,8 +26,10 @@ import (
 // capabilityNames is mapping of capability constant values to names.
 //
 // Generated with:
-//   curl -s https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/capability.h | \
-//   grep -P '^#define CAP_\w+\s+\d+' | perl -pe 's/#define (\w+)\s+(\d+)/\2: "\1",/g'
+//
+//	curl -s https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/capability.h | \
+//	grep -P '^#define CAP_\w+\s+\d+' | \
+//	perl -pe 's/#define CAP_(\w+)\s+(\d+)/\2: "\L\1",/g'
 var capabilityNames = map[int]string{
 	0:  "chown",
 	1:  "dac_override",
@@ -67,6 +69,9 @@ var capabilityNames = map[int]string{
 	35: "wake_alarm",
 	36: "block_suspend",
 	37: "audit_read",
+	38: "perfmon",
+	39: "bpf",
+	40: "checkpoint_restore",
 }
 
 func capabilityName(num int) string {
@@ -81,7 +86,7 @@ func capabilityName(num int) string {
 func readCapabilities(content []byte) (*types.CapabilityInfo, error) {
 	var cap types.CapabilityInfo
 
-	err := parseKeyValue(content, ":", func(key, value []byte) error {
+	err := parseKeyValue(content, ':', func(key, value []byte) error {
 		var err error
 		switch string(key) {
 		case "CapInh":

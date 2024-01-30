@@ -8,7 +8,7 @@ vertica-sql-go is a native Go adapter for the Vertica (http://www.vertica.com) d
 
 Please check out [release notes](https://github.com/vertica/vertica-sql-go/releases) to learn about the latest improvements.
 
-vertica-sql-go has been tested with Vertica 12.0.3 and Go 1.16/1.17/1.18/1.19/1.20.
+vertica-sql-go has been tested with Vertica 23.3.0 and Go 1.16/1.17/1.18/1.19/1.20.
 
 ## Installation
 
@@ -101,6 +101,7 @@ Currently supported query arguments are:
 | client_label   | Sets a label for the connection on the server. This value appears in the `client_label` column of the SESSIONS system table. | (default) vertica-sql-go-{version}-{pid}-{timestamp} |
 | autocommit     | Controls whether the connection automatically commits transactions. | 1 = (default) on <br>0 = off|
 | oauth_access_token | To authenticate via OAuth, provide an OAuth Access Token that authorizes a user to the database. | unspecified by default, if specified then *user* is optional |
+| workload | Sets workload property of the session, enabling use of workload routing | empty string by default. Valid values are workload names that already exist in a workload routing rule on the server. If a workload name that doesn't exist is entered, the server will reject it and it will be set to the default empty string |
 
 To ping the server and validate a connection (as the connection isn't necessarily created at that moment), simply call the *PingContext()* method.
 

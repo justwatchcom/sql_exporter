@@ -448,11 +448,15 @@ func (src *Numeric) toFloat64() (float64, error) {
 		return math.Inf(-1), nil
 	}
 
+	if src.Exp == 1 {
+		return float64(src.Int.Int64()), nil
+	}
+
 	buf := make([]byte, 0, 32)
 
-	buf = append(buf, src.Int.String()...)
+	buf = src.Int.Append(buf, 10)
 	buf = append(buf, 'e')
-	buf = append(buf, strconv.FormatInt(int64(src.Exp), 10)...)
+	buf = strconv.AppendInt(buf, int64(src.Exp), 10)
 
 	f, err := strconv.ParseFloat(string(buf), 64)
 	if err != nil {
@@ -488,20 +492,20 @@ func (dst *Numeric) DecodeText(ci *ConnInfo, src []byte) error {
 }
 
 func parseNumericString(str string) (n *big.Int, exp int32, err error) {
-	parts := strings.SplitN(str, ".", 2)
-	digits := strings.Join(parts, "")
+	idx := strings.IndexByte(str, '.')
 
-	if len(parts) > 1 {
-		exp = int32(-len(parts[1]))
-	} else {
-		for len(digits) > 1 && digits[len(digits)-1] == '0' && digits[len(digits)-2] != '-' {
-			digits = digits[:len(digits)-1]
+	if idx == -1 {
+		for len(str) > 1 && str[len(str)-1] == '0' && str[len(str)-2] != '-' {
+			str = str[:len(str)-1]
 			exp++
 		}
+	} else {
+		exp = int32(-(len(str) - idx - 1))
+		str = str[:idx] + str[idx+1:]
 	}
 
 	accum := &big.Int{}
-	if _, ok := accum.SetString(digits, 10); !ok {
+	if _, ok := accum.SetString(str, 10); !ok {
 		return nil, 0, fmt.Errorf("%s is not a number", str)
 	}
 
@@ -825,6 +829,12 @@ func encodeNumericText(n Numeric, buf []byte) (newBuf []byte, err error) {
 func (n Numeric) numberTextBytes() []byte {
 	intStr := n.Int.String()
 	buf := &bytes.Buffer{}
+
+	if len(intStr) > 0 && intStr[:1] == "-" {
+		intStr = intStr[1:]
+		buf.WriteByte('-')
+	}
+
 	exp := int(n.Exp)
 	if exp > 0 {
 		buf.WriteString(intStr)

@@ -6,6 +6,16 @@ func (c *ColDate32) Append(v time.Time) {
 	*c = append(*c, ToDate32(v))
 }
 
+func (c *ColDate32) AppendArr(vs []time.Time) {
+	var dates = make([]Date32, len(vs))
+
+	for i, v := range vs {
+		dates[i] = ToDate32(v)
+	}
+
+	*c = append(*c, dates...)
+}
+
 func (c ColDate32) Row(i int) time.Time {
 	return c[i].Time()
 }

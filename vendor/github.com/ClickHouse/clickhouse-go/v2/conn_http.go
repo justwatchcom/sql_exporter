@@ -27,10 +27,12 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -136,6 +138,15 @@ func (rw *HTTPReaderWriter) reset(pw *io.PipeWriter) io.WriteCloser {
 }
 
 func dialHttp(ctx context.Context, addr string, num int, opt *Options) (*httpConnect, error) {
+	var debugf = func(format string, v ...any) {}
+	if opt.Debug {
+		if opt.Debugf != nil {
+			debugf = opt.Debugf
+		} else {
+			debugf = log.New(os.Stdout, fmt.Sprintf("[clickhouse][conn=%d][%s]", num, addr), 0).Printf
+		}
+	}
+
 	if opt.scheme == "" {
 		switch opt.Protocol {
 		case HTTP:
@@ -239,7 +250,7 @@ func dialHttp(ctx context.Context, addr string, num int, opt *Options) (*httpCon
 			return nil, err
 		}
 		if !resources.ClientMeta.IsSupportedClickHouseVersion(version) {
-			fmt.Printf("WARNING: version %v of ClickHouse is not supported by this client\n", version)
+			debugf("WARNING: version %v of ClickHouse is not supported by this client\n", version)
 		}
 	}
 
@@ -544,7 +555,7 @@ func (h *httpConnect) executeRequest(req *http.Request) (*http.Response, error) 
 		msg, err := h.readRawResponse(resp)
 
 		if err != nil {
-			return nil, errors.Wrap(err, "clickhouse [execute]:: failed to read the response")
+			return nil, fmt.Errorf("clickhouse [execute]:: %d code: failed to read the response: %w", resp.StatusCode, err)
 		}
 
 		return nil, fmt.Errorf("clickhouse [execute]:: %d code: %s", resp.StatusCode, string(msg))

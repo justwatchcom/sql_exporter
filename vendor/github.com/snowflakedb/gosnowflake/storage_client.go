@@ -88,7 +88,12 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 	for retry := 0; retry < maxRetry; retry++ {
 		if !meta.overwrite {
 			header, err := utilClass.getFileHeader(meta, meta.dstFileName)
-			if err != nil {
+			if meta.resStatus == notFoundFile {
+				err := utilClass.uploadFile(dataFile, meta, encryptMeta, maxConcurrency, meta.options.MultiPartThreshold)
+				if err != nil {
+					logger.Warnf("Error uploading %v. err: %v", dataFile, err)
+				}
+			} else if err != nil {
 				return err
 			}
 			if header != nil && meta.resStatus == uploaded {

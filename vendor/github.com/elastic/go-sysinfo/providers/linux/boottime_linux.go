@@ -37,7 +37,7 @@ func bootTime(fs procfs.FS) (time.Time, error) {
 		return bootTimeValue, nil
 	}
 
-	stat, err := fs.NewStat()
+	stat, err := fs.Stat()
 	if err != nil {
 		return time.Time{}, err
 	}

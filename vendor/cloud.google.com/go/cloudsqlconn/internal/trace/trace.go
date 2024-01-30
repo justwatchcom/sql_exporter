@@ -73,11 +73,11 @@ func StartSpan(ctx context.Context, name string, attrs ...Attribute) (context.Co
 func toStatus(err error) trace.Status {
 	if err2, ok := err.(*googleapi.Error); ok {
 		return trace.Status{Code: httpStatusCodeToOCCode(err2.Code), Message: err2.Message}
-	} else if s, ok := status.FromError(err); ok {
-		return trace.Status{Code: int32(s.Code()), Message: s.Message()}
-	} else {
-		return trace.Status{Code: int32(code.Code_UNKNOWN), Message: err.Error()}
 	}
+	if s, ok := status.FromError(err); ok {
+		return trace.Status{Code: int32(s.Code()), Message: s.Message()}
+	}
+	return trace.Status{Code: int32(code.Code_UNKNOWN), Message: err.Error()}
 }
 
 // Reference: https://github.com/googleapis/googleapis/blob/26b634d2724ac5dd30ae0b0cbfb01f07f2e4050e/google/rpc/code.proto

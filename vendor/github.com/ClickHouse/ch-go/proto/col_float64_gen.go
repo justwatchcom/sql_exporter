@@ -37,6 +37,11 @@ func (c *ColFloat64) Append(v float64) {
 	*c = append(*c, v)
 }
 
+// Append float64 slice to column.
+func (c *ColFloat64) AppendArr(vs []float64) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for Float64 .
 func (c *ColFloat64) LowCardinality() *ColLowCardinality[float64] {
 	return &ColLowCardinality[float64]{

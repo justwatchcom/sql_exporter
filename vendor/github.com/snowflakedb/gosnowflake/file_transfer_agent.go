@@ -92,7 +92,6 @@ type SnowflakeFileTransferOptions struct {
 	compressSourceFromStream bool
 
 	/* PUT */
-	DisablePutOverwrite     bool
 	putCallback             *snowflakeProgressPercentage
 	putAzureCallback        *snowflakeProgressPercentage
 	putCallbackOutputStream *io.Writer
@@ -176,7 +175,7 @@ func (sfa *snowflakeFileTransferAgent) execute() error {
 		if sfa.stageLocationType != local {
 			sizeThreshold := sfa.options.MultiPartThreshold
 			meta.options.MultiPartThreshold = sizeThreshold
-			if meta.srcFileSize > sizeThreshold {
+			if meta.srcFileSize > sizeThreshold && sfa.commandType == uploadCommand {
 				meta.parallel = sfa.parallel
 				largeFileMetas = append(largeFileMetas, meta)
 			} else {
@@ -194,7 +193,7 @@ func (sfa *snowflakeFileTransferAgent) execute() error {
 			return err
 		}
 	} else {
-		if err = sfa.download(largeFileMetas, smallFileMetas); err != nil {
+		if err = sfa.download(smallFileMetas); err != nil {
 			return err
 		}
 	}
@@ -268,7 +267,7 @@ func (sfa *snowflakeFileTransferAgent) parseCommand() error {
 	if sfa.data.Parallel != 0 {
 		sfa.parallel = sfa.data.Parallel
 	}
-	sfa.overwrite = !sfa.options.DisablePutOverwrite
+	sfa.overwrite = sfa.data.Overwrite
 	sfa.stageLocationType = cloudType(strings.ToUpper(sfa.data.StageInfo.LocationType))
 	sfa.stageInfo = &sfa.data.StageInfo
 	sfa.presignedURLs = make([]string, 0)
@@ -697,31 +696,19 @@ func (sfa *snowflakeFileTransferAgent) upload(
 }
 
 func (sfa *snowflakeFileTransferAgent) download(
-	largeFileMetadata []*fileMetadata,
-	smallFileMetadata []*fileMetadata) error {
+	fileMetadata []*fileMetadata) error {
 	client, err := sfa.getStorageClient(sfa.stageLocationType).
 		createClient(sfa.stageInfo, sfa.useAccelerateEndpoint)
 	if err != nil {
 		return err
 	}
-	for _, meta := range smallFileMetadata {
-		meta.client = client
-	}
-	for _, meta := range largeFileMetadata {
+	for _, meta := range fileMetadata {
 		meta.client = client
 	}
 
-	if len(smallFileMetadata) > 0 {
-		logger.WithContext(sfa.sc.ctx).Infof("downloading %v small files", len(smallFileMetadata))
-		if err = sfa.downloadFilesParallel(smallFileMetadata); err != nil {
-			return err
-		}
-	}
-	if len(largeFileMetadata) > 0 {
-		logger.WithContext(sfa.sc.ctx).Infof("downloading %v large files", len(largeFileMetadata))
-		if err = sfa.downloadFilesSequential(largeFileMetadata); err != nil {
-			return err
-		}
+	logger.WithContext(sfa.sc.ctx).Infof("downloading %v files", len(fileMetadata))
+	if err = sfa.downloadFilesParallel(fileMetadata); err != nil {
+		return err
 	}
 	return nil
 }
@@ -745,6 +732,23 @@ func (sfa *snowflakeFileTransferAgent) uploadFilesParallel(fileMetas []*fileMeta
 				}(i, meta)
 			}
 			wg.Wait()
+
+			// append errors with no result associated to separate array
+			var errorMessages []string
+			for i, result := range results {
+				if result == nil {
+					if errors[i] == nil {
+						errorMessages = append(errorMessages, "unknown error")
+					} else {
+						errorMessages = append(errorMessages, errors[i].Error())
+					}
+				}
+			}
+			if errorMessages != nil {
+				// sort the error messages to be more deterministic as the goroutines may finish in different order each time
+				sort.Strings(errorMessages)
+				return fmt.Errorf("errors during file upload:\n%v", strings.Join(errorMessages, "\n"))
+			}
 
 			retryMeta := make([]*fileMetadata, 0)
 			for i, result := range results {
@@ -831,7 +835,7 @@ func (sfa *snowflakeFileTransferAgent) uploadFilesSequential(fileMetas []*fileMe
 
 func (sfa *snowflakeFileTransferAgent) uploadOneFile(meta *fileMetadata) (*fileMetadata, error) {
 	meta.realSrcFileName = meta.srcFileName
-	tmpDir, err := os.MkdirTemp("", "")
+	tmpDir, err := os.MkdirTemp(sfa.sc.cfg.TmpDirPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -945,40 +949,8 @@ func (sfa *snowflakeFileTransferAgent) downloadFilesParallel(fileMetas []*fileMe
 	return err
 }
 
-func (sfa *snowflakeFileTransferAgent) downloadFilesSequential(fileMetas []*fileMetadata) error {
-	idx := 0
-	fileMetaLen := len(fileMetas)
-	for idx < fileMetaLen {
-		res, err := sfa.downloadOneFile(fileMetas[idx])
-		if err != nil {
-			return err
-		}
-
-		if res.resStatus == renewToken {
-			client, err := sfa.renewExpiredClient()
-			if err != nil {
-				return err
-			}
-			for i := idx; i < fileMetaLen; i++ {
-				fileMetas[i].client = client
-			}
-			continue
-		} else if res.resStatus == renewPresignedURL {
-			sfa.updateFileMetadataWithPresignedURL()
-			continue
-		}
-
-		sfa.results = append(sfa.results, res)
-		idx++
-		if injectWaitPut > 0 {
-			time.Sleep(injectWaitPut)
-		}
-	}
-	return nil
-}
-
 func (sfa *snowflakeFileTransferAgent) downloadOneFile(meta *fileMetadata) (*fileMetadata, error) {
-	tmpDir, err := os.MkdirTemp("", "")
+	tmpDir, err := os.MkdirTemp(sfa.sc.cfg.TmpDirPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1183,21 +1155,21 @@ type snowflakeProgressPercentage struct {
 func (spp *snowflakeProgressPercentage) call(bytesAmount int64) {
 	if spp.outputStream != nil {
 		spp.seenSoFar += bytesAmount
-		percentage := percent(spp.seenSoFar, spp.fileSize)
+		percentage := spp.percent(spp.seenSoFar, spp.fileSize)
 		if !spp.done {
-			spp.done = updateProgress(spp.filename, spp.startTime, spp.fileSize, percentage, spp.outputStream, spp.showProgressBar)
+			spp.done = spp.updateProgress(spp.filename, spp.startTime, spp.fileSize, percentage, spp.outputStream, spp.showProgressBar)
 		}
 	}
 }
 
-func percent(seenSoFar int64, size float64) float64 {
+func (spp *snowflakeProgressPercentage) percent(seenSoFar int64, size float64) float64 {
 	if float64(seenSoFar) >= size || size <= 0 {
 		return 1.0
 	}
 	return float64(seenSoFar) / size
 }
 
-func updateProgress(filename string, startTime time.Time, totalSize float64, progress float64, outputStream *io.Writer, showProgressBar bool) bool {
+func (spp *snowflakeProgressPercentage) updateProgress(filename string, startTime time.Time, totalSize float64, progress float64, outputStream *io.Writer, showProgressBar bool) bool {
 	barLength := 10
 	totalSize /= mb
 	status := ""

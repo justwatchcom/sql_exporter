@@ -16,7 +16,6 @@
 // under the License.
 
 //go:build aix && ppc64 && cgo
-// +build aix,ppc64,cgo
 
 package aix
 
@@ -31,11 +30,13 @@ package aix
 import "C"
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joeshaw/multierror"
-	"github.com/pkg/errors"
 
 	"github.com/elastic/go-sysinfo/internal/registry"
 	"github.com/elastic/go-sysinfo/providers/shared"
@@ -80,7 +81,7 @@ func (*host) CPUTime() (types.CPUTimes, error) {
 	cpudata := C.perfstat_cpu_total_t{}
 
 	if _, err := C.perfstat_cpu_total(nil, &cpudata, C.sizeof_perfstat_cpu_total_t, 1); err != nil {
-		return types.CPUTimes{}, errors.Wrap(err, "error while callin perfstat_cpu_total")
+		return types.CPUTimes{}, fmt.Errorf("error while callin perfstat_cpu_total: %w", err)
 	}
 
 	return types.CPUTimes{
@@ -100,7 +101,7 @@ func (*host) Memory() (*types.HostMemoryInfo, error) {
 	meminfo := C.perfstat_memory_total_t{}
 	_, err := C.perfstat_memory_total(nil, &meminfo, C.sizeof_perfstat_memory_total_t, 1)
 	if err != nil {
-		return nil, errors.Wrap(err, "perfstat_memory_total failed")
+		return nil, fmt.Errorf("perfstat_memory_total failed: %w", err)
 	}
 
 	mem.Total = uint64(meminfo.real_total) * pagesize
@@ -114,7 +115,21 @@ func (*host) Memory() (*types.HostMemoryInfo, error) {
 	mem.VirtualFree = mem.Free + uint64(meminfo.pgsp_free)*pagesize
 	mem.VirtualUsed = mem.VirtualTotal - mem.VirtualFree
 
+	mem.Metrics = map[string]uint64{
+		"bytes_coalesced":         uint64(meminfo.bytes_coalesced),
+		"bytes_coalesced_mempool": uint64(meminfo.bytes_coalesced_mempool),
+		"real_pinned":             uint64(meminfo.real_pinned) * pagesize,
+		"pgins":                   uint64(meminfo.pgins),
+		"pgouts":                  uint64(meminfo.pgouts),
+		"pgsp_free":               uint64(meminfo.pgsp_free) * pagesize,
+		"pgsp_rsvd":               uint64(meminfo.pgsp_rsvd) * pagesize,
+	}
+
 	return &mem, nil
+}
+
+func (h *host) FQDN() (string, error) {
+	return shared.FQDN()
 }
 
 func newHost() (*host, error) {
@@ -137,7 +152,7 @@ type reader struct {
 
 func (r *reader) addErr(err error) bool {
 	if err != nil {
-		if errors.Cause(err) != types.ErrNotImplemented {
+		if !errors.Is(err, types.ErrNotImplemented) {
 			r.errs = append(r.errs, err)
 		}
 		return true
@@ -173,7 +188,7 @@ func (r *reader) hostname(h *host) {
 	if r.addErr(err) {
 		return
 	}
-	h.info.Hostname = v
+	h.info.Hostname = strings.ToLower(v)
 }
 
 func (r *reader) network(h *host) {

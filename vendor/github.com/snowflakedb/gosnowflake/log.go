@@ -7,8 +7,10 @@ import (
 	"fmt"
 	rlog "github.com/sirupsen/logrus"
 	"io"
+	"os"
 	"path"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -25,8 +27,11 @@ var LogKeys = [...]contextKey{SFSessionIDKey, SFSessionUserKey}
 type SFLogger interface {
 	rlog.Ext1FieldLogger
 	SetLogLevel(level string) error
+	GetLogLevel() string
 	WithContext(ctx context.Context) *rlog.Entry
 	SetOutput(output io.Writer)
+	CloseFileOnLoggerReplace(file *os.File) error
+	Replace(newLogger *SFLogger)
 }
 
 // SFCallerPrettyfier to provide base file name and function name from calling frame used in SFLogger
@@ -35,17 +40,55 @@ func SFCallerPrettyfier(frame *runtime.Frame) (string, string) {
 }
 
 type defaultLogger struct {
-	inner *rlog.Logger
+	inner   *rlog.Logger
+	enabled bool
+	file    *os.File
 }
 
 // SetLogLevel set logging level for calling defaultLogger
 func (log *defaultLogger) SetLogLevel(level string) error {
-	actualLevel, err := rlog.ParseLevel(level)
-	if err != nil {
-		return err
+	newEnabled := strings.ToUpper(level) != "OFF"
+	log.enabled = newEnabled
+	if newEnabled {
+		actualLevel, err := rlog.ParseLevel(level)
+		if err != nil {
+			return err
+		}
+		log.inner.SetLevel(actualLevel)
 	}
-	log.inner.SetLevel(actualLevel)
 	return nil
+}
+
+// GetLogLevel return current log level
+func (log *defaultLogger) GetLogLevel() string {
+	if !log.enabled {
+		return "OFF"
+	}
+	return log.inner.GetLevel().String()
+}
+
+// CloseFileOnLoggerReplace set a file to be closed when releasing resources occupied by the logger
+func (log *defaultLogger) CloseFileOnLoggerReplace(file *os.File) error {
+	if log.file != nil && log.file != file {
+		return fmt.Errorf("could not set a file to close on logger reset because there were already set one")
+	}
+	log.file = file
+	return nil
+}
+
+// Replace substitute logger by a given one
+func (log *defaultLogger) Replace(newLogger *SFLogger) {
+	SetLogger(newLogger)
+	closeLogFile(log.file)
+}
+
+func closeLogFile(file *os.File) {
+	if file != nil {
+		err := file.Close()
+		if err != nil {
+			logger.Errorf("failed to close log file: %s", err)
+		}
+	}
 }
 
 // WithContext return Entry to include fields in context
@@ -60,7 +103,7 @@ func CreateDefaultLogger() SFLogger {
 	var formatter = rlog.TextFormatter{CallerPrettyfier: SFCallerPrettyfier}
 	rLogger.SetReportCaller(true)
 	rLogger.SetFormatter(&formatter)
-	var ret = defaultLogger{inner: rLogger}
+	var ret = defaultLogger{inner: rLogger, enabled: true}
 	return &ret //(&ret).(*SFLogger)
 }
 
@@ -95,39 +138,57 @@ func (log *defaultLogger) Logf(level rlog.Level, format string, args ...interfac
 }
 
 func (log *defaultLogger) Tracef(format string, args ...interface{}) {
-	log.inner.Tracef(format, args...)
+	if log.enabled {
+		log.inner.Tracef(format, args...)
+	}
 }
 
 func (log *defaultLogger) Debugf(format string, args ...interface{}) {
-	log.inner.Debugf(format, args...)
+	if log.enabled {
+		log.inner.Debugf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Infof(format string, args ...interface{}) {
-	log.inner.Infof(format, args...)
+	if log.enabled {
+		log.inner.Infof(format, args...)
+	}
 }
 
 func (log *defaultLogger) Printf(format string, args ...interface{}) {
-	log.inner.Printf(format, args...)
+	if log.enabled {
+		log.inner.Printf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Warnf(format string, args ...interface{}) {
-	log.inner.Warnf(format, args...)
+	if log.enabled {
+		log.inner.Warnf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Warningf(format string, args ...interface{}) {
-	log.inner.Warningf(format, args...)
+	if log.enabled {
+		log.inner.Warningf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Errorf(format string, args ...interface{}) {
-	log.inner.Errorf(format, args...)
+	if log.enabled {
+		log.inner.Errorf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Fatalf(format string, args ...interface{}) {
-	log.inner.Fatalf(format, args...)
+	if log.enabled {
+		log.inner.Fatalf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Panicf(format string, args ...interface{}) {
-	log.inner.Panicf(format, args...)
+	if log.enabled {
+		log.inner.Panicf(format, args...)
+	}
 }
 
 func (log *defaultLogger) Log(level rlog.Level, args ...interface{}) {
@@ -139,75 +200,111 @@ func (log *defaultLogger) LogFn(level rlog.Level, fn rlog.LogFunction) {
 }
 
 func (log *defaultLogger) Trace(args ...interface{}) {
-	log.inner.Trace(args...)
+	if log.enabled {
+		log.inner.Trace(args...)
+	}
 }
 
 func (log *defaultLogger) Debug(args ...interface{}) {
-	log.inner.Debug(args...)
+	if log.enabled {
+		log.inner.Debug(args...)
+	}
 }
 
 func (log *defaultLogger) Info(args ...interface{}) {
-	log.inner.Info(args...)
+	if log.enabled {
+		log.inner.Info(args...)
+	}
 }
 
 func (log *defaultLogger) Print(args ...interface{}) {
-	log.inner.Print(args...)
+	if log.enabled {
+		log.inner.Print(args...)
+	}
 }
 
 func (log *defaultLogger) Warn(args ...interface{}) {
-	log.inner.Warn(args...)
+	if log.enabled {
+		log.inner.Warn(args...)
+	}
 }
 
 func (log *defaultLogger) Warning(args ...interface{}) {
-	log.inner.Warning(args...)
+	if log.enabled {
+		log.inner.Warning(args...)
+	}
 }
 
 func (log *defaultLogger) Error(args ...interface{}) {
-	log.inner.Error(args...)
+	if log.enabled {
+		log.inner.Error(args...)
+	}
 }
 
 func (log *defaultLogger) Fatal(args ...interface{}) {
-	log.inner.Fatal(args...)
+	if log.enabled {
+		log.inner.Fatal(args...)
+	}
 }
 
 func (log *defaultLogger) Panic(args ...interface{}) {
-	log.inner.Panic(args...)
+	if log.enabled {
+		log.inner.Panic(args...)
+	}
 }
 
 func (log *defaultLogger) TraceFn(fn rlog.LogFunction) {
-	log.inner.TraceFn(fn)
+	if log.enabled {
+		log.inner.TraceFn(fn)
+	}
 }
 
 func (log *defaultLogger) DebugFn(fn rlog.LogFunction) {
-	log.inner.DebugFn(fn)
+	if log.enabled {
+		log.inner.DebugFn(fn)
+	}
 }
 
 func (log *defaultLogger) InfoFn(fn rlog.LogFunction) {
-	log.inner.InfoFn(fn)
+	if log.enabled {
+		log.inner.InfoFn(fn)
+	}
 }
 
 func (log *defaultLogger) PrintFn(fn rlog.LogFunction) {
-	log.inner.PrintFn(fn)
+	if log.enabled {
+		log.inner.PrintFn(fn)
+	}
 }
 
 func (log *defaultLogger) WarnFn(fn rlog.LogFunction) {
-	log.inner.PrintFn(fn)
+	if log.enabled {
+		log.inner.PrintFn(fn)
+	}
 }
 
 func (log *defaultLogger) WarningFn(fn rlog.LogFunction) {
-	log.inner.WarningFn(fn)
+	if log.enabled {
+		log.inner.WarningFn(fn)
+	}
 }
 
 func (log *defaultLogger) ErrorFn(fn rlog.LogFunction) {
-	log.inner.ErrorFn(fn)
+	if log.enabled {
+		log.inner.ErrorFn(fn)
+	}
 }
 
 func (log *defaultLogger) FatalFn(fn rlog.LogFunction) {
-	log.inner.FatalFn(fn)
+	if log.enabled {
+		log.inner.FatalFn(fn)
+	}
 }
 
 func (log *defaultLogger) PanicFn(fn rlog.LogFunction) {
-	log.inner.PanicFn(fn)
+	if log.enabled {
+		log.inner.PanicFn(fn)
+	}
 }
 
 func (log *defaultLogger) Logln(level rlog.Level, args ...interface{}) {
@@ -215,39 +312,57 @@ func (log *defaultLogger) Logln(level rlog.Level, args ...interface{}) {
 }
 
 func (log *defaultLogger) Traceln(args ...interface{}) {
-	log.inner.Traceln(args...)
+	if log.enabled {
+		log.inner.Traceln(args...)
+	}
 }
 
 func (log *defaultLogger) Debugln(args ...interface{}) {
-	log.inner.Debugln(args...)
+	if log.enabled {
+		log.inner.Debugln(args...)
+	}
 }
 
 func (log *defaultLogger) Infoln(args ...interface{}) {
-	log.inner.Infoln(args...)
+	if log.enabled {
+		log.inner.Infoln(args...)
+	}
 }
 
 func (log *defaultLogger) Println(args ...interface{}) {
-	log.inner.Println(args...)
+	if log.enabled {
+		log.inner.Println(args...)
+	}
 }
 
 func (log *defaultLogger) Warnln(args ...interface{}) {
-	log.inner.Warnln(args...)
+	if log.enabled {
+		log.inner.Warnln(args...)
+	}
 }
 
 func (log *defaultLogger) Warningln(args ...interface{}) {
-	log.inner.Warningln(args...)
+	if log.enabled {
+		log.inner.Warningln(args...)
+	}
 }
 
 func (log *defaultLogger) Errorln(args ...interface{}) {
-	log.inner.Errorln(args...)
+	if log.enabled {
+		log.inner.Errorln(args...)
+	}
 }
 
 func (log *defaultLogger) Fatalln(args ...interface{}) {
-	log.inner.Fatalln(args...)
+	if log.enabled {
+		log.inner.Fatalln(args...)
+	}
 }
 
 func (log *defaultLogger) Panicln(args ...interface{}) {
-	log.inner.Panicln(args...)
+	if log.enabled {
+		log.inner.Panicln(args...)
+	}
 }
 
 func (log *defaultLogger) Exit(code int) {

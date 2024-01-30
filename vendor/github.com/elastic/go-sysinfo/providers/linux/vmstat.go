@@ -18,9 +18,8 @@
 package linux
 
 import (
+	"fmt"
 	"reflect"
-
-	"github.com/pkg/errors"
 
 	"github.com/elastic/go-sysinfo/types"
 )
@@ -46,11 +45,11 @@ func parseVMStat(content []byte) (*types.VMStatInfo, error) {
 	var vmStat types.VMStatInfo
 	refValues := reflect.ValueOf(&vmStat).Elem()
 
-	err := parseKeyValue(content, " ", func(key, value []byte) error {
+	err := parseKeyValue(content, ' ', func(key, value []byte) error {
 		// turn our []byte value into an int
 		val, err := parseBytesOrNumber(value)
 		if err != nil {
-			return errors.Wrapf(err, "failed to parse %v value of %v", string(key), string(value))
+			return fmt.Errorf("failed to parse %v value of %v: %w", string(key), string(value), err)
 		}
 
 		idx, ok := vmstatTagToFieldIndex[string(key)]
