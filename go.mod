@@ -2,8 +2,6 @@ module github.com/justwatchcom/sql_exporter
 
 go 1.21
 
-toolchain go1.21.5
-
 require (
 	cloud.google.com/go/cloudsqlconn v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.17.1
