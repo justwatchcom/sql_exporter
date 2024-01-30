@@ -37,6 +37,11 @@ func (c *ColUInt32) Append(v uint32) {
 	*c = append(*c, v)
 }
 
+// Append uint32 slice to column.
+func (c *ColUInt32) AppendArr(vs []uint32) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for UInt32 .
 func (c *ColUInt32) LowCardinality() *ColLowCardinality[uint32] {
 	return &ColLowCardinality[uint32]{

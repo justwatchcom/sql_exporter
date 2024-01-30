@@ -19,7 +19,6 @@
 // cgo -godefs defs_aix.go
 
 //go:build aix && ppc64
-// +build aix,ppc64
 
 package aix
 

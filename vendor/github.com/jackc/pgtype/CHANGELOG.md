@@ -1,3 +1,9 @@
+# 1.14.1 (January 12, 2024)
+
+* Backport fix numeric to string conversion for small negative values
+* Fix EncodeValueText (horpto)
+* Fix JSON.UnmarshalJSON to make copy of byte slice (horpto)
+
 # 1.14.0 (February 11, 2023)
 
 * Fix: BC timestamp text format support (jozeflami)

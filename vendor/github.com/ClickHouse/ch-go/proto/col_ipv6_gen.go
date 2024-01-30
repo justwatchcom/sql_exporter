@@ -37,6 +37,11 @@ func (c *ColIPv6) Append(v IPv6) {
 	*c = append(*c, v)
 }
 
+// Append IPv6 slice to column.
+func (c *ColIPv6) AppendArr(vs []IPv6) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for IPv6 .
 func (c *ColIPv6) LowCardinality() *ColLowCardinality[IPv6] {
 	return &ColLowCardinality[IPv6]{

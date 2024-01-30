@@ -19,11 +19,11 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"fmt"
-	"regexp"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn/errtype"
+	"cloud.google.com/go/cloudsqlconn/instance"
 	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
@@ -46,45 +46,6 @@ const (
 	// refreshBurst is the initial burst allowed by the rate limiter.
 	refreshBurst = 2
 )
-
-var (
-	// Instance connection name is the format <PROJECT>:<REGION>:<INSTANCE>
-	// Additionally, we have to support legacy "domain-scoped" projects
-	// (e.g. "google.com:PROJECT")
-	connNameRegex = regexp.MustCompile("([^:]+(:[^:]+)?):([^:]+):([^:]+)")
-)
-
-// ConnName represents the "instance connection name", in the format
-// "project:region:name".
-type ConnName struct {
-	project string
-	region  string
-	name    string
-}
-
-func (c *ConnName) String() string {
-	return fmt.Sprintf("%s:%s:%s", c.project, c.region, c.name)
-}
-
-// ParseConnName initializes a new ConnName struct.
-func ParseConnName(cn string) (ConnName, error) {
-	b := []byte(cn)
-	m := connNameRegex.FindSubmatch(b)
-	if m == nil {
-		err := errtype.NewConfigError(
-			"invalid instance connection name, expected PROJECT:REGION:INSTANCE",
-			cn,
-		)
-		return ConnName{}, err
-	}
-
-	c := ConnName{
-		project: string(m[1]),
-		region:  string(m[3]),
-		name:    string(m[4]),
-	}
-	return c, nil
-}
 
 // refreshOperation is a pending result of a refresh operation of data used to
 // connect securely. It should only be initialized by the Instance struct as
@@ -120,21 +81,16 @@ func (r *refreshOperation) isValid() bool {
 	}
 }
 
-// RefreshCfg is a collection of attributes that trigger new refresh operations.
-type RefreshCfg struct {
-	UseIAMAuthN bool
-}
-
 // Instance manages the information used to connect to the Cloud SQL instance
 // by periodically calling the Cloud SQL Admin API. It automatically refreshes
 // the required information approximately 4 minutes before the previous
 // certificate expires (every ~56 minutes).
 type Instance struct {
-	// OpenConns is the number of open connections to the instance.
-	OpenConns uint64
+	// openConns is the number of open connections to the instance.
+	openConns uint64
 
-	ConnName
-	key *rsa.PrivateKey
+	connName instance.ConnName
+	key      *rsa.PrivateKey
 
 	// refreshTimeout sets the maximum duration a refresh cycle can run
 	// for.
@@ -143,8 +99,8 @@ type Instance struct {
 	l *rate.Limiter
 	r refresher
 
-	refreshLock sync.RWMutex
-	RefreshCfg  RefreshCfg
+	mu              sync.RWMutex
+	useIAMAuthNDial bool
 	// cur represents the current refreshOperation that will be used to
 	// create connections. If a valid complete refreshOperation isn't
 	// available it's possible for cur to be equal to next.
@@ -161,17 +117,17 @@ type Instance struct {
 
 // NewInstance initializes a new Instance given an instance connection name
 func NewInstance(
-	cn ConnName,
+	cn instance.ConnName,
 	client *sqladmin.Service,
 	key *rsa.PrivateKey,
 	refreshTimeout time.Duration,
 	ts oauth2.TokenSource,
 	dialerID string,
-	r RefreshCfg,
+	useIAMAuthNDial bool,
 ) *Instance {
 	ctx, cancel := context.WithCancel(context.Background())
 	i := &Instance{
-		ConnName: cn,
+		connName: cn,
 		key:      key,
 		l:        rate.NewLimiter(rate.Every(refreshInterval), refreshBurst),
 		r: newRefresher(
@@ -179,24 +135,31 @@ func NewInstance(
 			ts,
 			dialerID,
 		),
-		refreshTimeout: refreshTimeout,
-		RefreshCfg:     r,
-		ctx:            ctx,
-		cancel:         cancel,
+		refreshTimeout:  refreshTimeout,
+		useIAMAuthNDial: useIAMAuthNDial,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	// For the initial refresh operation, set cur = next so that connection
 	// requests block until the first refresh is complete.
-	i.refreshLock.Lock()
+	i.mu.Lock()
 	i.cur = i.scheduleRefresh(0)
 	i.next = i.cur
-	i.refreshLock.Unlock()
+	i.mu.Unlock()
 	return i
+}
+
+// OpenConns returns a pointer to the number of open connections to
+// faciliate changing the value using atomics.
+func (i *Instance) OpenConns() *uint64 {
+	return &i.openConns
 }
 
 // Close closes the instance; it stops the refresh cycle and prevents it from
 // making additional calls to the Cloud SQL Admin API.
-func (i *Instance) Close() {
+func (i *Instance) Close() error {
 	i.cancel()
+	return nil
 }
 
 // ConnectInfo returns an IP address specified by ipType (i.e., public or
@@ -225,7 +188,7 @@ func (i *Instance) ConnectInfo(ctx context.Context, ipType string) (string, *tls
 	if !ok {
 		err := errtype.NewConfigError(
 			fmt.Sprintf("instance does not have IP of type %q", ipType),
-			i.String(),
+			i.connName.String(),
 		)
 		return "", nil, err
 	}
@@ -244,40 +207,47 @@ func (i *Instance) InstanceEngineVersion(ctx context.Context) (string, error) {
 }
 
 // UpdateRefresh cancels all existing refresh attempts and schedules new
-// attempts with the provided config.
-func (i *Instance) UpdateRefresh(cfg RefreshCfg) {
-	i.refreshLock.Lock()
-	defer i.refreshLock.Unlock()
-	// Cancel any pending refreshes
-	i.cur.cancel()
-	i.next.cancel()
-	// update the refresh config as needed
-	i.RefreshCfg = cfg
-	// reschedule a new refresh immediately
-	i.cur = i.scheduleRefresh(0)
-	i.next = i.cur
+// attempts with the provided config only if it differs from the current
+// configuration.
+func (i *Instance) UpdateRefresh(useIAMAuthNDial *bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if useIAMAuthNDial != nil && *useIAMAuthNDial != i.useIAMAuthNDial {
+		// Cancel any pending refreshes
+		i.cur.cancel()
+		i.next.cancel()
+
+		i.useIAMAuthNDial = *useIAMAuthNDial
+		// reschedule a new refresh immediately
+		i.cur = i.scheduleRefresh(0)
+		i.next = i.cur
+	}
 }
 
 // ForceRefresh triggers an immediate refresh operation to be scheduled and
-// used for future connection attempts.
+// used for future connection attempts. Until the refresh completes, the
+// existing connection info will be available for use if valid.
 func (i *Instance) ForceRefresh() {
-	i.refreshLock.Lock()
-	defer i.refreshLock.Unlock()
-	// If the next refresh hasn't started yet, we can cancel it and start
-	// an immediate one
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	// If the next refresh hasn't started yet, we can cancel it and start an
+	// immediate one
 	if i.next.cancel() {
 		i.next = i.scheduleRefresh(0)
 	}
 	// block all sequential connection attempts on the next refresh operation
-	i.cur = i.next
+	// if current is invalid
+	if !i.cur.isValid() {
+		i.cur = i.next
+	}
 }
 
 // refreshOperation returns the most recent refresh operation
 // waiting for it to complete if necessary
 func (i *Instance) refreshOperation(ctx context.Context) (*refreshOperation, error) {
-	i.refreshLock.RLock()
+	i.mu.RLock()
 	cur := i.cur
-	i.refreshLock.RUnlock()
+	i.mu.RUnlock()
 	var err error
 	select {
 	case <-cur.ready:
@@ -324,12 +294,12 @@ func (i *Instance) scheduleRefresh(d time.Duration) *refreshOperation {
 		if err != nil {
 			r.err = errtype.NewDialError(
 				"context was canceled or expired before refresh completed",
-				i.ConnName.String(),
+				i.connName.String(),
 				nil,
 			)
 		} else {
 			r.result, r.err = i.r.performRefresh(
-				ctx, i.ConnName, i.key, i.RefreshCfg.UseIAMAuthN)
+				ctx, i.connName, i.key, i.useIAMAuthNDial)
 		}
 
 		close(r.ready)
@@ -343,8 +313,8 @@ func (i *Instance) scheduleRefresh(d time.Duration) *refreshOperation {
 
 		// Once the refresh is complete, update "current" with working
 		// refreshOperation and schedule a new refresh
-		i.refreshLock.Lock()
-		defer i.refreshLock.Unlock()
+		i.mu.Lock()
+		defer i.mu.Unlock()
 
 		// if failed, scheduled the next refresh immediately
 		if r.err != nil {
@@ -368,9 +338,4 @@ func (i *Instance) scheduleRefresh(d time.Duration) *refreshOperation {
 		i.next = i.scheduleRefresh(t)
 	})
 	return r
-}
-
-// String returns the instance's connection name.
-func (i *Instance) String() string {
-	return i.ConnName.String()
 }

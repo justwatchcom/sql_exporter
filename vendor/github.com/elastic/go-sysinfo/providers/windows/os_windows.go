@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/elastic/go-sysinfo/types"
@@ -35,7 +34,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 
 	k, err := registry.OpenKey(key, path, flags)
 	if err != nil {
-		return nil, errors.Wrapf(err, `failed to open HKLM\%v`, path)
+		return nil, fmt.Errorf(`failed to open HKLM\%v: %w`, path, err)
 	}
 	defer k.Close()
 
@@ -47,7 +46,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 	name := "ProductName"
 	osInfo.Name, _, err = k.GetStringValue(name)
 	if err != nil {
-		return nil, errors.Wrapf(err, `failed to get value of HKLM\%v\%v`, path, name)
+		return nil, fmt.Errorf(`failed to get value of HKLM\%v\%v: %w`, path, name, err)
 	}
 
 	// Newer versions (Win 10 and 2016) have CurrentMajor/CurrentMinor.
@@ -61,7 +60,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 		name = "CurrentVersion"
 		osInfo.Version, _, err = k.GetStringValue(name)
 		if err != nil {
-			return nil, errors.Wrapf(err, `failed to get value of HKLM\%v\%v`, path, name)
+			return nil, fmt.Errorf(`failed to get value of HKLM\%v\%v: %w`, path, name, err)
 		}
 		parts := strings.SplitN(osInfo.Version, ".", 3)
 		for i, p := range parts {
@@ -69,7 +68,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 			case 0:
 				osInfo.Major, _ = strconv.Atoi(p)
 			case 1:
-				osInfo.Major, _ = strconv.Atoi(p)
+				osInfo.Minor, _ = strconv.Atoi(p)
 			}
 		}
 	}
@@ -77,7 +76,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 	name = "CurrentBuild"
 	currentBuild, _, err := k.GetStringValue(name)
 	if err != nil {
-		return nil, errors.Wrapf(err, `failed to get value of HKLM\%v\%v`, path, name)
+		return nil, fmt.Errorf(`failed to get value of HKLM\%v\%v: %w`, path, name, err)
 	}
 	osInfo.Build = currentBuild
 
@@ -85,7 +84,7 @@ func OperatingSystem() (*types.OSInfo, error) {
 	name = "UBR"
 	updateBuildRevision, _, err := k.GetIntegerValue(name)
 	if err != nil && err != registry.ErrNotExist {
-		return nil, errors.Wrapf(err, `failed to get value of HKLM\%v\%v`, path, name)
+		return nil, fmt.Errorf(`failed to get value of HKLM\%v\%v: %w`, path, name, err)
 	} else {
 		osInfo.Build = fmt.Sprintf("%v.%d", osInfo.Build, updateBuildRevision)
 	}

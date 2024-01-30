@@ -13,34 +13,6 @@ var (
 	_ Column    = (*ColLowCardinality[string])(nil)
 )
 
-// DecodeState implements StateDecoder, ensuring state for index column.
-func (c *ColLowCardinality[T]) DecodeState(r *Reader) error {
-	keySerialization, err := r.Int64()
-	if err != nil {
-		return errors.Wrap(err, "version")
-	}
-	if keySerialization != int64(sharedDictionariesWithAdditionalKeys) {
-		return errors.Errorf("got version %d, expected %d",
-			keySerialization, sharedDictionariesWithAdditionalKeys,
-		)
-	}
-	if s, ok := c.index.(StateDecoder); ok {
-		if err := s.DecodeState(r); err != nil {
-			return errors.Wrap(err, "index state")
-		}
-	}
-	return nil
-}
-
-// EncodeState implements StateEncoder, ensuring state for index column.
-func (c ColLowCardinality[T]) EncodeState(b *Buffer) {
-	// Writing key serialization version.
-	b.PutInt64(int64(sharedDictionariesWithAdditionalKeys))
-	if s, ok := c.index.(StateEncoder); ok {
-		s.EncodeState(b)
-	}
-}
-
 //go:generate go run github.com/dmarkham/enumer -type CardinalityKey -trimprefix Key -output col_low_cardinality_enum.go
 
 // CardinalityKey is integer type of ColLowCardinality.Keys column.
@@ -117,6 +89,34 @@ type ColLowCardinality[T comparable] struct {
 
 	kv   map[T]int
 	keys []int
+}
+
+// DecodeState implements StateDecoder, ensuring state for index column.
+func (c *ColLowCardinality[T]) DecodeState(r *Reader) error {
+	keySerialization, err := r.Int64()
+	if err != nil {
+		return errors.Wrap(err, "version")
+	}
+	if keySerialization != int64(sharedDictionariesWithAdditionalKeys) {
+		return errors.Errorf("got version %d, expected %d",
+			keySerialization, sharedDictionariesWithAdditionalKeys,
+		)
+	}
+	if s, ok := c.index.(StateDecoder); ok {
+		if err := s.DecodeState(r); err != nil {
+			return errors.Wrap(err, "index state")
+		}
+	}
+	return nil
+}
+
+// EncodeState implements StateEncoder, ensuring state for index column.
+func (c ColLowCardinality[T]) EncodeState(b *Buffer) {
+	// Writing key serialization version.
+	b.PutInt64(int64(sharedDictionariesWithAdditionalKeys))
+	if s, ok := c.index.(StateEncoder); ok {
+		s.EncodeState(b)
+	}
 }
 
 func (c *ColLowCardinality[T]) DecodeColumn(r *Reader, rows int) error {

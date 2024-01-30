@@ -229,7 +229,7 @@ func (p *process) User() (types.UserInfo, error) {
 	}
 
 	var user types.UserInfo
-	err = parseKeyValue(content, ":", func(key, value []byte) error {
+	err = parseKeyValue(content, ':', func(key, value []byte) error {
 		// See proc(5) for the format of /proc/[pid]/status
 		switch string(key) {
 		case "Uid":

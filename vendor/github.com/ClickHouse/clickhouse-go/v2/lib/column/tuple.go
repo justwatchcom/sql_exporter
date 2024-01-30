@@ -18,14 +18,17 @@
 package column
 
 import (
+	"database/sql"
+	"database/sql/driver"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
-	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"net"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/ClickHouse/ch-go/proto"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type Tuple struct {
@@ -207,6 +210,15 @@ func setJSONFieldValue(field reflect.Value, value reflect.Value) error {
 	if value.CanConvert(field.Type()) {
 		field.Set(value.Convert(field.Type()))
 		return nil
+	}
+
+	// check if our target implements sql.Scanner
+	sqlScanner := reflect.TypeOf((*sql.Scanner)(nil)).Elem()
+	if fieldAddr := field.Addr(); field.Kind() != reflect.Ptr && fieldAddr.Type().Implements(sqlScanner) {
+		returns := fieldAddr.MethodByName("Scan").Call([]reflect.Value{value})
+		if len(returns) > 0 && returns[0].IsNil() {
+			return nil
+		}
 	}
 
 	return &ColumnConverterError{
@@ -480,6 +492,18 @@ func (col *Tuple) Append(v any) (nulls []uint8, err error) {
 		}
 		return nil, nil
 	}
+	if valuer, ok := v.(driver.Valuer); ok {
+		val, err := valuer.Value()
+		if err != nil {
+			return nil, &ColumnConverterError{
+				Op:   "Append",
+				To:   string(col.chType),
+				From: fmt.Sprintf("%T", v),
+				Hint: "could not get driver.Valuer value",
+			}
+		}
+		return col.Append(val)
+	}
 	return nil, &ColumnConverterError{
 		Op:   "Append",
 		To:   string(col.chType),
@@ -540,6 +564,19 @@ func (col *Tuple) AppendRow(v any) error {
 			}
 		}
 		return nil
+	}
+
+	if valuer, ok := v.(driver.Valuer); ok {
+		val, err := valuer.Value()
+		if err != nil {
+			return &ColumnConverterError{
+				Op:   "AppendRow",
+				To:   string(col.chType),
+				From: fmt.Sprintf("%T", v),
+				Hint: "could not get driver.Valuer value",
+			}
+		}
+		return col.AppendRow(val)
 	}
 
 	return &ColumnConverterError{

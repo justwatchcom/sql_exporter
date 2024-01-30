@@ -4,22 +4,29 @@ package gosnowflake
 
 import (
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	defaultClientTimeout  = 900 * time.Second // Timeout for network round trip + read out http response
-	defaultLoginTimeout   = 60 * time.Second  // Timeout for retry for login EXCLUDING clientTimeout
-	defaultRequestTimeout = 0 * time.Second   // Timeout for retry for request EXCLUDING clientTimeout
-	defaultJWTTimeout     = 60 * time.Second
-	defaultDomain         = ".snowflakecomputing.com"
+	defaultClientTimeout          = 900 * time.Second // Timeout for network round trip + read out http response
+	defaultJWTClientTimeout       = 10 * time.Second  // Timeout for network round trip + read out http response but used for JWT auth
+	defaultLoginTimeout           = 300 * time.Second // Timeout for retry for login EXCLUDING clientTimeout
+	defaultRequestTimeout         = 0 * time.Second   // Timeout for retry for request EXCLUDING clientTimeout
+	defaultJWTTimeout             = 60 * time.Second
+	defaultExternalBrowserTimeout = 120 * time.Second // Timeout for external browser login
+	defaultMaxRetryCount          = 7                 // specifies maximum number of subsequent retries
+	defaultDomain                 = ".snowflakecomputing.com"
 )
 
 // ConfigBool is a type to represent true or false in the Config
@@ -62,10 +69,13 @@ type Config struct {
 
 	OktaURL *url.URL
 
-	LoginTimeout     time.Duration // Login retry timeout EXCLUDING network roundtrip and read out http response
-	RequestTimeout   time.Duration // request retry timeout EXCLUDING network roundtrip and read out http response
-	JWTExpireTimeout time.Duration // JWT expire after timeout
-	ClientTimeout    time.Duration // Timeout for network round trip + read out http response
+	LoginTimeout           time.Duration // Login retry timeout EXCLUDING network roundtrip and read out http response
+	RequestTimeout         time.Duration // request retry timeout EXCLUDING network roundtrip and read out http response
+	JWTExpireTimeout       time.Duration // JWT expire after timeout
+	ClientTimeout          time.Duration // Timeout for network round trip + read out http response
+	JWTClientTimeout       time.Duration // Timeout for network round trip + read out http response used when JWT token auth is taking place
+	ExternalBrowserTimeout time.Duration // Timeout for external browser login
+	MaxRetryCount          int           // Specifies how many times non-periodic HTTP request can be retried
 
 	Application  string           // application name.
 	InsecureMode bool             // driver doesn't check certificate revocation status
@@ -83,10 +93,29 @@ type Config struct {
 
 	Tracing string // sets logging level
 
+	TmpDirPath string // sets temporary directory used by a driver for operations like encrypting, compressing etc
+
 	MfaToken                       string     // Internally used to cache the MFA token
 	IDToken                        string     // Internally used to cache the Id Token for external browser
 	ClientRequestMfaToken          ConfigBool // When true the MFA token is cached in the credential manager. True by default in Windows/OSX. False for Linux.
 	ClientStoreTemporaryCredential ConfigBool // When true the ID token is cached in the credential manager. True by default in Windows/OSX. False for Linux.
+
+	DisableQueryContextCache bool // Should HTAP query context cache be disabled
+
+	IncludeRetryReason ConfigBool // Should retried request contain retry reason
+
+	ClientConfigFile string // File path to the client configuration json file
+}
+
+// Validate enables testing if config is correct.
+// A driver client may call it manually, but it is also called during opening first connection.
+func (c *Config) Validate() error {
+	if c.TmpDirPath != "" {
+		if _, err := os.Stat(c.TmpDirPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ocspMode returns the OCSP mode in string INSECURE, FAIL_OPEN, FAIL_CLOSED
@@ -118,7 +147,7 @@ func DSN(cfg *Config) (dsn string, err error) {
 	posDot := strings.Index(cfg.Account, ".")
 	if posDot > 0 {
 		if cfg.Region != "" {
-			return "", ErrInvalidRegion
+			return "", errInvalidRegion()
 		}
 		cfg.Region = cfg.Account[posDot+1:]
 		cfg.Account = cfg.Account[:posDot]
@@ -163,6 +192,9 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.ClientTimeout != defaultClientTimeout {
 		params.Add("clientTimeout", strconv.FormatInt(int64(cfg.ClientTimeout/time.Second), 10))
 	}
+	if cfg.JWTClientTimeout != defaultJWTClientTimeout {
+		params.Add("jwtClientTimeout", strconv.FormatInt(int64(cfg.JWTClientTimeout/time.Second), 10))
+	}
 	if cfg.LoginTimeout != defaultLoginTimeout {
 		params.Add("loginTimeout", strconv.FormatInt(int64(cfg.LoginTimeout/time.Second), 10))
 	}
@@ -171,6 +203,12 @@ func DSN(cfg *Config) (dsn string, err error) {
 	}
 	if cfg.JWTExpireTimeout != defaultJWTTimeout {
 		params.Add("jwtTimeout", strconv.FormatInt(int64(cfg.JWTExpireTimeout/time.Second), 10))
+	}
+	if cfg.ExternalBrowserTimeout != defaultExternalBrowserTimeout {
+		params.Add("externalBrowserTimeout", strconv.FormatInt(int64(cfg.ExternalBrowserTimeout/time.Second), 10))
+	}
+	if cfg.MaxRetryCount != defaultMaxRetryCount {
+		params.Add("maxRetryCount", strconv.Itoa(cfg.MaxRetryCount))
 	}
 	if cfg.Application != clientType {
 		params.Add("application", cfg.Application)
@@ -200,6 +238,15 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.Tracing != "" {
 		params.Add("tracing", cfg.Tracing)
 	}
+	if cfg.TmpDirPath != "" {
+		params.Add("tmpDirPath", cfg.TmpDirPath)
+	}
+	if cfg.DisableQueryContextCache {
+		params.Add("disableQueryContextCache", "true")
+	}
+	if cfg.IncludeRetryReason == ConfigBoolFalse {
+		params.Add("includeRetryReason", "false")
+	}
 
 	params.Add("ocspFailOpen", strconv.FormatBool(cfg.OCSPFailOpen != OCSPFailOpenFalse))
 
@@ -211,6 +258,9 @@ func DSN(cfg *Config) (dsn string, err error) {
 
 	if cfg.ClientStoreTemporaryCredential != configBoolNotSet {
 		params.Add("clientStoreTemporaryCredential", strconv.FormatBool(cfg.ClientStoreTemporaryCredential != ConfigBoolFalse))
+	}
+	if cfg.ClientConfigFile != "" {
+		params.Add("clientConfigFile", cfg.ClientConfigFile)
 	}
 
 	dsn = fmt.Sprintf("%v:%v@%v:%v", url.QueryEscape(cfg.User), url.QueryEscape(cfg.Password), cfg.Host, cfg.Port)
@@ -373,20 +423,15 @@ func fillMissingConfigParameters(cfg *Config) error {
 		}
 	}
 	if strings.Trim(cfg.Account, " ") == "" {
-		return ErrEmptyAccount
+		return errEmptyAccount()
 	}
 
-	if cfg.Authenticator != AuthTypeOAuth && strings.Trim(cfg.User, " ") == "" {
-		// oauth does not require a username
-		return ErrEmptyUsername
+	if authRequiresUser(cfg) && strings.TrimSpace(cfg.User) == "" {
+		return errEmptyUsername()
 	}
 
-	if cfg.Authenticator != AuthTypeExternalBrowser &&
-		cfg.Authenticator != AuthTypeOAuth &&
-		cfg.Authenticator != AuthTypeJwt &&
-		strings.Trim(cfg.Password, " ") == "" {
-		// no password parameter is required for EXTERNALBROWSER, OAUTH or JWT.
-		return ErrEmptyPassword
+	if authRequiresPassword(cfg) && strings.TrimSpace(cfg.Password) == "" {
+		return errEmptyPassword()
 	}
 	if strings.Trim(cfg.Protocol, " ") == "" {
 		cfg.Protocol = "https"
@@ -425,6 +470,15 @@ func fillMissingConfigParameters(cfg *Config) error {
 	if cfg.ClientTimeout == 0 {
 		cfg.ClientTimeout = defaultClientTimeout
 	}
+	if cfg.JWTClientTimeout == 0 {
+		cfg.JWTClientTimeout = defaultJWTClientTimeout
+	}
+	if cfg.ExternalBrowserTimeout == 0 {
+		cfg.ExternalBrowserTimeout = defaultExternalBrowserTimeout
+	}
+	if cfg.MaxRetryCount == 0 {
+		cfg.MaxRetryCount = defaultMaxRetryCount
+	}
 	if strings.Trim(cfg.Application, " ") == "" {
 		cfg.Application = clientType
 	}
@@ -437,6 +491,10 @@ func fillMissingConfigParameters(cfg *Config) error {
 		cfg.ValidateDefaultParameters = ConfigBoolTrue
 	}
 
+	if cfg.IncludeRetryReason == configBoolNotSet {
+		cfg.IncludeRetryReason = ConfigBoolTrue
+	}
+
 	if strings.HasSuffix(cfg.Host, defaultDomain) && len(cfg.Host) == len(defaultDomain) {
 		return &SnowflakeError{
 			Number:      ErrCodeFailedToParseHost,
@@ -445,6 +503,19 @@ func fillMissingConfigParameters(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func authRequiresUser(cfg *Config) bool {
+	return cfg.Authenticator != AuthTypeOAuth &&
+		cfg.Authenticator != AuthTypeTokenAccessor &&
+		cfg.Authenticator != AuthTypeExternalBrowser
+}
+
+func authRequiresPassword(cfg *Config) bool {
+	return cfg.Authenticator != AuthTypeOAuth &&
+		cfg.Authenticator != AuthTypeTokenAccessor &&
+		cfg.Authenticator != AuthTypeExternalBrowser &&
+		cfg.Authenticator != AuthTypeJwt
 }
 
 // transformAccountToHost transforms host to account name
@@ -554,6 +625,11 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			if err != nil {
 				return
 			}
+		case "jwtClientTimeout":
+			cfg.JWTClientTimeout, err = parseTimeout(value)
+			if err != nil {
+				return
+			}
 		case "loginTimeout":
 			cfg.LoginTimeout, err = parseTimeout(value)
 			if err != nil {
@@ -566,6 +642,16 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			}
 		case "jwtTimeout":
 			cfg.JWTExpireTimeout, err = parseTimeout(value)
+			if err != nil {
+				return err
+			}
+		case "externalBrowserTimeout":
+			cfg.ExternalBrowserTimeout, err = parseTimeout(value)
+			if err != nil {
+				return err
+			}
+		case "maxRetryCount":
+			cfg.MaxRetryCount, err = strconv.Atoi(value)
 			if err != nil {
 				return err
 			}
@@ -646,6 +732,28 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			}
 		case "tracing":
 			cfg.Tracing = value
+		case "tmpDirPath":
+			cfg.TmpDirPath = value
+		case "disableQueryContextCache":
+			var b bool
+			b, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.DisableQueryContextCache = b
+		case "includeRetryReason":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			if vv {
+				cfg.IncludeRetryReason = ConfigBoolTrue
+			} else {
+				cfg.IncludeRetryReason = ConfigBoolFalse
+			}
+		case "clientConfigFile":
+			cfg.ClientConfigFile = value
 		default:
 			if cfg.Params == nil {
 				cfg.Params = make(map[string]*string)
@@ -664,4 +772,106 @@ func parseTimeout(value string) (time.Duration, error) {
 		return time.Duration(0), err
 	}
 	return time.Duration(vv * int64(time.Second)), nil
+}
+
+// ConfigParam is used to bind the name of the Config field with the environment variable and set the requirement for it
+type ConfigParam struct {
+	Name          string
+	EnvName       string
+	FailOnMissing bool
+}
+
+// GetConfigFromEnv is used to parse the environment variable values to specific fields of the Config
+func GetConfigFromEnv(properties []*ConfigParam) (*Config, error) {
+	var account, user, password, role, host, portStr, protocol, warehouse, database, schema, region, passcode, application string
+	var privateKey *rsa.PrivateKey
+	var err error
+	if len(properties) == 0 || properties == nil {
+		return nil, errors.New("missing configuration parameters for the connection")
+	}
+	for _, prop := range properties {
+		value, err := GetFromEnv(prop.EnvName, prop.FailOnMissing)
+		if err != nil {
+			return nil, err
+		}
+		switch prop.Name {
+		case "Account":
+			account = value
+		case "User":
+			user = value
+		case "Password":
+			password = value
+		case "Role":
+			role = value
+		case "Host":
+			host = value
+		case "Port":
+			portStr = value
+		case "Protocol":
+			protocol = value
+		case "Warehouse":
+			warehouse = value
+		case "Database":
+			database = value
+		case "Region":
+			region = value
+		case "Passcode":
+			passcode = value
+		case "Schema":
+			schema = value
+		case "Application":
+			application = value
+		case "PrivateKey":
+			privateKey, err = parsePrivateKeyFromFile(value)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	port := 443 // snowflake default port
+	if len(portStr) > 0 {
+		port, err = strconv.Atoi(portStr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	cfg := &Config{
+		Account:     account,
+		User:        user,
+		Password:    password,
+		Role:        role,
+		Host:        host,
+		Port:        port,
+		Protocol:    protocol,
+		Warehouse:   warehouse,
+		Database:    database,
+		Schema:      schema,
+		PrivateKey:  privateKey,
+		Region:      region,
+		Passcode:    passcode,
+		Application: application,
+	}
+	return cfg, nil
+}
+
+func parsePrivateKeyFromFile(path string) (*rsa.PrivateKey, error) {
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(bytes)
+	if block == nil {
+		return nil, errors.New("failed to parse PEM block containing the private key")
+	}
+	privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	pk, ok := privateKey.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("interface convertion. expected type *rsa.PrivateKey, but got %T", privateKey)
+	}
+	return pk, nil
 }

@@ -2,6 +2,8 @@
 
 package gosnowflake
 
+import "errors"
+
 type queryStatus string
 
 const (
@@ -72,4 +74,20 @@ func (res *snowflakeResult) waitForAsyncExecStatus() error {
 		return res.err
 	}
 	return nil
+}
+
+type snowflakeResultNoRows struct {
+	queryID string
+}
+
+func (*snowflakeResultNoRows) LastInsertId() (int64, error) {
+	return 0, errors.New("no LastInsertId available")
+}
+
+func (*snowflakeResultNoRows) RowsAffected() (int64, error) {
+	return 0, errors.New("no RowsAffected available")
+}
+
+func (rnr *snowflakeResultNoRows) GetQueryID() string {
+	return rnr.queryID
 }

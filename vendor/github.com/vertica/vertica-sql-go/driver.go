@@ -46,8 +46,8 @@ type Driver struct{}
 
 const (
 	driverName      string = "vertica-sql-go"
-	driverVersion   string = "1.3.2"
-	protocolVersion uint32 = 0x0003000C
+	driverVersion   string = "1.3.3"
+	protocolVersion uint32 = 0x0003000F // 3.15
 )
 
 var driverLogger = logger.New("driver")

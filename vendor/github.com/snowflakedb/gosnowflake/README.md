@@ -1,5 +1,8 @@
 # Go Snowflake Driver
 
+<a href="https://codecov.io/github/snowflakedb/gosnowflake?branch=master">
+    <img alt="Coverage" src="https://codecov.io/github/snowflakedb/gosnowflake/coverage.svg?branch=master">
+</a>
 <a href="https://github.com/snowflakedb/gosnowflake/actions?query=workflow%3A%22Build+and+Test%22">
     <img src="https://github.com/snowflakedb/gosnowflake/workflows/Build%20and%20Test/badge.svg?branch=master">
 </a>
@@ -22,6 +25,12 @@ The latest driver requires the [Go language](https://golang.org/) 1.19 or higher
 
 
 # Installation
+
+If you don't have a project initialized, set it up.
+
+```sh
+go mod init example.com/snowflake
+```
 
 Get Gosnowflake source code, if not installed.
 

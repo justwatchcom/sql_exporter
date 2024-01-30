@@ -111,8 +111,8 @@ func authenticateBySAML(
 	if tokenURL, err = url.Parse(respd.Data.TokenURL); err != nil {
 		return nil, fmt.Errorf("failed to parse token URL. %v", respd.Data.TokenURL)
 	}
-	if ssoURL, err = url.Parse(respd.Data.TokenURL); err != nil {
-		return nil, fmt.Errorf("failed to parse ssoURL URL. %v", respd.Data.SSOURL)
+	if ssoURL, err = url.Parse(respd.Data.SSOURL); err != nil {
+		return nil, fmt.Errorf("failed to parse SSO URL. %v", respd.Data.SSOURL)
 	}
 	if !isPrefixEqual(oktaURL, ssoURL) || !isPrefixEqual(oktaURL, tokenURL) {
 		return nil, &SnowflakeError{
@@ -216,7 +216,7 @@ func postAuthSAML(
 	fullURL := sr.getFullURL(authenticatorRequestPath, params)
 
 	logger.Infof("fullURL: %v", fullURL)
-	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, true)
+	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func postAuthOKTA(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := sr.FuncPost(ctx, sr, targetURL, headers, body, timeout, false)
+	resp, err := sr.FuncPost(ctx, sr, targetURL, headers, body, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return nil, err
 	}

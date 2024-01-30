@@ -19,7 +19,8 @@ type snowflakeFileUtil struct {
 }
 
 const (
-	fileChunkSize = 16 * 4 * 1024
+	fileChunkSize                 = 16 * 4 * 1024
+	readWriteFileMode os.FileMode = 0666
 )
 
 func (util *snowflakeFileUtil) compressFileWithGzipFromStream(srcStream **bytes.Buffer) (*bytes.Buffer, int, error) {
@@ -39,12 +40,12 @@ func (util *snowflakeFileUtil) compressFileWithGzip(fileName string, tmpDir stri
 	basename := baseName(fileName)
 	gzipFileName := filepath.Join(tmpDir, basename+"_c.gz")
 
-	fr, err := os.OpenFile(fileName, os.O_RDONLY, os.ModePerm)
+	fr, err := os.Open(fileName)
 	if err != nil {
 		return "", -1, err
 	}
 	defer fr.Close()
-	fw, err := os.OpenFile(gzipFileName, os.O_WRONLY|os.O_CREATE, os.ModePerm)
+	fw, err := os.OpenFile(gzipFileName, os.O_WRONLY|os.O_CREATE, readWriteFileMode)
 	if err != nil {
 		return "", -1, err
 	}

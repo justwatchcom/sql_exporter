@@ -16,17 +16,39 @@ errors.Wrap(err, "message")
 * Using `Wrap` is the most explicit way to wrap errors
 * Wrapping with `fmt.Errorf("foo: %w", err)` is implicit, redundant and error-prone
 * Parsing `"foo: %w"` is implicit, redundant and slow
-* The [pkg/errors](https://github.com/pkg/errors) and [xerrrors](https://pkg.go.dev/golang.org/x/xerrors) are not maintainted
+* The [pkg/errors](https://github.com/pkg/errors) and [xerrors](https://pkg.go.dev/golang.org/x/xerrors) are not maintainted
 * The [cockroachdb/errors](https://github.com/cockroachdb/errors) is too big
 * The `errors` has no caller stack trace
 
 ## Don't need traces?
 Call `errors.DisableTrace` or use build tag `noerrtrace`.
 
-## Migration
+## Additional features
+
+### Into
+
+Generic type assertion for errors.
+
+```go
+// Into finds the first error in err's chain that matches target type T, and if so, returns it.
+//
+// Into is type-safe alternative to As.
+func Into[T error](err error) (val T, ok bool)
 ```
-go get github.com/go-faster/errors/cmd/gowrapper@latest
-gowrapper ./...
+
+```go
+if pathError, ok := errors.Into[*os.PathError](err); ok {
+    fmt.Println("Failed at path:", pathError.Path)
+}
+```
+
+### Must
+
+Must is a generic helper, like template.Must, that wraps a call to a function returning (T, error)
+and panics if the error is non-nil.
+
+```go
+func Must[T any](val T, err error) T
 ```
 
 ## License

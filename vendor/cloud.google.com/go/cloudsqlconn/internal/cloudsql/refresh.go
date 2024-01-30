@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn/errtype"
+	"cloud.google.com/go/cloudsqlconn/instance"
 	"cloud.google.com/go/cloudsqlconn/internal/trace"
 	"golang.org/x/oauth2"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
@@ -53,17 +54,23 @@ type metadata struct {
 // fetchMetadata uses the Cloud SQL Admin APIs get method to retrieve the
 // information about a Cloud SQL instance that is used to create secure
 // connections.
-func fetchMetadata(ctx context.Context, client *sqladmin.Service, inst ConnName) (m metadata, err error) {
+func fetchMetadata(
+	ctx context.Context, client *sqladmin.Service, inst instance.ConnName,
+) (m metadata, err error) {
+
 	var end trace.EndSpanFunc
 	ctx, end = trace.StartSpan(ctx, "cloud.google.com/go/cloudsqlconn/internal.FetchMetadata")
 	defer func() { end(err) }()
-	db, err := client.Connect.Get(inst.project, inst.name).Context(ctx).Do()
+	db, err := client.Connect.Get(inst.Project(), inst.Name()).Context(ctx).Do()
 	if err != nil {
 		return metadata{}, errtype.NewRefreshError("failed to get instance metadata", inst.String(), err)
 	}
 	// validate the instance is supported for authenticated connections
-	if db.Region != inst.region {
-		msg := fmt.Sprintf("provided region was mismatched - got %s, want %s", inst.region, db.Region)
+	if db.Region != inst.Region() {
+		msg := fmt.Sprintf(
+			"provided region was mismatched - got %s, want %s",
+			inst.Region(), db.Region,
+		)
 		return metadata{}, errtype.NewConfigError(msg, inst.String())
 	}
 	if db.BackendType != "SECOND_GEN" {
@@ -135,7 +142,7 @@ func refreshToken(ts oauth2.TokenSource, tok *oauth2.Token) (*oauth2.Token, erro
 func fetchEphemeralCert(
 	ctx context.Context,
 	client *sqladmin.Service,
-	inst ConnName,
+	inst instance.ConnName,
 	key *rsa.PrivateKey,
 	ts oauth2.TokenSource,
 ) (c tls.Certificate, err error) {
@@ -173,7 +180,9 @@ func fetchEphemeralCert(
 		}
 		req.AccessToken = tok.AccessToken
 	}
-	resp, err := client.Connect.GenerateEphemeralCert(inst.project, inst.name, &req).Context(ctx).Do()
+	resp, err := client.Connect.GenerateEphemeralCert(
+		inst.Project(), inst.Name(), &req,
+	).Context(ctx).Do()
 	if err != nil {
 		return tls.Certificate{}, errtype.NewRefreshError(
 			"create ephemeral cert failed",
@@ -216,7 +225,7 @@ func fetchEphemeralCert(
 }
 
 // createTLSConfig returns a *tls.Config for connecting securely to the Cloud SQL instance.
-func createTLSConfig(inst ConnName, m metadata, cert tls.Certificate) *tls.Config {
+func createTLSConfig(inst instance.ConnName, m metadata, cert tls.Certificate) *tls.Config {
 	certs := x509.NewCertPool()
 	certs.AddCert(m.serverCaCert)
 
@@ -243,7 +252,7 @@ func createTLSConfig(inst ConnName, m metadata, cert tls.Certificate) *tls.Confi
 // our own because CloudSQL instances use the instance name (e.g.,
 // my-project:my-instance) instead of a valid domain name for the certificate's
 // Common Name.
-func genVerifyPeerCertificateFunc(cn ConnName, pool *x509.CertPool) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func genVerifyPeerCertificateFunc(cn instance.ConnName, pool *x509.CertPool) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return errtype.NewDialError("no certificate to verify", cn.String(), nil)
@@ -259,7 +268,7 @@ func genVerifyPeerCertificateFunc(cn ConnName, pool *x509.CertPool) func(rawCert
 			return errtype.NewDialError("failed to verify certificate", cn.String(), err)
 		}
 
-		certInstanceName := fmt.Sprintf("%s:%s", cn.project, cn.name)
+		certInstanceName := fmt.Sprintf("%s:%s", cn.Project(), cn.Name())
 		if cert.Subject.CommonName != certInstanceName {
 			return errtype.NewDialError(
 				fmt.Sprintf("certificate had CN %q, expected %q",
@@ -306,7 +315,10 @@ type refresher struct {
 
 // performRefresh immediately performs a full refresh operation using the Cloud
 // SQL Admin API.
-func (r refresher) performRefresh(ctx context.Context, cn ConnName, k *rsa.PrivateKey, iamAuthN bool) (rr refreshResult, err error) {
+func (r refresher) performRefresh(
+	ctx context.Context, cn instance.ConnName, k *rsa.PrivateKey, iamAuthNDial bool,
+) (rr refreshResult, err error) {
+
 	var refreshEnd trace.EndSpanFunc
 	ctx, refreshEnd = trace.StartSpan(ctx, "cloud.google.com/go/cloudsqlconn/internal.RefreshConnection",
 		trace.AddInstanceName(cn.String()),
@@ -337,7 +349,7 @@ func (r refresher) performRefresh(ctx context.Context, cn ConnName, k *rsa.Priva
 	go func() {
 		defer close(ecC)
 		var iamTS oauth2.TokenSource
-		if iamAuthN {
+		if iamAuthNDial {
 			iamTS = r.ts
 		}
 		ec, err := fetchEphemeralCert(ctx, r.client, cn, k, iamTS)
@@ -355,7 +367,7 @@ func (r refresher) performRefresh(ctx context.Context, cn ConnName, k *rsa.Priva
 	case <-ctx.Done():
 		return rr, fmt.Errorf("refresh failed: %w", ctx.Err())
 	}
-	if iamAuthN {
+	if iamAuthNDial {
 		if vErr := supportsAutoIAMAuthN(md.version); vErr != nil {
 			return refreshResult{}, vErr
 		}

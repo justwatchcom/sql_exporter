@@ -34,7 +34,7 @@ func (util *snowflakeGcsClient) createClient(info *execResponseStageInfo, _ bool
 		logger.Debug("Using GCS downscoped token")
 		return info.Creds.GcsAccessToken, nil
 	}
-	logger.Debug("No access token received from GS, using presigned url")
+	logger.Debugf("No access token received from GS, using presigned url: %s", info.PresignedURL)
 	return "", nil
 }
 
@@ -54,7 +54,10 @@ func (util *snowflakeGcsClient) getFileHeader(meta *fileMetadata, filename strin
 		if err != nil {
 			return nil, err
 		}
-		accessToken := meta.client.(string)
+		accessToken, ok := meta.client.(string)
+		if !ok {
+			return nil, fmt.Errorf("interface convertion. expected type string but got %T", meta.client)
+		}
 		gcsHeaders := map[string]string{
 			"Authorization": "Bearer " + accessToken,
 		}
@@ -66,8 +69,7 @@ func (util *snowflakeGcsClient) getFileHeader(meta *fileMetadata, filename strin
 		for k, v := range gcsHeaders {
 			req.Header.Add(k, v)
 		}
-		var client gcsAPI
-		client = &http.Client{}
+		client := newGcsClient()
 		// for testing only
 		if meta.mockGcsClient != nil {
 			client = meta.mockGcsClient
@@ -145,7 +147,11 @@ func (util *snowflakeGcsClient) uploadFile(
 		if err != nil {
 			return err
 		}
-		accessToken = meta.client.(string)
+		var ok bool
+		accessToken, ok = meta.client.(string)
+		if !ok {
+			return fmt.Errorf("interface convertion. expected type string but got %T", meta.client)
+		}
 	}
 
 	var contentEncoding string
@@ -196,7 +202,7 @@ func (util *snowflakeGcsClient) uploadFile(
 			uploadSrc = meta.realSrcStream
 		}
 	} else {
-		uploadSrc, err = os.OpenFile(dataFile, os.O_RDONLY, os.ModePerm)
+		uploadSrc, err = os.Open(dataFile)
 		if err != nil {
 			return err
 		}
@@ -209,8 +215,7 @@ func (util *snowflakeGcsClient) uploadFile(
 	for k, v := range gcsHeaders {
 		req.Header.Add(k, v)
 	}
-	var client gcsAPI
-	client = &http.Client{}
+	client := newGcsClient()
 	// for testing only
 	if meta.mockGcsClient != nil {
 		client = meta.mockGcsClient
@@ -271,7 +276,11 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 		if err != nil {
 			return err
 		}
-		accessToken = meta.client.(string)
+		var ok bool
+		accessToken, ok = meta.client.(string)
+		if !ok {
+			return fmt.Errorf("interface convertion. expected type string but got %T", meta.client)
+		}
 		if accessToken != "" {
 			gcsHeaders["Authorization"] = "Bearer " + accessToken
 		}
@@ -284,8 +293,7 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 	for k, v := range gcsHeaders {
 		req.Header.Add(k, v)
 	}
-	var client gcsAPI
-	client = &http.Client{}
+	client := newGcsClient()
 	// for testing only
 	if meta.mockGcsClient != nil {
 		client = meta.mockGcsClient
@@ -314,7 +322,7 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 		return meta.lastError
 	}
 
-	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
 	if err != nil {
 		return err
 	}
@@ -378,4 +386,10 @@ func (util *snowflakeGcsClient) generateFileURL(stageLocation string, filename s
 
 func (util *snowflakeGcsClient) isTokenExpired(resp *http.Response) bool {
 	return resp.StatusCode == 401
+}
+
+func newGcsClient() gcsAPI {
+	return &http.Client{
+		Transport: SnowflakeTransport,
+	}
 }

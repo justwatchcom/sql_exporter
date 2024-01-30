@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/ipc"
-	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/ipc"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 )
 
 type chunkDownloader interface {
@@ -106,10 +106,13 @@ func (scd *snowflakeChunkDownloader) start() error {
 		// if the rowsetbase64 retrieved from the server is empty, move on to downloading chunks
 		var err error
 		var loc *time.Location
-		if scd.sc != nil {
+		if scd.sc != nil && scd.sc.cfg != nil {
 			loc = getCurrentLocation(scd.sc.cfg.Params)
 		}
-		firstArrowChunk := buildFirstArrowChunk(scd.RowSet.RowSetBase64, loc, scd.pool)
+		firstArrowChunk, err := buildFirstArrowChunk(scd.RowSet.RowSetBase64, loc, scd.pool)
+		if err != nil {
+			return err
+		}
 		higherPrecision := higherPrecisionEnabled(scd.ctx)
 		scd.CurrentChunk, err = firstArrowChunk.decodeArrowChunk(scd.RowSet.RowType, higherPrecision)
 		scd.CurrentChunkSize = firstArrowChunk.rowCount
@@ -264,21 +267,28 @@ func getChunk(
 	if err != nil {
 		return nil, err
 	}
-	return newRetryHTTP(ctx, sc.rest.Client, http.NewRequest, u, headers, timeout).execute()
+	return newRetryHTTP(ctx, sc.rest.Client, http.NewRequest, u, headers, timeout, sc.rest.MaxRetryCount, sc.currentTimeProvider, sc.cfg).execute()
 }
 
 func (scd *snowflakeChunkDownloader) startArrowBatches() error {
+	if scd.RowSet.RowSetBase64 == "" {
+		return nil
+	}
 	var err error
 	chunkMetaLen := len(scd.ChunkMetas)
 	var loc *time.Location
-	if scd.sc != nil {
+	if scd.sc != nil && scd.sc.cfg != nil {
 		loc = getCurrentLocation(scd.sc.cfg.Params)
 	}
-	firstArrowChunk := buildFirstArrowChunk(scd.RowSet.RowSetBase64, loc, scd.pool)
+	firstArrowChunk, err := buildFirstArrowChunk(scd.RowSet.RowSetBase64, loc, scd.pool)
+	if err != nil {
+		return err
+	}
 	scd.FirstBatch = &ArrowBatch{
 		idx:                0,
 		scd:                scd,
 		funcDownloadHelper: scd.FuncDownloadHelper,
+		loc:                loc,
 	}
 	// decode first chunk if possible
 	if firstArrowChunk.allocator != nil {
@@ -293,6 +303,7 @@ func (scd *snowflakeChunkDownloader) startArrowBatches() error {
 			idx:                i,
 			scd:                scd,
 			funcDownloadHelper: scd.FuncDownloadHelper,
+			loc:                loc,
 		}
 	}
 	return nil
@@ -430,7 +441,7 @@ func decodeChunk(scd *snowflakeChunkDownloader, idx int, bufStream *bufio.Reader
 			return err
 		}
 		var loc *time.Location
-		if scd.sc != nil {
+		if scd.sc != nil && scd.sc.cfg != nil {
 			loc = getCurrentLocation(scd.sc.cfg.Params)
 		}
 		arc := arrowResultChunk{
@@ -636,7 +647,7 @@ func (f *httpStreamChunkFetcher) fetch(URL string, rows chan<- []*string) error 
 	if err != nil {
 		return err
 	}
-	res, err := newRetryHTTP(context.Background(), f.client, http.NewRequest, fullURL, f.headers, 0).execute()
+	res, err := newRetryHTTP(context.Background(), f.client, http.NewRequest, fullURL, f.headers, 0, 0, defaultTimeProvider, nil).execute()
 	if err != nil {
 		return err
 	}
@@ -707,6 +718,14 @@ type ArrowBatch struct {
 	rowCount           int
 	scd                *snowflakeChunkDownloader
 	funcDownloadHelper func(context.Context, *snowflakeChunkDownloader, int) error
+	ctx                context.Context
+	loc                *time.Location
+}
+
+// WithContext sets the context which will be used for this ArrowBatch.
+func (rb *ArrowBatch) WithContext(ctx context.Context) *ArrowBatch {
+	rb.ctx = ctx
+	return rb
 }
 
 // Fetch returns an array of records representing a chunk in the query
@@ -717,7 +736,13 @@ func (rb *ArrowBatch) Fetch() (*[]arrow.Record, error) {
 		rb.rowCount = countArrowBatchRows(rb.rec)
 		return rb.rec, nil
 	}
-	if err := rb.funcDownloadHelper(context.Background(), rb.scd, rb.idx); err != nil {
+	var ctx context.Context
+	if rb.ctx != nil {
+		ctx = rb.ctx
+	} else {
+		ctx = context.Background()
+	}
+	if err := rb.funcDownloadHelper(ctx, rb.scd, rb.idx); err != nil {
 		return nil, err
 	}
 	return rb.rec, nil

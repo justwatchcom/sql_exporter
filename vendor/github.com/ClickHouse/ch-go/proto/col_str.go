@@ -113,6 +113,12 @@ func (c ColStr) ForEachBytes(f func(i int, b []byte) error) error {
 // DecodeColumn decodes String rows from *Reader.
 func (c *ColStr) DecodeColumn(r *Reader, rows int) error {
 	var p Position
+	size := len(c.Pos)
+	if cap(c.Pos) < size+rows {
+		c.Pos = append(c.Pos, make([]Position, size+rows-cap(c.Pos))...)
+	}
+	c.Pos = c.Pos[:0]
+	c.Buf = c.Buf[:cap(c.Buf)]
 	for i := 0; i < rows; i++ {
 		n, err := r.StrLen()
 		if err != nil {
@@ -122,12 +128,22 @@ func (c *ColStr) DecodeColumn(r *Reader, rows int) error {
 		p.Start = p.End
 		p.End += n
 
-		c.Buf = append(c.Buf, make([]byte, n)...)
+		if len(c.Buf) < p.End {
+			var an int
+			if n < 128 {
+				// small size, do batch buffer alloc
+				an = n * (rows - i)
+			} else {
+				an = n
+			}
+			c.Buf = append(c.Buf, make([]byte, an)...)
+		}
 		if err := r.ReadFull(c.Buf[p.Start:p.End]); err != nil {
 			return errors.Wrapf(err, "row %d: read full", i)
 		}
 		c.Pos = append(c.Pos, p)
 	}
+	c.Buf = c.Buf[:p.End]
 	return nil
 }
 

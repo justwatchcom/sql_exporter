@@ -20,7 +20,7 @@ package linux
 import (
 	"bufio"
 	"bytes"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,7 +28,6 @@ import (
 	"strings"
 
 	"github.com/joeshaw/multierror"
-	"github.com/pkg/errors"
 
 	"github.com/elastic/go-sysinfo/types"
 )
@@ -37,7 +36,7 @@ const (
 	osRelease      = "/etc/os-release"
 	lsbRelease     = "/etc/lsb-release"
 	distribRelease = "/etc/*-release"
-	versionGrok    = `(?P<version>(?P<major>[0-9]+)\.?(?P<minor>[0-9]+)?\.?(?P<patch>\w+)?)(?: \((?P<codename>\w+)\))?`
+	versionGrok    = `(?P<version>(?P<major>[0-9]+)\.?(?P<minor>[0-9]+)?\.?(?P<patch>\w+)?)(?: \((?P<codename>[-\w ]+)\))?`
 )
 
 var (
@@ -50,7 +49,11 @@ var (
 
 // familyMap contains a mapping of family -> []platforms.
 var familyMap = map[string][]string{
-	"redhat": {"redhat", "fedora", "centos", "scientific", "oraclelinux", "ol", "amzn", "rhel"},
+	"arch": {"arch", "antergos", "manjaro"},
+	"redhat": {
+		"redhat", "fedora", "centos", "scientific", "oraclelinux", "ol",
+		"amzn", "rhel", "almalinux", "openeuler", "rocky",
+	},
 	"debian": {"debian", "ubuntu", "raspbian", "linuxmint"},
 	"suse":   {"suse", "sles", "opensuse"},
 }
@@ -96,14 +99,14 @@ func getOSInfo(baseDir string) (*types.OSInfo, error) {
 }
 
 func getOSRelease(baseDir string) (*types.OSInfo, error) {
-	lsbRel, _ := ioutil.ReadFile(filepath.Join(baseDir, lsbRelease))
+	lsbRel, _ := os.ReadFile(filepath.Join(baseDir, lsbRelease))
 
-	osRel, err := ioutil.ReadFile(filepath.Join(baseDir, osRelease))
+	osRel, err := os.ReadFile(filepath.Join(baseDir, osRelease))
 	if err != nil {
 		return nil, err
 	}
 	if len(osRel) == 0 {
-		return nil, errors.Errorf("%v is empty", osRelease)
+		return nil, fmt.Errorf("%v is empty: %w", osRelease, err)
 	}
 
 	return parseOSRelease(append(lsbRel, osRel...))
@@ -147,16 +150,15 @@ func parseOSRelease(content []byte) (*types.OSInfo, error) {
 func makeOSInfo(osRelease map[string]string) (*types.OSInfo, error) {
 	os := &types.OSInfo{
 		Type:     "linux",
-		Platform: osRelease["ID"],
-		Name:     osRelease["NAME"],
-		Version:  osRelease["VERSION"],
+		Platform: firstOf(osRelease, "ID", "DISTRIB_ID"),
+		Name:     firstOf(osRelease, "NAME", "PRETTY_NAME"),
+		Version:  firstOf(osRelease, "VERSION", "VERSION_ID", "DISTRIB_RELEASE"),
 		Build:    osRelease["BUILD_ID"],
-		Codename: osRelease["VERSION_CODENAME"],
+		Codename: firstOf(osRelease, "VERSION_CODENAME", "DISTRIB_CODENAME"),
 	}
 
 	if os.Codename == "" {
-		// Some OSes uses their own CODENAME keys (e.g UBUNTU_CODENAME) or we
-		// can get the DISTRIB_CODENAME value from the lsb-release data.
+		// Some OSes use their own CODENAME keys (e.g UBUNTU_CODENAME).
 		for k, v := range osRelease {
 			if strings.Contains(k, "CODENAME") {
 				os.Codename = v
@@ -166,10 +168,19 @@ func makeOSInfo(osRelease map[string]string) (*types.OSInfo, error) {
 	}
 
 	if os.Platform == "" {
-		// Fallback to the first word of the NAME field.
-		parts := strings.SplitN(os.Name, " ", 2)
-		if len(parts) > 0 {
-			os.Platform = strings.ToLower(parts[0])
+		// Fallback to the first word of the Name field.
+		os.Platform, _, _ = strings.Cut(os.Name, " ")
+	}
+
+	os.Family = linuxFamily(os.Platform)
+	if os.Family == "" {
+		// ID_LIKE is a space-separated list of OS identifiers that this
+		// OS is similar to. Use this to figure out the Linux family.
+		for _, id := range strings.Fields(osRelease["ID_LIKE"]) {
+			os.Family = linuxFamily(id)
+			if os.Family != "" {
+				break
+			}
 		}
 	}
 
@@ -192,7 +203,6 @@ func makeOSInfo(osRelease map[string]string) (*types.OSInfo, error) {
 		}
 	}
 
-	os.Family = platformToFamilyMap[strings.ToLower(os.Platform)]
 	return os, nil
 }
 
@@ -214,22 +224,22 @@ func findDistribRelease(baseDir string) (*types.OSInfo, error) {
 
 		osInfo, err := getDistribRelease(path)
 		if err != nil {
-			errs = append(errs, errors.Wrapf(err, "in %s", path))
+			errs = append(errs, fmt.Errorf("in %s: %w", path, err))
 			continue
 		}
 		return osInfo, err
 	}
-	return nil, errors.Wrap(&multierror.MultiError{Errors: errs}, "no valid /etc/<distrib>-release file found")
+	return nil, fmt.Errorf("no valid /etc/<distrib>-release file found: %w", &multierror.MultiError{Errors: errs})
 }
 
 func getDistribRelease(file string) (*types.OSInfo, error) {
-	data, err := ioutil.ReadFile(file)
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 	parts := bytes.SplitN(data, []byte("\n"), 2)
 	if len(parts) != 2 {
-		return nil, errors.Errorf("failed to parse %v", file)
+		return nil, fmt.Errorf("failed to parse %v", file)
 	}
 
 	// Use distrib as platform name.
@@ -269,6 +279,40 @@ func parseDistribRelease(platform string, content []byte) (*types.OSInfo, error)
 		}
 	}
 
-	os.Family = platformToFamilyMap[strings.ToLower(os.Platform)]
+	os.Family = linuxFamily(os.Platform)
 	return os, nil
+}
+
+// firstOf returns the first non-empty value found in the map while
+// iterating over keys.
+func firstOf(kv map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if v := kv[key]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// linuxFamily returns the linux distribution family associated to the OS platform.
+// If there is no family associated then it returns an empty string.
+func linuxFamily(platform string) string {
+	if platform == "" {
+		return ""
+	}
+
+	platform = strings.ToLower(platform)
+
+	// First try a direct lookup.
+	if family, found := platformToFamilyMap[platform]; found {
+		return family
+	}
+
+	// Try prefix matching (e.g. opensuse matches opensuse-tumpleweed).
+	for platformPrefix, family := range platformToFamilyMap {
+		if strings.HasPrefix(platform, platformPrefix) {
+			return family
+		}
+	}
+	return ""
 }

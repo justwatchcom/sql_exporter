@@ -35,7 +35,7 @@ func Null[T any]() Nullable[T] {
 func (n Nullable[T]) IsSet() bool { return n.Set }
 
 func (n Nullable[T]) Or(v T) T {
-	if n.Set {
+	if !n.Set {
 		return v
 	}
 	return n.Value

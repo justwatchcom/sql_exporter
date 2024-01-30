@@ -113,6 +113,7 @@ type connection struct {
 	serverTZOffset   string
 	dead             bool // used if a ROLLBACK severity error is encountered
 	sessMutex        sync.Mutex
+	workload         string
 }
 
 // Begin - Begin starts and returns a new transaction. (DEPRECATED)
@@ -259,6 +260,9 @@ func newConnection(connString string) (*connection, error) {
 	if sslFlag == "" {
 		sslFlag = tlsModeNone
 	}
+
+	// Read Workload flag
+	result.workload = result.connURL.Query().Get("workload")
 
 	result.conn, err = result.establishSocketConnection()
 
@@ -444,6 +448,7 @@ func (v *connection) handshake() error {
 		ClientPID:        v.clientPID,
 		Autocommit:       v.autocommit,
 		OAuthAccessToken: v.oauthaccesstoken,
+		Workload:         v.workload,
 	}
 
 	if err := v.sendMessage(msg); err != nil {
@@ -507,11 +512,21 @@ func (v *connection) initializeSession() error {
 		return fmt.Errorf("can't get server timezone: %s", str)
 	}
 
-	v.serverTZOffset = str[len(str)-3:]
+	v.serverTZOffset = getTimeZoneOffset(str)
 
-	connectionLogger.Debug("Setting server timezone offset to %s", str[len(str)-3:])
+	connectionLogger.Debug("Setting server timezone offset to %s", v.serverTZOffset)
 
 	return nil
+}
+
+func getTimeZoneOffset(str string) string {
+	for i := len(str) - 1; i >= 0 && i >= len(str)-8; i-- {
+		ch := str[i]
+		if ch == '+' || ch == '-' {
+			return str[i:]
+		}
+	}
+	return "+00"
 }
 
 func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {

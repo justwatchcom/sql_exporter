@@ -31,6 +31,7 @@ type Column interface {
 type ColumnOf[T any] interface {
 	Column
 	Append(v T)
+	AppendArr(v []T)
 	Row(i int) T
 }
 

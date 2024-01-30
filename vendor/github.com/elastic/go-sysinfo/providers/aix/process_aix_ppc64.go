@@ -16,7 +16,6 @@
 // under the License.
 
 //go:build aix && ppc64 && cgo
-// +build aix,ppc64,cgo
 
 package aix
 
@@ -33,6 +32,8 @@ import "C"
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -43,8 +44,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/pkg/errors"
-
 	"github.com/elastic/go-sysinfo/types"
 )
 
@@ -54,7 +53,7 @@ func (aixSystem) Processes() ([]types.Process, error) {
 	// getprocs which will also retrieve kernel threads.
 	files, err := ioutil.ReadDir("/proc")
 	if err != nil {
-		return nil, errors.Wrap(err, "error while reading /proc")
+		return nil, fmt.Errorf("error while reading /proc: %w", err)
 	}
 
 	processes := make([]types.Process, 0, len(files))
@@ -121,7 +120,7 @@ func (p *process) Info() (types.ProcessInfo, error) {
 		err = syscall.ESRCH
 	}
 	if err != nil {
-		return types.ProcessInfo{}, errors.Wrap(err, "error while calling getprocs")
+		return types.ProcessInfo{}, fmt.Errorf("error while calling getprocs: %w", err)
 	}
 
 	p.info.PPID = int(info.pi_ppid)
@@ -133,7 +132,7 @@ func (p *process) Info() (types.ProcessInfo, error) {
 	buf := make([]byte, 8192)
 	var args []string
 	if _, err := C.getargs(unsafe.Pointer(&info), C.sizeof_struct_procsinfo64, (*C.char)(&buf[0]), 8192); err != nil {
-		return types.ProcessInfo{}, errors.Wrap(err, "error while calling getargs")
+		return types.ProcessInfo{}, fmt.Errorf("error while calling getargs: %w", err)
 	}
 
 	bbuf := bytes.NewBuffer(buf)
@@ -143,7 +142,7 @@ func (p *process) Info() (types.ProcessInfo, error) {
 			break
 		}
 		if err != nil {
-			return types.ProcessInfo{}, errors.Wrap(err, "error while reading arguments")
+			return types.ProcessInfo{}, fmt.Errorf("error while reading arguments: %w", err)
 		}
 
 		args = append(args, string(chop(arg)))
@@ -183,7 +182,7 @@ func (p *process) Info() (types.ProcessInfo, error) {
 	cwd, err := os.Readlink("/proc/" + strconv.Itoa(p.pid) + "/cwd")
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return types.ProcessInfo{}, errors.Wrapf(err, "error while reading /proc/%s/cwd", strconv.Itoa(p.pid))
+			return types.ProcessInfo{}, fmt.Errorf("error while reading /proc/%s/cwd: %w", strconv.Itoa(p.pid), err)
 		}
 	}
 
@@ -205,7 +204,7 @@ func (p *process) Environment() (map[string]string, error) {
 	info.pi_pid = C.pid_t(p.pid)
 
 	if _, err := C.getevars(unsafe.Pointer(&info), C.sizeof_struct_procsinfo64, (*C.char)(&buf[0]), 8192); err != nil {
-		return nil, errors.Wrap(err, "error while calling getevars")
+		return nil, fmt.Errorf("error while calling getevars: %w", err)
 	}
 
 	bbuf := bytes.NewBuffer(buf)
@@ -218,12 +217,12 @@ func (p *process) Environment() (map[string]string, error) {
 			break
 		}
 		if err != nil {
-			return nil, errors.Wrap(err, "error while calling getevars")
+			return nil, fmt.Errorf("error while calling getevars: %w", err)
 		}
 
 		pair := bytes.SplitN(chop(line), delim, 2)
 		if len(pair) != 2 {
-			return nil, errors.Wrap(err, "error reading process environment")
+			return nil, errors.New("error reading process environment")
 		}
 		p.env[string(pair[0])] = string(pair[1])
 	}
@@ -260,7 +259,7 @@ func (p *process) Memory() (types.MemoryInfo, error) {
 		err = syscall.ESRCH
 	}
 	if err != nil {
-		return types.MemoryInfo{}, errors.Wrap(err, "error while calling getprocs")
+		return types.MemoryInfo{}, fmt.Errorf("error while calling getprocs: %w", err)
 	}
 
 	mem.Resident = uint64(info.pi_drss+info.pi_trss) * pagesize
@@ -286,12 +285,12 @@ func (p *process) decodeProcfsFile(name string, data interface{}) error {
 
 	file, err := os.Open(fileName)
 	if err != nil {
-		return errors.Wrapf(err, "error while opening %s", fileName)
+		return fmt.Errorf("error while opening %s: %w", fileName, err)
 	}
 	defer file.Close()
 
 	if err := binary.Read(file, binary.BigEndian, data); err != nil {
-		return errors.Wrapf(err, "error while decoding %s", fileName)
+		return fmt.Errorf("error while decoding %s: %w", fileName, err)
 	}
 
 	return nil

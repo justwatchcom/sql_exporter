@@ -18,6 +18,7 @@
 package column
 
 import (
+	"database/sql/driver"
 	"encoding/binary"
 	"fmt"
 	"github.com/ClickHouse/ch-go/proto"
@@ -71,6 +72,11 @@ func (col *IPv4) ScanRow(dest any, row int) error {
 	case **net.IP:
 		*d = new(net.IP)
 		**d = col.row(row)
+	case *netip.Addr:
+		*d = col.rowAddr(row)
+	case **netip.Addr:
+		*d = new(netip.Addr)
+		**d = col.rowAddr(row)
 	case *uint32:
 		ipV4 := col.row(row).To4()
 		if ipV4 == nil {
@@ -198,6 +204,18 @@ func (col *IPv4) Append(v any) (nulls []uint8, err error) {
 			}
 		}
 	default:
+		if valuer, ok := v.(driver.Valuer); ok {
+			val, err := valuer.Value()
+			if err != nil {
+				return nil, &ColumnConverterError{
+					Op:   "Append",
+					To:   "IPv4",
+					From: fmt.Sprintf("%T", v),
+					Hint: fmt.Sprintf("could not get driver.Valuer value, try using %s", col.Type()),
+				}
+			}
+			return col.Append(val)
+		}
 		return nil, &ColumnConverterError{
 			Op:   "Append",
 			To:   "IPv4",
@@ -230,9 +248,19 @@ func (col *IPv4) AppendRow(v any) (err error) {
 	case netip.Addr:
 		col.col.Append(proto.ToIPv4(v))
 	case *netip.Addr:
-		col.col.Append(proto.ToIPv4(*v))
+		switch {
+		case v != nil:
+			col.col.Append(proto.ToIPv4(*v))
+		default:
+			col.col.Append(0)
+		}
 	case net.IP:
-		col.col.Append(proto.ToIPv4(netIPToNetIPAddr(v)))
+		switch {
+		case len(v) == 0:
+			col.col.Append(0)
+		default:
+			col.col.Append(proto.ToIPv4(netIPToNetIPAddr(v)))
+		}
 	case *net.IP:
 		switch {
 		case v != nil:
@@ -252,6 +280,18 @@ func (col *IPv4) AppendRow(v any) (err error) {
 			col.col.Append(0)
 		}
 	default:
+		if valuer, ok := v.(driver.Valuer); ok {
+			val, err := valuer.Value()
+			if err != nil {
+				return &ColumnConverterError{
+					Op:   "AppendRow",
+					To:   "IPv4",
+					From: fmt.Sprintf("%T", v),
+					Hint: fmt.Sprintf("could not get driver.Valuer value, try using %s", col.Type()),
+				}
+			}
+			return col.AppendRow(val)
+		}
 		return &ColumnConverterError{
 			Op:   "AppendRow",
 			To:   "IPv4",
@@ -275,6 +315,10 @@ func (col *IPv4) row(i int) net.IP {
 	src := col.col.Row(i).ToIP()
 	ip := src.As4()
 	return net.IPv4(ip[0], ip[1], ip[2], ip[3]).To4()
+}
+
+func (col *IPv4) rowAddr(i int) netip.Addr {
+	return col.col.Row(i).ToIP()
 }
 
 func netIPToNetIPAddr(ip net.IP) netip.Addr {

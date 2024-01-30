@@ -210,18 +210,18 @@ func WithIAMAuthN() Option {
 }
 
 // A DialOption is an option for configuring how a Dialer's Dial call is executed.
-type DialOption func(d *dialCfg)
+type DialOption func(d *dialConfig)
 
-type dialCfg struct {
+type dialConfig struct {
 	dialFunc     func(ctx context.Context, network, addr string) (net.Conn, error)
 	ipType       string
 	tcpKeepAlive time.Duration
-	refreshCfg   cloudsql.RefreshCfg
+	useIAMAuthN  bool
 }
 
 // DialOptions turns a list of DialOption instances into an DialOption.
 func DialOptions(opts ...DialOption) DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		for _, opt := range opts {
 			opt(cfg)
 		}
@@ -232,35 +232,35 @@ func DialOptions(opts ...DialOption) DialOption {
 // individual call to Dial. To configure a dial function across all invocations
 // of Dial, use WithDialFunc.
 func WithOneOffDialFunc(dial func(ctx context.Context, network, addr string) (net.Conn, error)) DialOption {
-	return func(c *dialCfg) {
+	return func(c *dialConfig) {
 		c.dialFunc = dial
 	}
 }
 
 // WithTCPKeepAlive returns a DialOption that specifies the tcp keep alive period for the connection returned by Dial.
 func WithTCPKeepAlive(d time.Duration) DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		cfg.tcpKeepAlive = d
 	}
 }
 
 // WithPublicIP returns a DialOption that specifies a public IP will be used to connect.
 func WithPublicIP() DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		cfg.ipType = cloudsql.PublicIP
 	}
 }
 
 // WithPrivateIP returns a DialOption that specifies a private IP (VPC) will be used to connect.
 func WithPrivateIP() DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		cfg.ipType = cloudsql.PrivateIP
 	}
 }
 
 // WithPSC returns a DialOption that specifies a PSC endpoint will be used to connect.
 func WithPSC() DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		cfg.ipType = cloudsql.PSC
 	}
 }
@@ -269,20 +269,20 @@ func WithPSC() DialOption {
 // otherwise falls back to private IP. This option is present for backwards
 // compatibility only and is not recommended for use in production.
 func WithAutoIP() DialOption {
-	return func(cfg *dialCfg) {
+	return func(cfg *dialConfig) {
 		cfg.ipType = cloudsql.AutoIP
 	}
 }
 
 // WithDialIAMAuthN allows you to enable or disable IAM Authentication for this
-// instance as descibed in the documentation for WithIAMAuthN. This value will
-// overide the Dialer-level configuration set with WithIAMAuthN.
+// instance as described in the documentation for WithIAMAuthN. This value will
+// override the Dialer-level configuration set with WithIAMAuthN.
 //
 // WARNING: This DialOption can cause a new Refresh operation to be triggered.
 // Toggling this option on or off between Dials may cause increased API usage
 // and/or delayed connection attempts.
 func WithDialIAMAuthN(b bool) DialOption {
-	return func(cfg *dialCfg) {
-		cfg.refreshCfg.UseIAMAuthN = b
+	return func(cfg *dialConfig) {
+		cfg.useIAMAuthN = b
 	}
 }

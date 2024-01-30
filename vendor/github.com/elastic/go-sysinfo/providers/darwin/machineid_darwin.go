@@ -16,7 +16,6 @@
 // under the License.
 
 //go:build (amd64 && cgo) || (arm64 && cgo)
-// +build amd64,cgo arm64,cgo
 
 package darwin
 
@@ -25,9 +24,8 @@ package darwin
 import "C"
 
 import (
+	"fmt"
 	"unsafe"
-
-	"github.com/pkg/errors"
 )
 
 // MachineID returns the Hardware UUID also accessible via
@@ -45,17 +43,17 @@ func getHostUUID() (string, error) {
 	ret, err := C.gethostuuid(&id[0], &wait)
 	if ret != 0 {
 		if err != nil {
-			return "", errors.Wrapf(err, "gethostuuid failed with %v", ret)
+			return "", fmt.Errorf("gethostuuid failed with %v: %w", ret, err)
 		}
 
-		return "", errors.Errorf("gethostuuid failed with %v", ret)
+		return "", fmt.Errorf("gethostuuid failed with %v", ret)
 	}
 
 	var uuidStringC C.uuid_string_t
 	var uuid [unsafe.Sizeof(uuidStringC)]C.char
 	_, err = C.uuid_unparse_upper(&id[0], &uuid[0])
 	if err != nil {
-		return "", errors.Wrap(err, "uuid_unparse_upper failed")
+		return "", fmt.Errorf("uuid_unparse_upper failed: %w", err)
 	}
 
 	return C.GoString(&uuid[0]), nil

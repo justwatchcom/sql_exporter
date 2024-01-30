@@ -84,7 +84,7 @@ func (src *UUID) AssignTo(dst interface{}) error {
 			copy(*v, src.Bytes[:])
 			return nil
 		case *string:
-			*v = encodeUUID(src.Bytes)
+			*v = string(encodeUUID(src.Bytes))
 			return nil
 		default:
 			if nextDst, retry := GetAssignToDstType(v); retry {
@@ -100,28 +100,48 @@ func (src *UUID) AssignTo(dst interface{}) error {
 
 // parseUUID converts a string UUID in standard form to a byte array.
 func parseUUID(src string) (dst [16]byte, err error) {
+	var uuidBuf [32]byte
+	srcBuf := uuidBuf[:]
+
 	switch len(src) {
 	case 36:
-		src = src[0:8] + src[9:13] + src[14:18] + src[19:23] + src[24:]
+		copy(srcBuf[0:8], src[:8])
+		copy(srcBuf[8:12], src[9:13])
+		copy(srcBuf[12:16], src[14:18])
+		copy(srcBuf[16:20], src[19:23])
+		copy(srcBuf[20:], src[24:])
 	case 32:
 		// dashes already stripped, assume valid
+		copy(srcBuf, src)
+
 	default:
 		// assume invalid.
 		return dst, fmt.Errorf("cannot parse UUID %v", src)
 	}
 
-	buf, err := hex.DecodeString(src)
+	_, err = hex.Decode(dst[:], srcBuf)
 	if err != nil {
 		return dst, err
 	}
-
-	copy(dst[:], buf)
 	return dst, err
 }
 
 // encodeUUID converts a uuid byte array to UUID standard string form.
-func encodeUUID(src [16]byte) string {
-	return fmt.Sprintf("%x-%x-%x-%x-%x", src[0:4], src[4:6], src[6:8], src[8:10], src[10:16])
+func encodeUUID(src [16]byte) (dst []byte) {
+	var buf [36]byte
+	dst = buf[:]
+
+	hex.Encode(dst, src[:4])
+	buf[8] = '-'
+	hex.Encode(dst[9:13], src[4:6])
+	buf[13] = '-'
+	hex.Encode(dst[14:18], src[6:8])
+	buf[18] = '-'
+	hex.Encode(dst[19:23], src[8:10])
+	buf[23] = '-'
+	hex.Encode(dst[24:], src[10:])
+
+	return
 }
 
 func (dst *UUID) DecodeText(ci *ConnInfo, src []byte) error {
@@ -209,7 +229,7 @@ func (src UUID) MarshalJSON() ([]byte, error) {
 	case Present:
 		var buff bytes.Buffer
 		buff.WriteByte('"')
-		buff.WriteString(encodeUUID(src.Bytes))
+		buff.Write(encodeUUID(src.Bytes))
 		buff.WriteByte('"')
 		return buff.Bytes(), nil
 	case Null:
@@ -221,7 +241,7 @@ func (src UUID) MarshalJSON() ([]byte, error) {
 }
 
 func (dst *UUID) UnmarshalJSON(src []byte) error {
-	if bytes.Compare(src, []byte("null")) == 0 {
+	if bytes.Equal(src, []byte("null")) {
 		return dst.Set(nil)
 	}
 	if len(src) != 38 {

@@ -22,6 +22,7 @@ The client is tested against the currently [supported versions](https://github.c
 |----------------|-----------------|
 | => 2.0 <= 2.2  | 1.17, 1.18      |
 | >= 2.3         | 1.18.4+, 1.19   |
+| >= 2.14        | 1.20, 1.21      |
 
 ## Key features
 
@@ -34,6 +35,7 @@ The client is tested against the currently [supported versions](https://github.c
 * Connection pool
 * Failover and load balancing
 * [Bulk write support](examples/clickhouse_api/batch.go) (for `database/sql` [use](examples/std/batch.go) `begin->prepare->(in loop exec)->commit`)
+* [PrepareBatch options](#preparebatch-options)
 * [AsyncInsert](benchmark/v2/write-async/main.go) (more details in [Async insert](#async-insert) section)
 * Named and numeric placeholders support
 * LZ4/ZSTD compression support
@@ -74,7 +76,7 @@ Support for the ClickHouse protocol advanced features using `Context`:
 		},
 		Debug: true,
 		Debugf: func(format string, v ...any) {
-			fmt.Printf(format, v)
+			fmt.Printf(format+"\n", v...)
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -124,7 +126,7 @@ conn := clickhouse.OpenDB(&clickhouse.Options{
 	},
 	DialTimeout: time.Second * 30,
 	Compression: &clickhouse.Compression{
-		clickhouse.CompressionLZ4,
+		Method: clickhouse.CompressionLZ4,
 	},
 	Debug: true,
 	BlockBufferSize: 10,
@@ -179,7 +181,7 @@ clickhouse://username:password@host1:9000,host2:9000/database?dial_timeout=200ms
 
 The native format can be used over the HTTP protocol. This is useful in scenarios where users need to proxy traffic e.g. using [ChProxy](https://www.chproxy.org/) or via load balancers.
 
-This can be achieved by modifying the DSN to specify the http protocol.
+This can be achieved by modifying the DSN to specify the HTTP protocol.
 
 ```sh
 http://host1:8123,host2:8123/database?dial_timeout=200ms&max_execution_time=60
@@ -205,6 +207,8 @@ conn := clickhouse.OpenDB(&clickhouse.Options{
 	Protocol:  clickhouse.HTTP,
 })
 ```
+
+**Note**: using HTTP protocol is possible only with `database/sql` interface.
 
 ## Compression
 
@@ -270,7 +274,7 @@ Usage examples for [native API](examples/clickhouse_api/client_info.go) and [dat
 
 ## Async insert
 
-[Asynchronous insert](https://clickhouse.com/docs/en/optimize/asynchronous-inserts#enabling-asynchronous-inserts) is supported via dedicated `InsertAsync` method. This allows to insert data with a non-blocking call.
+[Asynchronous insert](https://clickhouse.com/docs/en/optimize/asynchronous-inserts#enabling-asynchronous-inserts) is supported via dedicated `AsyncInsert` method. This allows to insert data with a non-blocking call.
 Effectively, it controls a `async_insert` setting for the query. 
 
 ### Using with batch API
@@ -280,6 +284,11 @@ Using native protocol, asynchronous insert does not support batching. It means, 
 HTTP protocol supports batching. It can be enabled by setting `async_insert` when using standard `Prepare` method.
 
 For more details please see [asynchronous inserts](https://clickhouse.com/docs/en/optimize/asynchronous-inserts#enabling-asynchronous-inserts) documentation.
+
+## PrepareBatch options
+
+Available options:
+- [WithReleaseConnection](examples/clickhouse_api/batch_release_connection.go) - after PrepareBatch connection will be returned to the pool. It can help you make a long-lived batch.
 
 ## Benchmark
 
@@ -305,6 +314,7 @@ go get -u github.com/ClickHouse/clickhouse-go/v2
 ### native interface
 
 * [batch](examples/clickhouse_api/batch.go)
+* [batch with release connection](examples/clickhouse_api/batch_release_connection.go)
 * [async insert](examples/clickhouse_api/async.go)
 * [batch struct](examples/clickhouse_api/append_struct.go)
 * [columnar](examples/clickhouse_api/columnar_insert.go)
@@ -312,7 +322,7 @@ go get -u github.com/ClickHouse/clickhouse-go/v2
 * [query parameters](examples/clickhouse_api/query_parameters.go) (deprecated in favour of native query parameters)
 * [bind params](examples/clickhouse_api/bind.go) (deprecated in favour of native query parameters)
 * [client info](examples/clickhouse_api/client_info.go)
-* 
+
 ### std `database/sql` interface
 
 * [batch](examples/std/batch.go)

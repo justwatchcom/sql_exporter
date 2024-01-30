@@ -37,6 +37,11 @@ func (c *ColUInt256) Append(v UInt256) {
 	*c = append(*c, v)
 }
 
+// Append UInt256 slice to column.
+func (c *ColUInt256) AppendArr(vs []UInt256) {
+	*c = append(*c, vs...)
+}
+
 // LowCardinality returns LowCardinality for UInt256 .
 func (c *ColUInt256) LowCardinality() *ColLowCardinality[UInt256] {
 	return &ColLowCardinality[UInt256]{

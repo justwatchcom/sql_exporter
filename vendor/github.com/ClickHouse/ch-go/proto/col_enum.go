@@ -47,6 +47,10 @@ func (e *ColEnum) Append(v string) {
 	e.Values = append(e.Values, v)
 }
 
+func (e *ColEnum) AppendArr(vs []string) {
+	e.Values = append(e.Values, vs...)
+}
+
 func (e *ColEnum) parse(t ColumnType) error {
 	if e.rawToStr == nil {
 		e.rawToStr = map[int]string{}

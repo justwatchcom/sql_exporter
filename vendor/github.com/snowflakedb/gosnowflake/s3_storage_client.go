@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -52,6 +53,9 @@ func (util *snowflakeS3Client) createClient(info *execResponseStageInfo, useAcce
 			stageCredentials.AwsToken)),
 		EndpointResolver: resolver,
 		UseAccelerate:    useAccelerateEndpoint,
+		HTTPClient: &http.Client{
+			Transport: SnowflakeTransport,
+		},
 	}), nil
 }
 
@@ -80,11 +84,7 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 		if errors.As(err, &ae) {
 			if ae.ErrorCode() == notFound {
 				meta.resStatus = notFoundFile
-				return &fileHeader{
-					digest:             "",
-					contentLength:      0,
-					encryptionMetadata: nil,
-				}, nil
+				return nil, fmt.Errorf("could not find file")
 			} else if ae.ErrorCode() == expiredToken {
 				meta.resStatus = renewToken
 				return nil, fmt.Errorf("received expired token. renewing")
@@ -93,6 +93,9 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 			meta.lastError = err
 			return nil, fmt.Errorf("error while retrieving header")
 		}
+		meta.resStatus = errStatus
+		meta.lastError = err
+		return nil, fmt.Errorf("unexpected error while retrieving header: %v", err)
 	}
 
 	meta.resStatus = uploaded
@@ -104,11 +107,25 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 			out.Metadata[amzMatdesc],
 		}
 	}
+	contentLength := convertContentLength(out.ContentLength)
 	return &fileHeader{
 		out.Metadata[sfcDigest],
-		out.ContentLength,
+		contentLength,
 		&encMeta,
 	}, nil
+}
+
+// SNOW-974548 remove this function after upgrading AWS SDK
+func convertContentLength(contentLength any) int64 {
+	switch t := contentLength.(type) {
+	case int64:
+		return t
+	case *int64:
+		if t != nil {
+			return *t
+		}
+	}
+	return 0
 }
 
 type s3UploadAPI interface {
@@ -217,7 +234,7 @@ func (util *snowflakeS3Client) nativeDownloadFile(
 		}
 	}
 
-	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
 	if err != nil {
 		return err
 	}

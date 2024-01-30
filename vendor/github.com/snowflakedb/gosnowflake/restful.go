@@ -37,14 +37,21 @@ const (
 	tokenRequestPath         = "/session/token-request"
 	abortRequestPath         = "/queries/v1/abort-request"
 	authenticatorRequestPath = "/session/authenticator-request"
+	monitoringQueriesPath    = "/monitoring/queries"
 	sessionRequestPath       = "/session"
 	heartBeatPath            = "/session/heartbeat"
 )
 
 type (
-	funcGetType  func(context.Context, *snowflakeRestful, *url.URL, map[string]string, time.Duration) (*http.Response, error)
-	funcPostType func(context.Context, *snowflakeRestful, *url.URL, map[string]string, []byte, time.Duration, bool) (*http.Response, error)
+	funcGetType      func(context.Context, *snowflakeRestful, *url.URL, map[string]string, time.Duration) (*http.Response, error)
+	funcPostType     func(context.Context, *snowflakeRestful, *url.URL, map[string]string, []byte, time.Duration, currentTimeProvider, *Config) (*http.Response, error)
+	funcAuthPostType func(context.Context, *http.Client, *url.URL, map[string]string, bodyCreatorType, time.Duration, int) (*http.Response, error)
+	bodyCreatorType  func() ([]byte, error)
 )
+
+var emptyBodyCreator = func() ([]byte, error) {
+	return []byte{}, nil
+}
 
 type snowflakeRestful struct {
 	Host           string
@@ -52,8 +59,10 @@ type snowflakeRestful struct {
 	Protocol       string
 	LoginTimeout   time.Duration // Login timeout
 	RequestTimeout time.Duration // request timeout
+	MaxRetryCount  int
 
 	Client        *http.Client
+	JWTClient     *http.Client
 	TokenAccessor TokenAccessor
 	HeartBeat     *heartbeat
 
@@ -63,11 +72,12 @@ type snowflakeRestful struct {
 	FuncPostQueryHelper func(context.Context, *snowflakeRestful, *url.Values, map[string]string, []byte, time.Duration, UUID, *Config) (*execResponse, error)
 	FuncPost            funcPostType
 	FuncGet             funcGetType
+	FuncAuthPost        funcAuthPostType
 	FuncRenewSession    func(context.Context, *snowflakeRestful, time.Duration) error
-	FuncPostAuth        func(context.Context, *snowflakeRestful, *url.Values, map[string]string, []byte, time.Duration) (*authResponse, error)
 	FuncCloseSession    func(context.Context, *snowflakeRestful, time.Duration) error
 	FuncCancelQuery     func(context.Context, *snowflakeRestful, UUID, time.Duration) error
 
+	FuncPostAuth     func(context.Context, *snowflakeRestful, *http.Client, *url.Values, map[string]string, bodyCreatorType, time.Duration) (*authResponse, error)
 	FuncPostAuthSAML func(context.Context, *snowflakeRestful, map[string]string, []byte, time.Duration) (*authResponse, error)
 	FuncPostAuthOKTA func(context.Context, *snowflakeRestful, map[string]string, []byte, string, time.Duration) (*authOKTAResponse, error)
 	FuncGetSSO       func(context.Context, *snowflakeRestful, *url.Values, map[string]string, string, time.Duration) ([]byte, error)
@@ -90,6 +100,16 @@ func (sr *snowflakeRestful) getFullURL(path string, params *url.Values) *url.URL
 		ret.RawQuery = params.Encode()
 	}
 	return ret
+}
+
+// We need separate client for JWT, because if token processing takes too long, token may be already expired.
+func (sr *snowflakeRestful) getClientFor(authType AuthType) *http.Client {
+	switch authType {
+	case AuthTypeJwt:
+		return sr.JWTClient
+	default:
+		return sr.Client
+	}
 }
 
 // Renew the snowflake session if the current token is still the stale token specified
@@ -144,10 +164,13 @@ func postRestful(
 	headers map[string]string,
 	body []byte,
 	timeout time.Duration,
-	raise4XX bool) (
+	currentTimeProvider currentTimeProvider,
+	cfg *Config) (
 	*http.Response, error) {
-	return newRetryHTTP(
-		ctx, sr.Client, http.NewRequest, fullURL, headers, timeout).doPost().setBody(body).doRaise4XX(raise4XX).execute()
+	return newRetryHTTP(ctx, sr.Client, http.NewRequest, fullURL, headers, timeout, sr.MaxRetryCount, currentTimeProvider, cfg).
+		doPost().
+		setBody(body).
+		execute()
 }
 
 func getRestful(
@@ -157,8 +180,22 @@ func getRestful(
 	headers map[string]string,
 	timeout time.Duration) (
 	*http.Response, error) {
-	return newRetryHTTP(
-		ctx, sr.Client, http.NewRequest, fullURL, headers, timeout).execute()
+	return newRetryHTTP(ctx, sr.Client, http.NewRequest, fullURL, headers, timeout, sr.MaxRetryCount, defaultTimeProvider, nil).execute()
+}
+
+func postAuthRestful(
+	ctx context.Context,
+	client *http.Client,
+	fullURL *url.URL,
+	headers map[string]string,
+	bodyCreator bodyCreatorType,
+	timeout time.Duration,
+	maxRetryCount int) (
+	*http.Response, error) {
+	return newRetryHTTP(ctx, client, http.NewRequest, fullURL, headers, timeout, maxRetryCount, defaultTimeProvider, nil).
+		doPost().
+		setBodyCreator(bodyCreator).
+		execute()
 }
 
 func postRestfulQuery(
@@ -179,7 +216,7 @@ func postRestfulQuery(
 		return data, err
 	}
 
-	if err = sr.FuncCancelQuery(context.TODO(), sr, requestID, timeout); err != nil {
+	if err = sr.FuncCancelQuery(context.Background(), sr, requestID, timeout); err != nil {
 		return nil, err
 	}
 	return nil, ctx.Err()
@@ -197,7 +234,6 @@ func postRestfulQueryHelper(
 	data *execResponse, err error) {
 	logger.Infof("params: %v", params)
 	params.Add(requestIDKey, requestID.String())
-	params.Add("clientStartTime", strconv.FormatInt(time.Now().Unix(), 10))
 	params.Add(requestGUIDKey, NewUUID().String())
 	token, _, _ := sr.TokenAccessor.GetTokens()
 	if token != "" {
@@ -206,7 +242,7 @@ func postRestfulQueryHelper(
 
 	var resp *http.Response
 	fullURL := sr.getFullURL(queryRequestPath, params)
-	resp, err = sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, true)
+	resp, err = sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, defaultTimeProvider, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +334,7 @@ func closeSession(ctx context.Context, sr *snowflakeRestful, timeout time.Durati
 	token, _, _ := sr.TokenAccessor.GetTokens()
 	headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 
-	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, nil, 5*time.Second, false)
+	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, nil, 5*time.Second, defaultTimeProvider, nil)
 	if err != nil {
 		return err
 	}
@@ -357,7 +393,7 @@ func renewRestfulSession(ctx context.Context, sr *snowflakeRestful, timeout time
 		return err
 	}
 
-	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, reqBody, timeout, false)
+	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, reqBody, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return err
 	}
@@ -429,7 +465,7 @@ func cancelQuery(ctx context.Context, sr *snowflakeRestful, requestID UUID, time
 		return err
 	}
 
-	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, reqByte, timeout, false)
+	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, reqByte, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return err
 	}

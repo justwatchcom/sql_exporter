@@ -47,7 +47,7 @@ func (m SeccompMode) String() string {
 func readSeccompFields(content []byte) (*types.SeccompInfo, error) {
 	var seccomp types.SeccompInfo
 
-	err := parseKeyValue(content, ":", func(key, value []byte) error {
+	err := parseKeyValue(content, ':', func(key, value []byte) error {
 		switch string(key) {
 		case "Seccomp":
 			mode, err := strconv.ParseUint(string(value), 10, 8)

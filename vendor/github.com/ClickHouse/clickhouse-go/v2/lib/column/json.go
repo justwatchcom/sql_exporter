@@ -40,7 +40,7 @@ var kindMappings = map[reflect.Kind]string{
 	reflect.Uint64:  "UInt64",
 	reflect.Float32: "Float32",
 	reflect.Float64: "Float64",
-	reflect.Bool:    "Boolean",
+	reflect.Bool:    "Bool",
 }
 
 // complex types for which a mapping exists - currently we map to String but could enhance in the future for other types
@@ -500,6 +500,13 @@ func appendStructOrMap(jCol *JSONObject, data any) error {
 				ColumnType: fmt.Sprint(reflect.TypeOf(data).Key().Kind()),
 				Err:        fmt.Errorf("map keys must be string for column %s", jCol.Name()),
 			}
+		}
+		if jCol.columns == nil && vData.Len() == 0 {
+			// if map is empty, we need to create an empty Tuple to make sure subcolumns protocol is happy
+			// _dummy is a ClickHouse internal name for empty Tuple subcolumn
+			// it has the same effect as `INSERT INTO single_json_type_table VALUES ('{}');`
+			jCol.upsertValue("_dummy", "Int8")
+			return jCol.insertEmptyColumn("_dummy")
 		}
 		return iterateMap(vData, jCol, 0)
 	}
