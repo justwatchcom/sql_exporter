@@ -118,6 +118,9 @@ For a more realistic example please have a look at [examples/kubernetes/configma
 jobs:
   # each job needs a unique name, it's used for logging and as an default label
 - name: "example"
+  # prefix for all metric names; joined with Query name, separated by underscore.
+  # defaults to "sql". May be an empty string, which removes the name prefix and underscore entirely.
+  prefix: "pg"
   # interval defined the pause between the runs of this job
   interval: '5m'
   # cron_schedule when to execute the job in the standard CRON syntax
@@ -134,7 +137,7 @@ jobs:
   - 'SET idle_in_transaction_session_timeout = 100'
   # queries is a map of Metric/Query mappings
   queries:
-    # name is prefied with sql_ and used as the metric name
+    # name is prefixed with pg_ and used as the metric name; i.e. pg_running_queries
   - name: "running_queries"
     # help is a requirement of the Prometheus default registry, currently not
     # used by the Prometheus server. Important: Must be the same for all metrics
