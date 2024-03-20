@@ -212,6 +212,19 @@ environment.
 LOGLEVEL=info ./sql_exporter
 ```
 
+Database specific configurations
+--------------------------------
+
+For some database backends some special functionnality is available :
+
+* cloudsql-postgres : a special `*` caracter can be used to query all databases
+  accessible by the account
+* cloudsql-mysql : same as above
+* rds-postgres : this type of URL expects a working AWS configuration
+  which will use action the equivalent of `rds generate-db-auth-token`
+  for the password. For this driver, the `AWS_REGION` environment variable
+  must be set.
+
 Why this exporter exists
 ========================
 

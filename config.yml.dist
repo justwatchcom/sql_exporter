@@ -178,3 +178,18 @@ jobs:
         node_name,
         schema_name,
         projection_name;
+- name: "rds"
+  interval: '5m'
+  connections:
+  - 'rds-postgres://postgres_usr:AUTHTOKEN@mypostgresql.c6c8mwvfdgv0.us-west-2.rds.amazonaws.com/db_name'
+  queries:
+  - name: "running_queries"
+    help: "Number of running queries"
+    labels:
+      - "datname"
+      - "usename"
+    values:
+      - "count"
+    query:  |
+            SELECT datname::text, usename::text, COUNT(*)::float AS count
+            FROM pg_stat_activity GROUP BY datname, usename;
