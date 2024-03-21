@@ -231,7 +231,8 @@ func (j *Job) updateConnections() {
 				// FIXME - parsing twice the conn url to extract host & username
 				u, err := url.Parse(conn)
 				if err != nil {
-                                   panic(err)
+  				   level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+				   continue
                                  }
 				region := os.Getenv("AWS_REGION")
 				sess := session.Must(session.NewSessionWithOptions(session.Options{
