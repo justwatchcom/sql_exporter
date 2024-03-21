@@ -230,6 +230,9 @@ func (j *Job) updateConnections() {
 				conn = strings.TrimPrefix(conn, "rds-")
 				// FIXME - parsing twice the conn url to extract host & username
 				u, err := url.Parse(conn)
+				if err != nil {
+                                   panic(err)
+                                 }
 				region := os.Getenv("AWS_REGION")
 				sess := session.Must(session.NewSessionWithOptions(session.Options{
 					SharedConfigState: session.SharedConfigEnable,
