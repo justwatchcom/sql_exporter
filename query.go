@@ -15,22 +15,30 @@ func (q *Query) Run(conn *connection) error {
 	if q.log == nil {
 		q.log = log.NewNopLogger()
 	}
+	queryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 	if q.desc == nil {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return fmt.Errorf("metrics descriptor is nil")
 	}
 	if q.Query == "" {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return fmt.Errorf("query is empty")
 	}
 	if conn == nil || conn.conn == nil {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return fmt.Errorf("db connection not initialized (should not happen)")
 	}
 	// execute query
+	now := time.Now()
 	rows, err := conn.conn.Queryx(q.Query)
 	if err != nil {
 		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return err
 	}
 	defer rows.Close()
+	duration := time.Since(now)
+	queryDurationHistogram.WithLabelValues(q.jobName, q.Name).Observe(duration.Seconds())
 
 	updated := 0
 	metrics := make([]prometheus.Metric, 0, len(q.metrics))
