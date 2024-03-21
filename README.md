@@ -215,7 +215,7 @@ LOGLEVEL=info ./sql_exporter
 Database specific configurations
 --------------------------------
 
-For some database backends some special functionnality is available :
+For some database backends some special functionality is available :
 
 * cloudsql-postgres: a special `*` caracter can be used to query all databases
   accessible by the account
