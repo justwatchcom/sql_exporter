@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,9 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
+
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
 )
 
 var (
@@ -91,7 +95,6 @@ func (j *Job) updateConnections() {
 	// parse the connection URLs and create a connection object for each
 	if len(j.conns) < len(j.Connections) {
 		for _, conn := range j.Connections {
-
 			// Check if we need to use cloudsql driver
 			if useCloudSQL, cloudsqlDriver := isValidCloudSQLDriver(conn); useCloudSQL {
 				// Do CloudSQL stuff
@@ -220,6 +223,27 @@ func (j *Job) updateConnections() {
 					user:     config.User,
 				})
 				continue
+			}
+			if strings.HasPrefix(conn, "rds-postgres://") {
+				// reuse postgres SQLDriver by stripping rds- from connexion URL after building the RDS
+				// authentication token
+				conn = strings.TrimPrefix(conn, "rds-")
+				// FIXME - parsing twice the conn url to extract host & username
+				u, err := url.Parse(conn)
+				if err != nil {
+  				   level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+				   continue
+                                 }
+				region := os.Getenv("AWS_REGION")
+				sess := session.Must(session.NewSessionWithOptions(session.Options{
+					SharedConfigState: session.SharedConfigEnable,
+				}))
+				token, err := rdsutils.BuildAuthToken(u.Host, region, u.User.Username(), sess.Config.Credentials)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+					continue
+				}
+				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
 			}
 
 			u, err := url.Parse(conn)

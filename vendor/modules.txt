@@ -152,6 +152,7 @@ github.com/aws/aws-sdk-go/private/protocol/restjson
 github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil
 github.com/aws/aws-sdk-go/service/athena
 github.com/aws/aws-sdk-go/service/athena/athenaiface
+github.com/aws/aws-sdk-go/service/rds/rdsutils
 github.com/aws/aws-sdk-go/service/sso
 github.com/aws/aws-sdk-go/service/sso/ssoiface
 github.com/aws/aws-sdk-go/service/ssooidc
