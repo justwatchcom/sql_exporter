@@ -239,7 +239,8 @@ func (j *Job) updateConnections() {
 				}))
 				token, err := rdsutils.BuildAuthToken(u.Host, region, u.User.Username(), sess.Config.Credentials)
 				if err != nil {
-					panic(err)
+					level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+					continue
 				}
 				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
 			}
