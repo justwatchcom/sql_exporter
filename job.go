@@ -225,22 +225,19 @@ func (j *Job) updateConnections() {
 				continue
 			}
 			if strings.HasPrefix(conn, "rds-postgres://") {
-				// reuse postgres SQLDriver by stripping rds- from connexion URL after building the RDS
-				// authentication token
+				// Reuse Postgres driver by stripping "rds-" from connection URL after building the RDS authentication token
 				conn = strings.TrimPrefix(conn, "rds-")
-				// FIXME - parsing twice the conn url to extract host & username
 				u, err := url.Parse(conn)
 				if err != nil {
-  				   level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
-				   continue
-                                 }
-				region := os.Getenv("AWS_REGION")
+					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
+					continue
+				}
 				sess := session.Must(session.NewSessionWithOptions(session.Options{
 					SharedConfigState: session.SharedConfigEnable,
 				}))
-				token, err := rdsutils.BuildAuthToken(u.Host, region, u.User.Username(), sess.Config.Credentials)
+				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
 				if err != nil {
-					level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
 					continue
 				}
 				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
