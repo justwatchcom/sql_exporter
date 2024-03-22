@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
+	"fmt"
+
 	"cloud.google.com/go/cloudsqlconn"
 	"cloud.google.com/go/cloudsqlconn/mysql/mysql"
 	"cloud.google.com/go/cloudsqlconn/postgres/pgxv4"
-	"context"
-	"fmt"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/robfig/cron/v3"
 	"google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
@@ -33,6 +35,18 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	var queryDurationHistogramBuckets []float64
+	if len(cfg.Configuration.HistogramBuckets) == 0 {
+		queryDurationHistogramBuckets = DefaultQueryDurationHistogramBuckets
+	} else {
+		queryDurationHistogramBuckets = cfg.Configuration.HistogramBuckets
+	}
+	queryDurationHistogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    fmt.Sprintf("%s_query_duration_seconds", metricsPrefix),
+		Help:    "Time spent by querying the database.",
+		Buckets: queryDurationHistogramBuckets,
+	}, QueryMetricsLabels)
 
 	exp := &Exporter{
 		jobs:          make([]*Job, 0, len(cfg.Jobs)),

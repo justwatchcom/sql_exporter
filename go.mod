@@ -12,8 +12,8 @@ require (
 	github.com/gobwas/glob v0.2.3
 	github.com/jmoiron/sqlx v1.3.5
 	github.com/lib/pq v1.10.9
-	github.com/prometheus/client_golang v1.18.0
-	github.com/prometheus/common v0.46.0
+	github.com/prometheus/client_golang v1.19.0
+	github.com/prometheus/common v0.48.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/segmentio/go-athena v0.0.0-20230626212750-5fac08ed8dab
 	github.com/snowflakedb/gosnowflake v1.7.2

@@ -329,6 +329,8 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 	if err := conn.connect(j); err != nil {
 		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
+		// we don't have the query name yet.
+		failedQueryCounter.WithLabelValues(j.Name, "").Inc()
 		return
 	}
 
