@@ -14,7 +14,7 @@ jobs:
     - uses: actions/checkout@v3
     - uses: actions/setup-go@v5
       with:
-        go-version: '>=1.21'
+        go-version-file: 'go.mod'
     - name: Build
       run: go build -v ./...
 
@@ -24,3 +24,5 @@ jobs:
     - uses: dominikh/staticcheck-action@v1.3.0
       with:
         version: "2023.1"
+        # go is already installed by actions/setup-go with the correct version from go.mod
+        install-go: false
