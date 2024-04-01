@@ -243,6 +243,51 @@ func (j *Job) updateConnections() {
 				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
 			}
 
+			if strings.HasPrefix(conn, "postgres://") || strings.HasPrefix(conn, "pg://") {
+				u, err := url.Parse(conn)
+				var filteredDBs []string
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+					continue
+				}
+				if strings.Contains(u.Path, "include") || strings.Contains(u.Path, "exclude") {
+					if strings.Contains(u.Path, "include") && strings.Contains(u.Path, "exclude") {
+						fmt.Printf("You cannot use exclude and include: %s, error: %v\n", conn, err)
+						return // Or handle the error appropriately
+					} else {
+						extractedPath := u.Path //save pattern
+						u.Path = "/postgres"
+						dsn := u.String()
+						databases, err := listDatabases(dsn) // Corrected: closing parenthesis
+						if err != nil {
+							fmt.Printf("Error listing databases: %v\n", err)
+							continue
+						}
+						filteredDBs, err = filterDatabases(databases, extractedPath)
+						if err != nil {
+							fmt.Printf("Error filtering databases: %v\n", err)
+							continue
+						}
+
+						for _, db := range filteredDBs {
+							u.Path = "/" + db // Set the path to the filtered database name
+							newUserDSN := u.String()
+							// Append to your connections slice, assuming j.conns is defined correctly
+							j.conns = append(j.conns, &connection{
+								conn:     nil, // Assuming you populate this later
+								url:      newUserDSN,
+								driver:   u.Scheme,
+								host:     u.Host,
+								database: db,
+								user:     u.User.Username(),
+							})
+						}
+					}
+				}
+				continue
+
+			}
+
 			u, err := url.Parse(conn)
 			if err != nil {
 				level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
