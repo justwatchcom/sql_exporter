@@ -44,27 +44,27 @@ func filterDatabases(databases []string, pattern string) ([]string, error) {
 	var filtered []string
 	mode, dbs := parsePattern(pattern)
 
-	// Compile the pattern into a regex
-	dbRegex, err := regexp.Compile(dbs)
-	if err != nil {
-		return nil, fmt.Errorf("invalid regex pattern: %s", err)
-	}
+	// Split the dbs string into individual patterns
+	dbPatterns := strings.Split(dbs, ",")
 
-	if mode == INCLUDE_DBS {
-		for _, dbname := range databases {
-			if dbRegex.MatchString(dbname) {
-				filtered = append(filtered, dbname)
+	// Process each database name against the patterns
+	for _, dbname := range databases {
+		include := false
+
+		for _, dbPattern := range dbPatterns {
+			matched, err := regexp.MatchString(dbPattern, dbname)
+			if err != nil {
+				return nil, fmt.Errorf("invalid pattern: %s", dbPattern)
+			}
+			if matched {
+				include = true
+				break
 			}
 		}
-	} else if mode == EXCLUDE_DBS {
-		for _, dbname := range databases {
-			if !dbRegex.MatchString(dbname) {
-				filtered = append(filtered, dbname)
-			}
+
+		if (mode == INCLUDE_DBS && include) || (mode == EXCLUDE_DBS && !include) {
+			filtered = append(filtered, dbname)
 		}
-	} else {
-		// If mode is neither include nor exclude, return an error
-		return nil, fmt.Errorf("invalid pattern mode: %s", pattern)
 	}
 
 	return filtered, nil
