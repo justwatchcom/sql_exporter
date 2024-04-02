@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	_ "github.com/lib/pq"
@@ -43,26 +44,27 @@ func filterDatabases(databases []string, pattern string) ([]string, error) {
 	var filtered []string
 	mode, dbs := parsePattern(pattern)
 
-	dbMap := make(map[string]bool)
-	for _, db := range strings.Split(dbs, ",") {
-		dbMap[db] = true
+	// Compile the pattern into a regex
+	dbRegex, err := regexp.Compile(dbs)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex pattern: %s", err)
 	}
 
 	if mode == INCLUDE_DBS {
 		for _, dbname := range databases {
-			if _, ok := dbMap[dbname]; ok {
+			if dbRegex.MatchString(dbname) {
 				filtered = append(filtered, dbname)
 			}
 		}
 	} else if mode == EXCLUDE_DBS {
 		for _, dbname := range databases {
-			if _, ok := dbMap[dbname]; !ok {
+			if !dbRegex.MatchString(dbname) {
 				filtered = append(filtered, dbname)
 			}
 		}
 	} else {
 		// If mode is neither include nor exclude, return an error
-		return nil, fmt.Errorf("invalid pattern: %s", pattern)
+		return nil, fmt.Errorf("invalid pattern mode: %s", pattern)
 	}
 
 	return filtered, nil
