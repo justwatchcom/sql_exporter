@@ -13,6 +13,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v2"
 )
@@ -25,9 +26,10 @@ func getenv(key, defaultVal string) string {
 }
 
 var (
+	metricsPrefix = "sql_exporter"
 	failedScrapes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "sql_exporter_last_scrape_failed",
+			Name: fmt.Sprintf("%s_last_scrape_failed", metricsPrefix),
 			Help: "Failed scrapes",
 		},
 		[]string{"driver", "host", "database", "user", "sql_job", "query"},
@@ -41,6 +43,18 @@ var (
 			regexp.QuoteMeta(tmplEnd),
 		),
 	)
+	QueryMetricsLabels = []string{"sql_job", "query"}
+	queryCounter       = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: fmt.Sprintf("%s_queries_total", metricsPrefix),
+	}, QueryMetricsLabels)
+	failedQueryCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: fmt.Sprintf("%s_query_failures_total", metricsPrefix),
+	}, QueryMetricsLabels)
+
+	// Those are the default buckets
+	DefaultQueryDurationHistogramBuckets = prometheus.DefBuckets
+	// To make the buckets configurable let's init it after loading the configuration.
+	queryDurationHistogram *prometheus.HistogramVec
 )
 
 func init() {
@@ -100,9 +114,14 @@ type CloudSQLConfig struct {
 
 // File is a collection of jobs
 type File struct {
+	Configuration  Configuration     `yaml:"configuration,omitempty"`
 	Jobs           []*Job            `yaml:"jobs"`
 	Queries        map[string]string `yaml:"queries"`
 	CloudSQLConfig *CloudSQLConfig   `yaml:"cloudsql_config"`
+}
+
+type Configuration struct {
+	HistogramBuckets []float64 `yaml:"histogram_buckets"`
 }
 
 type cronConfig struct {
