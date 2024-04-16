@@ -350,8 +350,6 @@ func (j *Job) updateConnections() {
 			}
 
 			j.conns = append(j.conns, newConn)
-			//print j
-			fmt.Println(j)
 		}
 	}
 }
