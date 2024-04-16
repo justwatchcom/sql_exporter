@@ -282,10 +282,9 @@ func (j *Job) updateConnections() {
 								user:     u.User.Username(),
 							})
 						}
+						continue
 					}
 				}
-				continue
-
 			}
 
 			u, err := url.Parse(conn)
@@ -351,6 +350,8 @@ func (j *Job) updateConnections() {
 			}
 
 			j.conns = append(j.conns, newConn)
+			//print j
+			fmt.Println(j)
 		}
 	}
 }
