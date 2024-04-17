@@ -253,12 +253,12 @@ func (j *Job) updateConnections() {
 				if strings.Contains(u.Path, "include") || strings.Contains(u.Path, "exclude") {
 					if strings.Contains(u.Path, "include") && strings.Contains(u.Path, "exclude") {
 						fmt.Printf("You cannot use exclude and include: %s, error: %v\n", conn, err)
-						return // Or handle the error appropriately
+						return 
 					} else {
 						extractedPath := u.Path //save pattern
 						u.Path = "/postgres"
 						dsn := u.String()
-						databases, err := listDatabases(dsn) // Corrected: closing parenthesis
+						databases, err := listDatabases(dsn) 
 						if err != nil {
 							fmt.Printf("Error listing databases: %v\n", err)
 							continue
@@ -272,9 +272,8 @@ func (j *Job) updateConnections() {
 						for _, db := range filteredDBs {
 							u.Path = "/" + db // Set the path to the filtered database name
 							newUserDSN := u.String()
-							// Append to your connections slice, assuming j.conns is defined correctly
 							j.conns = append(j.conns, &connection{
-								conn:     nil, // Assuming you populate this later
+								conn:     nil, 
 								url:      newUserDSN,
 								driver:   u.Scheme,
 								host:     u.Host,
