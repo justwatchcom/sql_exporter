@@ -143,15 +143,16 @@ func (c *cronConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 // Job is a collection of connections and queries
 type Job struct {
-	log          log.Logger
-	conns        []*connection
-	Name         string        `yaml:"name"`          // name of this job
-	KeepAlive    bool          `yaml:"keepalive"`     // keep connection between runs?
-	Interval     time.Duration `yaml:"interval"`      // interval at which this job is run
-	CronSchedule cronConfig    `yaml:"cron_schedule"` // if specified, the interval is ignored and the job will be executed at the specified time in CRON syntax
-	Connections  []string      `yaml:"connections"`
-	Queries      []*Query      `yaml:"queries"`
-	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
+	log              log.Logger
+	conns            []*connection
+	Name             string        `yaml:"name"`          // name of this job
+	MetricNamePrefix *string       `yaml:"prefix"`        // optional prefix for all metric names, may be empty string
+	KeepAlive        bool          `yaml:"keepalive"`     // keep connection between runs?
+	Interval         time.Duration `yaml:"interval"`      // interval at which this job is run
+	CronSchedule     cronConfig    `yaml:"cron_schedule"` // if specified, the interval is ignored and the job will be executed at the specified time in CRON syntax
+	Connections      []string      `yaml:"connections"`
+	Queries          []*Query      `yaml:"queries"`
+	StartupSQL       []string      `yaml:"startup_sql"` // SQL executed on startup
 }
 
 type connection struct {
@@ -171,7 +172,7 @@ type Query struct {
 	metrics       map[*connection][]prometheus.Metric
 	jobName       string
 	AllowZeroRows bool     `yaml:"allow_zero_rows"`
-	Name          string   `yaml:"name"`      // the prometheus metric name
+	Name          string   `yaml:"name"`      // the prometheus metric name, prefixed with Job.MetricPrefix
 	Help          string   `yaml:"help"`      // the prometheus metric help text
 	Labels        []string `yaml:"labels"`    // expose these columns as labels per gauge
 	Values        []string `yaml:"values"`    // expose each of these as an gauge
