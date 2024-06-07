@@ -53,7 +53,7 @@ var (
 
 	// Those are the default buckets
 	DefaultQueryDurationHistogramBuckets = prometheus.DefBuckets
-	// To make the buckets configurable let's init it after loading the configuration.
+	// To make the buckets configurable lets init it after loading the configuration.
 	queryDurationHistogram *prometheus.HistogramVec
 )
 
@@ -174,8 +174,8 @@ type Query struct {
 	Name          string   `yaml:"name"`      // the prometheus metric name
 	Help          string   `yaml:"help"`      // the prometheus metric help text
 	Labels        []string `yaml:"labels"`    // expose these columns as labels per gauge
-	Values        []string `yaml:"values"`    // expose each of these as an gauge
+	Values        []string `yaml:"values"`    // expose each of these as a gauge
 	Timestamp     string   `yaml:"timestamp"` // expose as metric timestamp
 	Query         string   `yaml:"query"`     // a literal query
-	QueryRef      string   `yaml:"query_ref"` // references an query in the query map
+	QueryRef      string   `yaml:"query_ref"` // references a query in the query map
 }
