@@ -105,7 +105,7 @@ model assigns exactly one `float` to a metric, possibly further identified by a
 set of zero or more labels. These labels need to be of type `string` or `text`.
 
 If your SQL dialect supports explicit type casts, you should always cast your
-label columns to `text` and the metric colums to `float`. The SQL exporter will
+label columns to `text` and the metric columns to `float`. The SQL exporter will
 try hard to support other types or drivers w/o support for explicit cast as well,
 but the results may not be what you expect.
 
@@ -116,7 +116,7 @@ For a more realistic example please have a look at [examples/kubernetes/configma
 ---
 # jobs is a map of jobs, define any number but please keep the connection usage on the DBs in mind
 jobs:
-  # each job needs a unique name, it's used for logging and as an default label
+  # each job needs a unique name, it's used for logging and as a default label
 - name: "example"
   # interval defined the pause between the runs of this job
   interval: '5m'
@@ -134,7 +134,7 @@ jobs:
   - 'SET idle_in_transaction_session_timeout = 100'
   # queries is a map of Metric/Query mappings
   queries:
-    # name is prefied with sql_ and used as the metric name
+    # name is prefixed with sql_ and used as the metric name
   - name: "running_queries"
     # help is a requirement of the Prometheus default registry, currently not
     # used by the Prometheus server. Important: Must be the same for all metrics
@@ -153,7 +153,7 @@ jobs:
     # of type float
     values:
       - "count"
-    # Query is the SQL query that is run unalterted on the each of the connections
+    # Query is the SQL query that is run unalterted on each of the connections
     # for this job
     query:  |
             SELECT now() as created_at, datname::text, usename::text, COUNT(*)::float AS count
