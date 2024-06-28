@@ -79,6 +79,11 @@ func (q *Query) Run(conn *connection) error {
 
 // updateMetrics parses the result set and returns a slice of const metrics
 func (q *Query) updateMetrics(conn *connection, res map[string]interface{}) ([]prometheus.Metric, error) {
+	// if no value were defined to be parsed, return immediately
+	if len(q.Values) == 0 {
+		level.Debug(q.log).Log("msg", "No values defined in configuration, skipping metric update")
+		return nil, nil
+	}
 	updated := 0
 	metrics := make([]prometheus.Metric, 0, len(q.Values))
 	for _, valueName := range q.Values {
@@ -172,7 +177,7 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 	labels = append(labels, conn.user)
 	labels = append(labels, valueName)
 	// create a new immutable const metric that can be cached and returned on
-	// every scrape. Remember that the order of the lable values in the labels
+	// every scrape. Remember that the order of the label values in the labels
 	// slice must match the order of the label names in the descriptor!
 	metric, err := prometheus.NewConstMetric(
 		q.desc, prometheus.GaugeValue, value, labels...,
