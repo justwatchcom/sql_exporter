@@ -252,7 +252,7 @@ func (j *Job) updateConnections() {
 				}
 				if strings.Contains(u.Path, "include") || strings.Contains(u.Path, "exclude") {
 					if strings.Contains(u.Path, "include") && strings.Contains(u.Path, "exclude") {
-						fmt.Printf("You cannot use exclude and include: %s, error: %v\n", conn, err)
+						level.Error(j.log).Log("msg", "You cannot use exclude and include:", "url", conn, "err", err)
 						return 
 					} else {
 						extractedPath := u.Path //save pattern
@@ -260,12 +260,12 @@ func (j *Job) updateConnections() {
 						dsn := u.String()
 						databases, err := listDatabases(dsn) 
 						if err != nil {
-							fmt.Printf("Error listing databases: %v\n", err)
+							level.Error(j.log).Log("msg", "Error listing databases", "url", conn, "err", err)
 							continue
 						}
 						filteredDBs, err = filterDatabases(databases, extractedPath)
 						if err != nil {
-							fmt.Printf("Error filtering databases: %v\n", err)
+							level.Error(j.log).Log("msg", "Error filtering databases", "url", conn, "err", err)
 							continue
 						}
 
