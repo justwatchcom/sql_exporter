@@ -152,6 +152,7 @@ type Job struct {
 	Connections  []string      `yaml:"connections"`
 	Queries      []*Query      `yaml:"queries"`
 	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
+	Iterator     Iterator      `yaml:"iterator"`    // Iterator configuration
 }
 
 type connection struct {
@@ -178,4 +179,9 @@ type Query struct {
 	Timestamp     string   `yaml:"timestamp"` // expose as metric timestamp
 	Query         string   `yaml:"query"`     // a literal query
 	QueryRef      string   `yaml:"query_ref"` // references a query in the query map
+}
+
+type Iterator struct {
+	SQL   string `yaml:"sql"`   // SQL to execute to retrieve iterator values
+	Label string `yaml:"label"` // Label to assign iterator values to
 }

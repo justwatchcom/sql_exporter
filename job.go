@@ -253,12 +253,12 @@ func (j *Job) updateConnections() {
 				if strings.Contains(u.Path, "include") || strings.Contains(u.Path, "exclude") {
 					if strings.Contains(u.Path, "include") && strings.Contains(u.Path, "exclude") {
 						level.Error(j.log).Log("msg", "You cannot use exclude and include:", "url", conn, "err", err)
-						return 
+						return
 					} else {
 						extractedPath := u.Path //save pattern
 						u.Path = "/postgres"
 						dsn := u.String()
-						databases, err := listDatabases(dsn) 
+						databases, err := listDatabases(dsn)
 						if err != nil {
 							level.Error(j.log).Log("msg", "Error listing databases", "url", conn, "err", err)
 							continue
@@ -273,7 +273,7 @@ func (j *Job) updateConnections() {
 							u.Path = "/" + db // Set the path to the filtered database name
 							newUserDSN := u.String()
 							j.conns = append(j.conns, &connection{
-								conn:     nil, 
+								conn:     nil,
 								url:      newUserDSN,
 								driver:   u.Scheme,
 								host:     u.Host,
@@ -467,6 +467,8 @@ func (c *connection) connect(job *Job) error {
 		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
 		conn.MustExec(query)
 	}
+
+	// execute iterator SQL
 
 	c.conn = conn
 	return nil
