@@ -469,6 +469,28 @@ func (c *connection) connect(job *Job) error {
 	}
 
 	// execute iterator SQL
+	if job.Iterator.SQL != "" {
+		level.Debug(job.log).Log("msg", "IteratorSQL", "Query:", job.Iterator.SQL)
+		rows, err := conn.Queryx(job.Iterator.SQL)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		var iv []string
+		for rows.Next() {
+			var value string
+			err := rows.Scan(&value)
+			if err != nil {
+				return err
+			}
+			iv = append(iv, value)
+		}
+
+		c.iteratorValues = iv
+
+		level.Debug(job.log).Log("msg", "IteratorValues", "Values:", c.iteratorValues)
+	}
 
 	c.conn = conn
 	return nil
