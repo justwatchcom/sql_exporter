@@ -377,6 +377,39 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 		return
 	}
 
+	// execute iterator SQL
+	if j.Iterator.SQL != "" {
+		level.Debug(j.log).Log("msg", "IteratorSQL", "Query:", j.Iterator.SQL)
+		rows, err := conn.conn.Queryx(j.Iterator.SQL)
+		if err != nil {
+			level.Warn(j.log).Log("msg", "Failed to run iterator query", "err", err, "host", conn.host)
+			j.markFailed(conn)
+			// we don't have the query name yet.
+			failedQueryCounter.WithLabelValues(j.Name, "").Inc()
+			return
+		}
+
+		defer rows.Close()
+
+		var iv []string
+		for rows.Next() {
+			var value string
+			err := rows.Scan(&value)
+			if err != nil {
+				level.Warn(j.log).Log("msg", "Failed to read iterator values", "err", err, "host", conn.host)
+				j.markFailed(conn)
+				// we don't have the query name yet.
+				failedQueryCounter.WithLabelValues(j.Name, "").Inc()
+				return
+			}
+			iv = append(iv, value)
+		}
+
+		conn.iteratorValues = iv
+
+		level.Debug(j.log).Log("msg", "IteratorValues", "Values:", conn.iteratorValues)
+	}
+
 	for _, q := range j.Queries {
 		if q == nil {
 			continue
@@ -466,30 +499,6 @@ func (c *connection) connect(job *Job) error {
 	for _, query := range job.StartupSQL {
 		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
 		conn.MustExec(query)
-	}
-
-	// execute iterator SQL
-	if job.Iterator.SQL != "" {
-		level.Debug(job.log).Log("msg", "IteratorSQL", "Query:", job.Iterator.SQL)
-		rows, err := conn.Queryx(job.Iterator.SQL)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		var iv []string
-		for rows.Next() {
-			var value string
-			err := rows.Scan(&value)
-			if err != nil {
-				return err
-			}
-			iv = append(iv, value)
-		}
-
-		c.iteratorValues = iv
-
-		level.Debug(job.log).Log("msg", "IteratorValues", "Values:", c.iteratorValues)
 	}
 
 	c.conn = conn
