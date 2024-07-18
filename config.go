@@ -145,6 +145,8 @@ func (c *cronConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 type Job struct {
 	log          log.Logger
 	conns        []*connection
+	Trigger      chan bool     // used to trigger execution
+	Done         chan bool     // used to tell state
 	Name         string        `yaml:"name"`          // name of this job
 	KeepAlive    bool          `yaml:"keepalive"`     // keep connection between runs?
 	Interval     time.Duration `yaml:"interval"`      // interval at which this job is run

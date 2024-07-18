@@ -119,6 +119,7 @@ jobs:
   # each job needs a unique name, it's used for logging and as a default label
 - name: "example"
   # interval defined the pause between the runs of this job
+  # set to 0 to make the queries synchronous
   interval: '5m'
   # cron_schedule when to execute the job in the standard CRON syntax
   # if specified, the interval is ignored
