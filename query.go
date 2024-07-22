@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-kit/log"
@@ -50,7 +51,7 @@ func (q *Query) Run(conn *connection) error {
 			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
 			continue
 		}
-		m, err := q.updateMetrics(conn, res)
+		m, err := q.updateMetrics(conn, res, "", "")
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
 			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
@@ -77,8 +78,90 @@ func (q *Query) Run(conn *connection) error {
 	return nil
 }
 
+// RunIterator runs the query for each iterator value on a single connection
+func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string) error {
+	if q.log == nil {
+		q.log = log.NewNopLogger()
+	}
+	queryCounter.WithLabelValues(q.jobName, q.Name).Inc()
+	if q.desc == nil {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
+		return fmt.Errorf("metrics descriptor is nil")
+	}
+	if q.Query == "" {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
+		return fmt.Errorf("query is empty")
+	}
+	if conn == nil || conn.conn == nil {
+		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
+		return fmt.Errorf("db connection not initialized (should not happen)")
+	}
+
+	// execute query for each iterator value
+	now := time.Now()
+	metrics := make([]prometheus.Metric, 0, len(q.metrics))
+	updated := 0
+	for _, iv := range ivs {
+		rows, err := conn.conn.Queryx(q.ReplaceIterator(ph, iv))
+		if err != nil {
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			res := make(map[string]interface{})
+			err := rows.MapScan(res)
+			if err != nil {
+				level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
+				failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+				continue
+			}
+			m, err := q.updateMetrics(conn, res, iv, il)
+			if err != nil {
+				level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
+				failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+				continue
+			}
+			metrics = append(metrics, m...)
+			updated++
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+		}
+	}
+
+	duration := time.Since(now)
+	queryDurationHistogram.WithLabelValues(q.jobName, q.Name).Observe(duration.Seconds())
+
+	if updated < 1 {
+		if q.AllowZeroRows {
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+		} else {
+			return fmt.Errorf("zero rows returned")
+		}
+	}
+
+	// update the metrics cache
+	q.Lock()
+	q.metrics[conn] = metrics
+	q.Unlock()
+
+	return nil
+}
+
+// HasIterator returns true if the query contains the given placeholder
+func (q *Query) HasIterator(ph string) bool {
+	return strings.Contains(q.Query, ph)
+}
+
+// ReplaceIterator replaces a given placeholder with an iterator value and returns a new query
+func (q *Query) ReplaceIterator(ph string, iv string) string {
+	iteratorReplacer := strings.NewReplacer(fmt.Sprint("{{", ph, "}}"), iv)
+	return iteratorReplacer.Replace(q.Query)
+}
+
 // updateMetrics parses the result set and returns a slice of const metrics
-func (q *Query) updateMetrics(conn *connection, res map[string]interface{}) ([]prometheus.Metric, error) {
+func (q *Query) updateMetrics(conn *connection, res map[string]interface{}, iv string, il string) ([]prometheus.Metric, error) {
 	// if no value were defined to be parsed, return immediately
 	if len(q.Values) == 0 {
 		level.Debug(q.log).Log("msg", "No values defined in configuration, skipping metric update")
@@ -87,7 +170,7 @@ func (q *Query) updateMetrics(conn *connection, res map[string]interface{}) ([]p
 	updated := 0
 	metrics := make([]prometheus.Metric, 0, len(q.Values))
 	for _, valueName := range q.Values {
-		m, err := q.updateMetric(conn, res, valueName)
+		m, err := q.updateMetric(conn, res, valueName, iv, il)
 		if err != nil {
 			level.Error(q.log).Log(
 				"msg", "Failed to update metric",
@@ -108,7 +191,7 @@ func (q *Query) updateMetrics(conn *connection, res map[string]interface{}) ([]p
 }
 
 // updateMetrics parses a single row and returns a const metric
-func (q *Query) updateMetric(conn *connection, res map[string]interface{}, valueName string) (prometheus.Metric, error) {
+func (q *Query) updateMetric(conn *connection, res map[string]interface{}, valueName string, iv string, il string) (prometheus.Metric, error) {
 	var value float64
 	if i, ok := res[valueName]; ok {
 		switch f := i.(type) {
@@ -154,6 +237,12 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 	// added below
 	labels := make([]string, 0, len(q.Labels)+5)
 	for _, label := range q.Labels {
+		// append iterator value to the labels
+		if label == il && iv != "" {
+			labels = append(labels, iv)
+			continue
+		}
+
 		// we need to fill every spot in the slice or the key->value mapping
 		// won't match up in the end.
 		//
