@@ -66,6 +66,12 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		// try to satisfy prometheus naming restrictions
 		name := MetricNameRE.ReplaceAllString("sql_"+q.Name, "")
 		help := q.Help
+
+		// append the iterator label if it is set
+		if j.Iterator.Label != "" {
+			q.Labels = append(q.Labels, j.Iterator.Label)
+		}
+
 		// prepare a new metrics descriptor
 		//
 		// the tricky part here is that the *order* of labels has to match the
@@ -391,7 +397,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 		defer rows.Close()
 
-		var iv []string
+		var ivs []string
 		for rows.Next() {
 			var value string
 			err := rows.Scan(&value)
@@ -402,12 +408,9 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 				failedQueryCounter.WithLabelValues(j.Name, "").Inc()
 				return
 			}
-			iv = append(iv, value)
+			ivs = append(ivs, value)
 		}
-
-		conn.iteratorValues = iv
-
-		level.Debug(j.log).Log("msg", "IteratorValues", "Values:", conn.iteratorValues)
+		conn.iteratorValues = ivs
 	}
 
 	for _, q := range j.Queries {
@@ -419,11 +422,21 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 			level.Warn(q.log).Log("msg", "Skipping query. Collector is nil")
 			continue
 		}
-		level.Debug(q.log).Log("msg", "Running Query")
-		// execute the query on the connection
-		if err := q.Run(conn); err != nil {
-			level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
-			continue
+		// repeat query with iterator values if set and the query has the iterator placeholder
+		if conn.iteratorValues != nil && q.HasIterator(j.Iterator.Placeholder) {
+			level.Debug(q.log).Log("msg", "Running Iterator Query")
+			// execute the query with iterator on the connection
+			if err := q.RunIterator(conn, j.Iterator.Placeholder, conn.iteratorValues, j.Iterator.Label); err != nil {
+				level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
+				continue
+			}
+		} else {
+			level.Debug(q.log).Log("msg", "Running Query")
+			// execute the query on the connection
+			if err := q.Run(conn); err != nil {
+				level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
+				continue
+			}
 		}
 		level.Debug(q.log).Log("msg", "Query finished")
 		updated++

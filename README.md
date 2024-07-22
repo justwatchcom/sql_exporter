@@ -134,8 +134,12 @@ jobs:
   - 'SET idle_in_transaction_session_timeout = 100'
   # iterator is an optional mechanism to iterate over a series of values, e.g. multiple databases
   iterator:
-    # sql is the SQL to execute to retrieve the list of values to iterate over - result must be a single column
+    # sql is the SQL to execute to retrieve the list of values to iterate over -
+    # query result must be a single column
     sql: 'SELECT database_name FROM databases'
+    # placeholder should be present in the original query and not also used as an environment variable
+    # e.g. {{PLACEHOLDER}} - it will be replaced by the values retrieved by the query
+    placeholder: PLACEHOLDER
     # label is the label name to which the iterator value gets assigned
     label: database
   # queries is a map of Metric/Query mappings

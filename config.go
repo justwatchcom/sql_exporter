@@ -182,7 +182,9 @@ type Query struct {
 	QueryRef      string   `yaml:"query_ref"` // references a query in the query map
 }
 
+// Iterator is a mechanism to repeat queries from a job based on the results of another query
 type Iterator struct {
-	SQL   string `yaml:"sql"`   // SQL to execute to retrieve iterator values
-	Label string `yaml:"label"` // Label to assign iterator values to
+	SQL         string `yaml:"sql"`         // SQL to execute to retrieve iterator values
+	Placeholder string `yaml:"placeholder"` // Placeholder in query to be replaced
+	Label       string `yaml:"label"`       // Label to assign iterator values to
 }
