@@ -1,14 +1,23 @@
 package main
 
 import (
+	"github.com/cloudflare/certinel/fswatcher"
+
+	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
-	"github.com/snowflakedb/gosnowflake"
+	glog "log"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/snowflakedb/gosnowflake"
+
+	"github.com/ClickHouse/clickhouse-go"
 	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
 	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
@@ -18,7 +27,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // register the PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/segmentio/go-athena"     // register the AWS Athena driver
+	_ "github.com/segmentio/go-athena"    // register the AWS Athena driver
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 )
 
@@ -135,6 +144,16 @@ func (j *Job) Run() {
 					level.Error(j.log).Log("msg", "Failed to open Athena connection", "connection", conn, "err", err)
 					continue
 				}
+			}
+			if newConn.driver == "clickhouse" && strings.Contains(conn, "tls_config=spiffe") {
+				tlsConfig := &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				}
+				if err = setupMTLS(j, tlsConfig); err != nil {
+					level.Error(j.log).Log("msg", "Could not set up mTLS", "err", err)
+					continue
+				}
+				clickhouse.RegisterTLSConfig("spiffe", tlsConfig)
 			}
 			if newConn.driver == "snowflake" {
 				cfg := &gosnowflake.Config{
@@ -273,5 +292,27 @@ func (c *connection) connect(job *Job) error {
 	}
 
 	c.conn = conn
+	return nil
+}
+
+func setupMTLS(job *Job, tlsConfig *tls.Config) error {
+	if _, err := os.Stat(job.MTLSIdentity.CertPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("certificate file %s doesn't exist: %w", job.MTLSIdentity.CertPath, err)
+	}
+	certWatcher, err := fswatcher.New(
+		job.MTLSIdentity.CertPath,
+		job.MTLSIdentity.KeyPath,
+	)
+	if err != nil {
+		return fmt.Errorf("could not set up identity cert watcher: %w", err)
+	}
+	go func() {
+		level.Info(job.log).Log("msg", "watching ClickHouse TLS client certificate", "certfile", job.MTLSIdentity.CertPath, "keyfile", job.MTLSIdentity.KeyPath)
+		err := certWatcher.Start(context.Background())
+		if err != nil {
+			glog.Fatalf("cert watcher error: %s", err.Error())
+		}
+	}()
+	tlsConfig.GetClientCertificate = certWatcher.GetClientCertificate
 	return nil
 }

@@ -77,16 +77,24 @@ type File struct {
 	Queries map[string]string `yaml:"queries"`
 }
 
+// MTLSIdentity allows to configure which TLS certificate will be presented by
+// the client when connecting to the database server
+type MTLSIdentity struct {
+	CertPath string `yaml:"cert_path"`
+	KeyPath  string `yaml:"key_path"`
+}
+
 // Job is a collection of connections and queries
 type Job struct {
-	log         log.Logger
-	conns       []*connection
-	Name        string        `yaml:"name"`      // name of this job
-	KeepAlive   bool          `yaml:"keepalive"` // keep connection between runs?
-	Interval    time.Duration `yaml:"interval"`  // interval at which this job is run
-	Connections []string      `yaml:"connections"`
-	Queries     []*Query      `yaml:"queries"`
-	StartupSQL  []string      `yaml:"startup_sql"` // SQL executed on startup
+	log          log.Logger
+	conns        []*connection
+	Name         string        `yaml:"name"`      // name of this job
+	KeepAlive    bool          `yaml:"keepalive"` // keep connection between runs?
+	Interval     time.Duration `yaml:"interval"`  // interval at which this job is run
+	Connections  []string      `yaml:"connections"`
+	Queries      []*Query      `yaml:"queries"`
+	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
+	MTLSIdentity MTLSIdentity  `yaml:"mtls_identity"`
 }
 
 type connection struct {
