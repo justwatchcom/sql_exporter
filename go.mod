@@ -18,6 +18,7 @@ require (
 	github.com/segmentio/go-athena v0.0.0-20230626212750-5fac08ed8dab
 	github.com/snowflakedb/gosnowflake v1.7.2
 	github.com/vertica/vertica-sql-go v1.3.3
+	go.uber.org/automaxprocs v1.5.3
 	google.golang.org/api v0.160.0
 	gopkg.in/yaml.v2 v2.4.0
 )
