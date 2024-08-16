@@ -5,6 +5,7 @@ go 1.21
 require (
 	cloud.google.com/go/cloudsqlconn v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.17.1
+	github.com/aws/aws-sdk-go v1.50.6
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/go-kit/log v0.2.1
@@ -18,6 +19,7 @@ require (
 	github.com/segmentio/go-athena v0.0.0-20230626212750-5fac08ed8dab
 	github.com/snowflakedb/gosnowflake v1.7.2
 	github.com/vertica/vertica-sql-go v1.3.3
+	go.uber.org/automaxprocs v1.5.3
 	google.golang.org/api v0.160.0
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -34,7 +36,6 @@ require (
 	github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/apache/arrow/go/v14 v14.0.2 // indirect
-	github.com/aws/aws-sdk-go v1.50.6 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.24.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.5.4 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.16.16 // indirect
