@@ -152,15 +152,17 @@ type Job struct {
 	Connections  []string      `yaml:"connections"`
 	Queries      []*Query      `yaml:"queries"`
 	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
+	Iterator     Iterator      `yaml:"iterator"`    // Iterator configuration
 }
 
 type connection struct {
-	conn     *sqlx.DB
-	url      string
-	driver   string
-	host     string
-	database string
-	user     string
+	conn           *sqlx.DB
+	url            string
+	driver         string
+	host           string
+	database       string
+	user           string
+	iteratorValues []string
 }
 
 // Query is an SQL query that is executed on a connection
@@ -178,4 +180,11 @@ type Query struct {
 	Timestamp     string   `yaml:"timestamp"` // expose as metric timestamp
 	Query         string   `yaml:"query"`     // a literal query
 	QueryRef      string   `yaml:"query_ref"` // references a query in the query map
+}
+
+// Iterator is a mechanism to repeat queries from a job based on the results of another query
+type Iterator struct {
+	SQL         string `yaml:"sql"`         // SQL to execute to retrieve iterator values
+	Placeholder string `yaml:"placeholder"` // Placeholder in query to be replaced
+	Label       string `yaml:"label"`       // Label to assign iterator values to
 }
