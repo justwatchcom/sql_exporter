@@ -150,8 +150,7 @@ func (j *Job) Run() {
 					MinVersion: tls.VersionTLS12,
 				}
 				if err = setupMTLS(j, tlsConfig); err != nil {
-					level.Error(j.log).Log("msg", "Could not set up mTLS", "err", err)
-					continue
+					glog.Fatalf("could not set up mTLS: %s", err.Error())
 				}
 				clickhouse.RegisterTLSConfig("spiffe", tlsConfig)
 			}
