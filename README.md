@@ -5,7 +5,8 @@
 
 This repository contains a service that runs user-defined SQL queries at flexible intervals and exports the resulting metrics via HTTP for Prometheus consumption.
 
-# Status
+Status
+======
 
 Actively used with PostgreSQL in production. We'd like to eventually support all databases for which stable Go database [drivers](https://github.com/golang/go/wiki/SQLDrivers) are available. Contributions welcome.
 
@@ -21,11 +22,14 @@ Currently supported:
 - Materialize
 - CloudSQL
 
-# What does it look like?
+
+What does it look like?
+=======================
 
 ![Grafana DB Dashboard](/examples/grafana/screenshot.jpg?raw=true)
 
-# Getting Started
+Getting Started
+===============
 
 Create a _config.yml_ and run the service:
 
@@ -51,43 +55,50 @@ Manual `scrape_configs` snippet:
 
 ```yaml
 scrape_configs:
-  - job_name: sql_exporter
-    static_configs:
-      - targets: ["localhost:9237"]
+- job_name: sql_exporter
+  static_configs:
+  - targets: ['localhost:9237']
 ```
 
-## Flags
+Flags
+-----
 
-| Name                 | Description                                          |
-| -------------------- | ---------------------------------------------------- |
-| `version`            | Print version information                            |
-| `web.listen-address` | Address to listen on for web interface and telemetry |
-| `web.telemetry-path` | Path under which to expose metrics                   |
-| `config.file`        | SQL Exporter configuration file name                 |
+Name    | Description
+--------|------------
+`version` | Print version information
+`web.listen-address` | Address to listen on for web interface and telemetry
+`web.telemetry-path` | Path under which to expose metrics
+`config.file` | SQL Exporter configuration file name
 
-## Environment Variables
+Environment Variables
+---------------------
 
-| Name     | Description                           |
-| -------- | ------------------------------------- |
-| `CONFIG` | Location of Configuration File (yaml) |
+Name    | Description
+--------|------------
+`CONFIG`  | Location of Configuration File (yaml)
 
-# Usage
+Usage
+=====
 
 We recommend to deploy and run the SQL exporter in Kubernetes.
 
-## Kubernetes
+Kubernetes
+----------
 
 See [examples/kubernetes](https://github.com/justwatchcom/sql_exporter/tree/master/examples/kubernetes).
 
-## Grafana
+Grafana
+-------
 
 See [examples/grafana](https://github.com/justwatchcom/sql_exporter/tree/master/examples/grafana).
 
-## Prometheus
+Prometheus
+----------
 
 Example recording and alerting rules are available in [examples/prometheus](https://github.com/justwatchcom/sql_exporter/tree/master/examples/prometheus).
 
-## Configuration
+Configuration
+-------------
 
 When writing queries for this exporter please keep in mind that Prometheus data
 model assigns exactly one `float` to a metric, possibly further identified by a
@@ -106,52 +117,53 @@ For a more realistic example please have a look at [examples/kubernetes/configma
 # jobs is a map of jobs, define any number but please keep the connection usage on the DBs in mind
 jobs:
   # each job needs a unique name, it's used for logging and as a default label
-  - name: "example"
-    # interval defined the pause between the runs of this job
-    interval: "5m"
-    # cron_schedule when to execute the job in the standard CRON syntax
-    # if specified, the interval is ignored
-    cron_schedule: "0 0 * * *"
-    # connections is an array of connection URLs
-    # each query will be executed on each connection
-    connections:
-      - "postgres://postgres@localhost/postgres?sslmode=disable"
-    # startup_sql is an array of SQL statements
-    # each statements is executed once after connecting
-    startup_sql:
-      - "SET lock_timeout = 1000"
-      - "SET idle_in_transaction_session_timeout = 100"
-    # queries is a map of Metric/Query mappings
-    queries:
-      # name is prefixed with sql_ and used as the metric name
-      - name: "running_queries"
-        # help is a requirement of the Prometheus default registry, currently not
-        # used by the Prometheus server. Important: Must be the same for all metrics
-        # with the same name!
-        help: "Number of running queries"
-        # Optional: Column to use as a metric timestamp source.
-        # Leave unset if it's not needed
-        timestamp: "created_at"
-        # Labels is an array of columns which will be used as additional labels.
-        # Must be the same for all metrics with the same name!
-        # All labels columns should be of type text, varchar or string
-        labels:
-          - "datname"
-          - "usename"
-        # Values is an array of columns used as metric values. All values should be
-        # of type float
-        values:
-          - "count"
-        # Query is the SQL query that is run unalterted on each of the connections
-        # for this job
-        query: |
-          SELECT now() as created_at, datname::text, usename::text, COUNT(*)::float AS count
-          FROM pg_stat_activity GROUP BY created_at, datname, usename;
-        # Consider the query failed if it returns zero rows
-        allow_zero_rows: false
+- name: "example"
+  # interval defined the pause between the runs of this job
+  interval: '5m'
+  # cron_schedule when to execute the job in the standard CRON syntax
+  # if specified, the interval is ignored
+  cron_schedule: "0 0 * * *"
+  # connections is an array of connection URLs
+  # each query will be executed on each connection
+  connections:
+  - 'postgres://postgres@localhost/postgres?sslmode=disable'
+  # startup_sql is an array of SQL statements
+  # each statements is executed once after connecting
+  startup_sql:
+  - 'SET lock_timeout = 1000'
+  - 'SET idle_in_transaction_session_timeout = 100'
+  # queries is a map of Metric/Query mappings
+  queries:
+    # name is prefixed with sql_ and used as the metric name
+  - name: "running_queries"
+    # help is a requirement of the Prometheus default registry, currently not
+    # used by the Prometheus server. Important: Must be the same for all metrics
+    # with the same name!
+    help: "Number of running queries"
+    # Optional: Column to use as a metric timestamp source.
+    # Leave unset if it's not needed
+    timestamp: "created_at"
+    # Labels is an array of columns which will be used as additional labels.
+    # Must be the same for all metrics with the same name!
+    # All labels columns should be of type text, varchar or string
+    labels:
+      - "datname"
+      - "usename"
+    # Values is an array of columns used as metric values. All values should be
+    # of type float
+    values:
+      - "count"
+    # Query is the SQL query that is run unalterted on each of the connections
+    # for this job
+    query:  |
+            SELECT now() as created_at, datname::text, usename::text, COUNT(*)::float AS count
+            FROM pg_stat_activity GROUP BY created_at, datname, usename;
+    # Consider the query failed if it returns zero rows
+    allow_zero_rows: false
 ```
 
-## Running as non-superuser on PostgreSQL
+Running as non-superuser on PostgreSQL
+--------------------------------------
 
 Some queries require superuser privileges on PostgreSQL.
 If you prefer not to run the exporter with superuser privileges, you can use some views/functions to get around this limitation.
@@ -190,7 +202,8 @@ GRANT SELECT ON postgres_exporter.pg_stat_replication TO postgres_exporter;
 GRANT SELECT ON postgres_exporter.pg_stat_activity TO postgres_exporter;
 ```
 
-## Logging
+Logging
+-------
 
 You can change the loglevel by setting the `LOGLEVEL` variable in the exporters
 environment.
@@ -199,27 +212,31 @@ environment.
 LOGLEVEL=info ./sql_exporter
 ```
 
-## Database specific configurations
+Database specific configurations
+--------------------------------
 
 For some database backends some special functionality is available:
 
-- cloudsql-postgres: A special `*` character can be used to query all databases accessible by the account
-- cloudsql-mysql: Same as above
-- rds-postgres: This type of URL expects a working AWS configuration
+* cloudsql-postgres: A special `*` character can be used to query all databases accessible by the account
+* cloudsql-mysql: Same as above
+* rds-postgres: This type of URL expects a working AWS configuration
   which will use the equivalent of `rds generate-db-auth-token`
   for the password. For this driver, the `AWS_REGION` environment variable
   must be set.
-- rds-mysql: This type of URL expects a working AWS configuration
+* rds-mysql: This type of URL expects a working AWS configuration
   which will use the equivalent of `rds generate-db-auth-token`
   for the password. For this driver, the `AWS_REGION` environment variable
   must be set.
 
-# Why this exporter exists
+
+Why this exporter exists
+========================
 
 The other projects with similar goals did not meet our requirements on either
 maturity or flexibility. This exporter does not rely on any other service and
 runs in production for some time already.
 
-# License
+License
+=======
 
 MIT License
