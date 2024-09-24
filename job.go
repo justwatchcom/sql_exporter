@@ -207,6 +207,26 @@ func (j *Job) updateConnections() {
 				continue
 			}
 
+			// MySQL RDS IAM Authentication
+			if strings.HasPrefix(conn, "rds-mysql://") {
+				// Reuse MySQL driver by stripping "rds-" from connection URL after building the RDS authentication token
+				conn = strings.TrimPrefix(conn, "rds-")
+				u, err := url.Parse(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
+					continue
+				}
+				sess := session.Must(session.NewSessionWithOptions(session.Options{
+					SharedConfigState: session.SharedConfigEnable,
+				}))
+				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
+				if err != nil {
+					level.Error(j.log).Log("msg", "failed to parse connection url for RDS MySQL IAM auth", "url", conn, "err", err)
+					continue
+				}
+				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
+			}
+
 			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
 			if strings.HasPrefix(conn, "mysql://") {
 				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
