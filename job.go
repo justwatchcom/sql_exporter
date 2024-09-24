@@ -207,36 +207,37 @@ func (j *Job) updateConnections() {
 				continue
 			}
 
-			// MySQL RDS IAM Authentication
-			if strings.HasPrefix(conn, "rds-mysql://") {
-				// Reuse MySQL driver by stripping "rds-" from connection URL after building the RDS authentication token
+			// Handle both RDS MySQL and regular MySQL connections
+			if strings.HasPrefix(conn, "rds-mysql://") || strings.HasPrefix(conn, "mysql://") {
+				isRDS := strings.HasPrefix(conn, "rds-")
 				conn = strings.TrimPrefix(conn, "rds-")
-				u, err := url.Parse(conn)
-				if err != nil {
-					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
-					continue
-				}
-				sess := session.Must(session.NewSessionWithOptions(session.Options{
-					SharedConfigState: session.SharedConfigEnable,
-				}))
-				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
-				if err != nil {
-					level.Error(j.log).Log("msg", "failed to parse connection url for RDS MySQL IAM auth", "url", conn, "err", err)
-					continue
-				}
-				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
-			}
 
-			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
-			if strings.HasPrefix(conn, "mysql://") {
 				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to parse MySQL DSN", "url", conn, "err", err)
+					continue
 				}
+
+				if isRDS {
+					config.AllowCleartextPasswords = true
+
+					sess := session.Must(session.NewSessionWithOptions(session.Options{
+						SharedConfigState: session.SharedConfigEnable,
+					}))
+
+					token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to build RDS auth token", "url", conn, "err", err)
+						continue
+					}
+					config.Passwd = token
+				}
+
+				dsn := config.FormatDSN()
 
 				j.conns = append(j.conns, &connection{
 					conn:     nil,
-					url:      conn,
+					url:      dsn,
 					driver:   "mysql",
 					host:     config.Addr,
 					database: config.DBName,
@@ -244,6 +245,7 @@ func (j *Job) updateConnections() {
 				})
 				continue
 			}
+
 			if strings.HasPrefix(conn, "rds-postgres://") {
 				// Reuse Postgres driver by stripping "rds-" from connection URL after building the RDS authentication token
 				conn = strings.TrimPrefix(conn, "rds-")
