@@ -58,32 +58,6 @@ func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 	return token, expirationTime, nil
 }
 
-// // Function to setup RDS MySQL IAM Auth
-// func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
-// 	// Don't strip the "rds-" prefix here
-// 	config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "rds-mysql://"))
-// 	if err != nil {
-// 		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
-// 	}
-
-// 	config.AllowCleartextPasswords = true
-
-// 	sess := session.Must(session.NewSessionWithOptions(session.Options{
-// 		SharedConfigState: session.SharedConfigEnable,
-// 	}))
-
-// 	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
-// 	if err != nil {
-// 		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
-// 	}
-// 	config.Passwd = token
-
-// 	dsn := config.FormatDSN()
-// 	expirationTime := time.Now().Add(14 * time.Minute)
-
-// 	return dsn, expirationTime, nil
-// }
-
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
