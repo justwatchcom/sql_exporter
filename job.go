@@ -105,6 +105,16 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 }
 
 func (j *Job) updateConnections() {
+	// if the interval is not set > 0, create needed channels
+	if j.Interval <= 0 {
+		if j.Trigger == nil {
+			j.Trigger = make(chan bool)
+		}
+
+		if j.Done == nil {
+			j.Done = make(chan bool)
+		}
+	}
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
 		level.Error(j.log).Log("msg", "no connections for job", "job_name", j.Name)
@@ -456,13 +466,25 @@ func (j *Job) markFailed(conn *connection) {
 
 // Run the job queries with exponential backoff, implements the cron.Job interface
 func (j *Job) Run() {
-	bo := backoff.NewExponentialBackOff()
-	bo.MaxElapsedTime = j.Interval
-	if bo.MaxElapsedTime == 0 {
-		bo.MaxElapsedTime = time.Minute
-	}
-	if err := backoff.Retry(j.runOnce, bo); err != nil {
-		level.Error(j.log).Log("msg", "Failed to run", "err", err)
+        // if the interval is 0 or lower, wait to be triggered
+        if j.Interval <= 0 {
+                // wait for trigger
+                <-j.Trigger
+                if err := j.runOnce(); err != nil {
+                        level.Error(j.log).Log("msg", "Failed to run", "err", err)
+                }
+
+                // send true into done channel
+                j.Done <- true
+        } else {
+		bo := backoff.NewExponentialBackOff()
+		bo.MaxElapsedTime = j.Interval
+		if bo.MaxElapsedTime == 0 {
+			bo.MaxElapsedTime = time.Minute
+		}
+		if err := backoff.Retry(j.runOnce, bo); err != nil {
+			level.Error(j.log).Log("msg", "Failed to run", "err", err)
+		}
 	}
 }
 
