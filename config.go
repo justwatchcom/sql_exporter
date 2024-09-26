@@ -155,12 +155,13 @@ type Job struct {
 }
 
 type connection struct {
-	conn     *sqlx.DB
-	url      string
-	driver   string
-	host     string
-	database string
-	user     string
+	conn                *sqlx.DB
+	url                 string
+	driver              string
+	host                string
+	database            string
+	user                string
+	tokenExpirationTime time.Time
 }
 
 // Query is an SQL query that is executed on a connection

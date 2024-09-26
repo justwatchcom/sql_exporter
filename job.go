@@ -37,6 +37,53 @@ var (
 	CloudSQLPrefix = "cloudsql+"
 )
 
+func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
+	dsn := strings.TrimPrefix(conn, "rds-mysql://")
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
+	}
+
+	expirationTime := time.Now().Add(14 * time.Minute)
+
+	return token, expirationTime, nil
+}
+
+// // Function to setup RDS MySQL IAM Auth
+// func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
+// 	// Don't strip the "rds-" prefix here
+// 	config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "rds-mysql://"))
+// 	if err != nil {
+// 		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
+// 	}
+
+// 	config.AllowCleartextPasswords = true
+
+// 	sess := session.Must(session.NewSessionWithOptions(session.Options{
+// 		SharedConfigState: session.SharedConfigEnable,
+// 	}))
+
+// 	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+// 	if err != nil {
+// 		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
+// 	}
+// 	config.Passwd = token
+
+// 	dsn := config.FormatDSN()
+// 	expirationTime := time.Now().Add(14 * time.Minute)
+
+// 	return dsn, expirationTime, nil
+// }
+
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
@@ -209,39 +256,47 @@ func (j *Job) updateConnections() {
 
 			// Handle both RDS MySQL and regular MySQL connections
 			if strings.HasPrefix(conn, "rds-mysql://") || strings.HasPrefix(conn, "mysql://") {
-				isRDS := strings.HasPrefix(conn, "rds-")
-				conn = strings.TrimPrefix(conn, "rds-")
+				isRDS := strings.HasPrefix(conn, "rds-mysql://")
+				var dsn string
+				var expirationTime time.Time
 
-				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
+				trimmedConn := conn
+				if isRDS {
+					trimmedConn = strings.TrimPrefix(conn, "rds-mysql://")
+				} else {
+					trimmedConn = strings.TrimPrefix(conn, "mysql://")
+				}
+
+				config, err := mysql.ParseDSN(trimmedConn)
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to parse MySQL DSN", "url", conn, "err", err)
 					continue
 				}
 
 				if isRDS {
-					config.AllowCleartextPasswords = true
-
-					sess := session.Must(session.NewSessionWithOptions(session.Options{
-						SharedConfigState: session.SharedConfigEnable,
-					}))
-
-					token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+					authToken, tokenExpiration, err := handleRDSMySQLIAMAuth(conn)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to build RDS auth token", "url", conn, "err", err)
 						continue
 					}
-					config.Passwd = token
+					config.Passwd = authToken
+					config.AllowCleartextPasswords = true
+					expirationTime = tokenExpiration
 				}
 
-				dsn := config.FormatDSN()
+				dsn = config.FormatDSN()
+				if isRDS {
+					dsn = "rds-mysql://" + dsn
+				}
 
 				j.conns = append(j.conns, &connection{
-					conn:     nil,
-					url:      dsn,
-					driver:   "mysql",
-					host:     config.Addr,
-					database: config.DBName,
-					user:     config.User,
+					conn:                nil,
+					url:                 dsn,
+					driver:              "mysql",
+					host:                config.Addr,
+					database:            config.DBName,
+					user:                config.User,
+					tokenExpirationTime: expirationTime,
 				})
 				continue
 			}
@@ -460,12 +515,45 @@ func (j *Job) runOnce() error {
 func (c *connection) connect(job *Job) error {
 	// already connected
 	if c.conn != nil {
+		if strings.HasPrefix(c.url, "rds-mysql://") && time.Now().After(c.tokenExpirationTime) {
+			level.Warn(job.log).Log("msg", "Connection token expired, reconnecting")
+
+			authToken, expirationTime, err := handleRDSMySQLIAMAuth(c.url)
+			if err != nil {
+				return fmt.Errorf("failed to refresh RDS MySQL IAM Auth token: %w", err)
+			}
+
+			config, err := mysql.ParseDSN(strings.TrimPrefix(c.url, "rds-mysql://"))
+			if err != nil {
+				return fmt.Errorf("failed to parse MySQL DSN: %w", err)
+			}
+
+			config.Passwd = authToken
+			dsn := "rds-mysql://" + config.FormatDSN()
+
+			// Close the existing connection
+			c.conn.Close()
+			c.conn = nil
+
+			// Update the connection details
+			c.tokenExpirationTime = expirationTime
+			c.url = dsn
+
+			// Connect to the database with the new token
+			conn, err := sqlx.Connect(c.driver, strings.TrimPrefix(dsn, "rds-mysql://"))
+			if err != nil {
+				return fmt.Errorf("failed to connect to the database: %w", err)
+			}
+			c.conn = conn
+			return nil
+		}
 		return nil
 	}
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
+		dsn = strings.TrimPrefix(dsn, "rds-mysql://")
 	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
 		dsn = strings.TrimPrefix(dsn, "clickhouse+")
 		c.driver = "clickhouse"
