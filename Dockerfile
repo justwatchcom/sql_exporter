@@ -1,4 +1,4 @@
-FROM golang:1.20-alpine as builder
+FROM golang:1.21-alpine AS builder
 
 RUN apk add git bash
 
@@ -12,7 +12,7 @@ WORKDIR /src
 RUN GOGC=off go build -mod=vendor -v -o /sql_exporter .
 
 # multistage
-FROM alpine:3.18.3
+FROM alpine:3.20.3
 
 RUN apk --update upgrade && \
     apk add curl ca-certificates && \
@@ -28,4 +28,4 @@ RUN chmod 0755 /usr/bin/sql_exporter
 
 USER prom
 
-CMD sql_exporter
+CMD ["sql_exporter"]

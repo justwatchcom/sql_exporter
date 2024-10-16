@@ -1,3 +1,13 @@
+# 1.14.3 (March 4, 2024)
+
+* Update golang.org/x/crypto and golang.org/x/text
+
+# 1.14.2 (March 4, 2024)
+
+* Fix CVE-2024-27304. SQL injection can occur if an attacker can cause a single query or bind message to exceed 4 GB in
+size. An integer overflow in the calculated message size can cause the one large message to be sent as multiple messages
+under the attacker's control.
+
 # 1.14.1 (July 19, 2023)
 
 * Fix: Enable failover efforts when pg_hba.conf disallows non-ssl connections (Brandon Kauffman)
