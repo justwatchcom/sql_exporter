@@ -17,12 +17,14 @@ package cloudsqlconn
 import (
 	"context"
 	"crypto/rsa"
-	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
+	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/errtype"
+	"cloud.google.com/go/cloudsqlconn/instance"
 	"cloud.google.com/go/cloudsqlconn/internal/cloudsql"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -40,11 +42,18 @@ type dialerConfig struct {
 	dialFunc               func(ctx context.Context, network, addr string) (net.Conn, error)
 	refreshTimeout         time.Duration
 	useIAMAuthN            bool
+	logger                 debug.ContextLogger
+	lazyRefresh            bool
 	iamLoginTokenSource    oauth2.TokenSource
 	useragents             []string
+	credentialsUniverse    string
+	serviceUniverse        string
+	setAdminAPIEndpoint    bool
+	setUniverseDomain      bool
 	setCredentials         bool
 	setTokenSource         bool
 	setIAMAuthNTokenSource bool
+	resolver               instance.ConnectionNameResolver
 	// err tracks any dialer options that may have failed.
 	err error
 }
@@ -63,7 +72,7 @@ func WithOptions(opts ...Option) Option {
 // authentication.
 func WithCredentialsFile(filename string) Option {
 	return func(d *dialerConfig) {
-		b, err := ioutil.ReadFile(filename)
+		b, err := os.ReadFile(filename)
 		if err != nil {
 			d.err = errtype.NewConfigError(err.Error(), "n/a")
 			return
@@ -82,6 +91,12 @@ func WithCredentialsJSON(b []byte) Option {
 			d.err = errtype.NewConfigError(err.Error(), "n/a")
 			return
 		}
+		ud, err := c.GetUniverseDomain()
+		if err != nil {
+			d.err = errtype.NewConfigError(err.Error(), "n/a")
+			return
+		}
+		d.credentialsUniverse = ud
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithCredentials(c))
 
 		// Create another set of credentials scoped to login only
@@ -176,6 +191,18 @@ func WithHTTPClient(client *http.Client) Option {
 func WithAdminAPIEndpoint(url string) Option {
 	return func(d *dialerConfig) {
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithEndpoint(url))
+		d.setAdminAPIEndpoint = true
+		d.serviceUniverse = ""
+	}
+}
+
+// WithUniverseDomain configures the underlying SQL Admin API client to use
+// the provided universe domain. Enables Trusted Partner Cloud (TPC).
+func WithUniverseDomain(ud string) Option {
+	return func(d *dialerConfig) {
+		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithUniverseDomain(ud))
+		d.serviceUniverse = ud
+		d.setUniverseDomain = true
 	}
 }
 
@@ -206,6 +233,83 @@ func WithDialFunc(dial func(ctx context.Context, network, addr string) (net.Conn
 func WithIAMAuthN() Option {
 	return func(d *dialerConfig) {
 		d.useIAMAuthN = true
+	}
+}
+
+// WithResolver replaces the default resolver with an alternate
+// implementation to resolve the name in the database DSN to a Cloud SQL
+// instance.
+func WithResolver(r instance.ConnectionNameResolver) Option {
+	return func(d *dialerConfig) {
+		d.resolver = r
+	}
+}
+
+// WithDNSResolver replaces the default resolver (which only resolves instance
+// names) with the DNSResolver, which will attempt to first parse the instance
+// name, and then will attempt to resolve the DNS TXT record to determine
+// the instance name.
+//
+// First, add a record for your Cloud SQL instance to a **private** DNS server
+// or a private Google Cloud DNS Zone used by your application.
+//
+// **Note:** You are strongly discouraged from adding DNS records for your
+// Cloud SQL instances to a public DNS server. This would allow anyone on the
+// internet to discover the Cloud SQL instance name.
+//
+// For example: suppose you wanted to use the domain name
+// `prod-db.mycompany.example.com` to connect to your database instance
+// `my-project:region:my-instance`. You would create the following DNS record:
+//
+//   - Record type: `TXT`
+//   - Name: `prod-db.mycompany.example.com` – This is the domain name used by
+//     the application
+//   - Value: `my-project:region:my-instance` – This is the instance name
+func WithDNSResolver() Option {
+	return func(d *dialerConfig) {
+		d.resolver = cloudsql.DNSResolver
+	}
+}
+
+type debugLoggerWithoutContext struct {
+	logger debug.Logger
+}
+
+// Debugf implements debug.ContextLogger.
+func (d *debugLoggerWithoutContext) Debugf(_ context.Context, format string, args ...interface{}) {
+	d.logger.Debugf(format, args...)
+}
+
+var _ debug.ContextLogger = new(debugLoggerWithoutContext)
+
+// WithDebugLogger configures a debug lgoger for reporting on internal
+// operations. By default the debug logger is disabled.
+//
+// Prefer WithContextDebugLogger instead
+func WithDebugLogger(l debug.Logger) Option {
+	return func(d *dialerConfig) {
+		d.logger = &debugLoggerWithoutContext{l}
+	}
+}
+
+// WithContextDebugLogger configures a debug logger for reporting on internal
+// operations. By default the debug logger is disabled.
+func WithContextDebugLogger(l debug.ContextLogger) Option {
+	return func(d *dialerConfig) {
+		d.logger = l
+	}
+}
+
+// WithLazyRefresh configures the dialer to refresh certificates on an
+// as-needed basis. If a certificate is expired when a connection request
+// occurs, the Go Connector will block the attempt and refresh the certificate
+// immediately. This option is useful when running the Go Connector in
+// environments where the CPU may be throttled, thus preventing a background
+// goroutine from running consistently (e.g., in Cloud Run the CPU is throttled
+// outside of a request context causing the background refresh to fail).
+func WithLazyRefresh() Option {
+	return func(d *dialerConfig) {
+		d.lazyRefresh = true
 	}
 }
 
