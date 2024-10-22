@@ -163,7 +163,7 @@ type connection struct {
 	database            string
 	user                string
 	tokenExpirationTime time.Time
-  iteratorValues      []string
+	iteratorValues      []string
 }
 
 // Query is an SQL query that is executed on a connection
