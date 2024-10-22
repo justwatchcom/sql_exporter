@@ -608,8 +608,110 @@
     },
     "instances": {
       "methods": {
+        "ListServerCertificates": {
+          "description": "Lists all versions of server certificates and certificate authorities (CAs) for the specified instance. There can be up to three sets of certs listed: the certificate that is currently in use, a future that has been added but not yet used to sign a certificate, and a certificate that has been rotated out.",
+          "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/listServerCertificates",
+          "httpMethod": "GET",
+          "id": "sql.instances.ListServerCertificates",
+          "parameterOrder": [
+            "project",
+            "instance"
+          ],
+          "parameters": {
+            "instance": {
+              "description": "Required. Cloud SQL instance ID. This does not include the project ID.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            },
+            "project": {
+              "description": "Required. Project ID of the project that contains the instance.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "path": "sql/v1beta4/projects/{project}/instances/{instance}/listServerCertificates",
+          "response": {
+            "$ref": "InstancesListServerCertificatesResponse"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/sqlservice.admin"
+          ]
+        },
+        "RotateServerCertificate": {
+          "description": "Rotates the server certificate version to one previously added with the addServerCertificate method. For instances not using Certificate Authority Service (CAS) server CA, please use RotateServerCa instead.",
+          "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/rotateServerCertificate",
+          "httpMethod": "POST",
+          "id": "sql.instances.RotateServerCertificate",
+          "parameterOrder": [
+            "project",
+            "instance"
+          ],
+          "parameters": {
+            "instance": {
+              "description": "Required. Cloud SQL instance ID. This does not include the project ID.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            },
+            "project": {
+              "description": "Required. Project ID of the project that contains the instance.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "path": "sql/v1beta4/projects/{project}/instances/{instance}/rotateServerCertificate",
+          "request": {
+            "$ref": "InstancesRotateServerCertificateRequest"
+          },
+          "response": {
+            "$ref": "Operation"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/sqlservice.admin"
+          ]
+        },
+        "acquireSsrsLease": {
+          "description": "Acquire a lease for the setup of SQL Server Reporting Services (SSRS).",
+          "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/acquireSsrsLease",
+          "httpMethod": "POST",
+          "id": "sql.instances.acquireSsrsLease",
+          "parameterOrder": [
+            "project",
+            "instance"
+          ],
+          "parameters": {
+            "instance": {
+              "description": "Required. Cloud SQL instance ID. This doesn't include the project ID. It's composed of lowercase letters, numbers, and hyphens, and it must start with a letter. The total length must be 98 characters or less (Example: instance-id).",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            },
+            "project": {
+              "description": "Required. ID of the project that contains the instance (Example: project-id).",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "path": "sql/v1beta4/projects/{project}/instances/{instance}/acquireSsrsLease",
+          "request": {
+            "$ref": "InstancesAcquireSsrsLeaseRequest"
+          },
+          "response": {
+            "$ref": "SqlInstancesAcquireSsrsLeaseResponse"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/sqlservice.admin"
+          ]
+        },
         "addServerCa": {
-          "description": "Add a new trusted Certificate Authority (CA) version for the specified instance. Required to prepare for a certificate rotation. If a CA version was previously added but never used in a certificate rotation, this operation replaces that version. There cannot be more than one CA version waiting to be rotated in.",
+          "description": "Add a new trusted Certificate Authority (CA) version for the specified instance. Required to prepare for a certificate rotation. If a CA version was previously added but never used in a certificate rotation, this operation replaces that version. There cannot be more than one CA version waiting to be rotated in. For instances that have enabled Certificate Authority Service (CAS) based server CA, please use AddServerCertificate to add a new server certificate.",
           "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/addServerCa",
           "httpMethod": "POST",
           "id": "sql.instances.addServerCa",
@@ -632,6 +734,38 @@
             }
           },
           "path": "sql/v1beta4/projects/{project}/instances/{instance}/addServerCa",
+          "response": {
+            "$ref": "Operation"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/sqlservice.admin"
+          ]
+        },
+        "addServerCertificate": {
+          "description": "Add a new trusted server certificate version for the specified instance using Certificate Authority Service (CAS) server CA. Required to prepare for a certificate rotation. If a server certificate version was previously added but never used in a certificate rotation, this operation replaces that version. There cannot be more than one certificate version waiting to be rotated in. For instances not using CAS server CA, please use AddServerCa instead.",
+          "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/addServerCertificate",
+          "httpMethod": "POST",
+          "id": "sql.instances.addServerCertificate",
+          "parameterOrder": [
+            "project",
+            "instance"
+          ],
+          "parameters": {
+            "instance": {
+              "description": "Required. Cloud SQL instance ID. This does not include the project ID.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            },
+            "project": {
+              "description": "Required. Project ID of the project that contains the instance.",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "path": "sql/v1beta4/projects/{project}/instances/{instance}/addServerCertificate",
           "response": {
             "$ref": "Operation"
           },
@@ -1049,7 +1183,7 @@
           ]
         },
         "promoteReplica": {
-          "description": "Promotes the read replica instance to be a stand-alone Cloud SQL instance. Using this operation might cause your instance to restart.",
+          "description": "Promotes the read replica instance to be an independent Cloud SQL primary instance. Using this operation might cause your instance to restart.",
           "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/promoteReplica",
           "httpMethod": "POST",
           "id": "sql.instances.promoteReplica",
@@ -1059,7 +1193,7 @@
           ],
           "parameters": {
             "failover": {
-              "description": "Set to true if the promote operation should attempt to re-add the original primary as a replica when it comes back online. Otherwise, if this value is false or not set, the original primary will be a standalone instance.",
+              "description": "Set to true to invoke a replica failover to the designated DR replica. As part of replica failover, the promote operation attempts to add the original primary instance as a replica of the promoted DR replica when the original primary instance comes back online. If set to false or not specified, then the original primary instance becomes an independent Cloud SQL primary instance. Only applicable to MySQL.",
               "location": "query",
               "type": "boolean"
             },
@@ -1114,6 +1248,38 @@
           },
           "response": {
             "$ref": "Operation"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/sqlservice.admin"
+          ]
+        },
+        "releaseSsrsLease": {
+          "description": "Release a lease for the setup of SQL Server Reporting Services (SSRS).",
+          "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/releaseSsrsLease",
+          "httpMethod": "POST",
+          "id": "sql.instances.releaseSsrsLease",
+          "parameterOrder": [
+            "project",
+            "instance"
+          ],
+          "parameters": {
+            "instance": {
+              "description": "Required. The Cloud SQL instance ID. This doesn't include the project ID. It's composed of lowercase letters, numbers, and hyphens, and it must start with a letter. The total length must be 98 characters or less (Example: instance-id).",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            },
+            "project": {
+              "description": "Required. The ID of the project that contains the instance (Example: project-id).",
+              "location": "path",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "path": "sql/v1beta4/projects/{project}/instances/{instance}/releaseSsrsLease",
+          "response": {
+            "$ref": "SqlInstancesReleaseSsrsLeaseResponse"
           },
           "scopes": [
             "https://www.googleapis.com/auth/cloud-platform",
@@ -1220,7 +1386,7 @@
           ]
         },
         "rotateServerCa": {
-          "description": "Rotates the server certificate to one signed by the Certificate Authority (CA) version previously added with the addServerCA method.",
+          "description": "Rotates the server certificate to one signed by the Certificate Authority (CA) version previously added with the addServerCA method. For instances that have enabled Certificate Authority Service (CAS) based server CA, please use RotateServerCertificate to rotate the server certificate.",
           "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/rotateServerCa",
           "httpMethod": "POST",
           "id": "sql.instances.rotateServerCa",
@@ -1319,7 +1485,7 @@
           ]
         },
         "switchover": {
-          "description": "Switches over from the primary instance to a replica instance.",
+          "description": "Switches over from the primary instance to the designated DR replica instance.",
           "flatPath": "sql/v1beta4/projects/{project}/instances/{instance}/switchover",
           "httpMethod": "POST",
           "id": "sql.instances.switchover",
@@ -2200,7 +2366,7 @@
       }
     }
   },
-  "revision": "20240115",
+  "revision": "20240831",
   "rootUrl": "https://sqladmin.googleapis.com/",
   "schemas": {
     "AclEntry": {
@@ -2222,6 +2388,30 @@
         },
         "value": {
           "description": "The allowlisted value for the access control list.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "AcquireSsrsLeaseContext": {
+      "description": "Acquire SSRS lease context.",
+      "id": "AcquireSsrsLeaseContext",
+      "properties": {
+        "duration": {
+          "description": "Lease duration needed for the SSRS setup.",
+          "format": "google-duration",
+          "type": "string"
+        },
+        "reportDatabase": {
+          "description": "The report database to be used for the SSRS setup.",
+          "type": "string"
+        },
+        "serviceLogin": {
+          "description": "The username to be used as the service login to connect to the report database for SSRS setup.",
+          "type": "string"
+        },
+        "setupLogin": {
+          "description": "The username to be used as the setup login to connect to the database server for SSRS setup.",
           "type": "string"
         }
       },
@@ -2272,6 +2462,25 @@
       },
       "type": "object"
     },
+    "AvailableDatabaseVersion": {
+      "description": "An available database version. It can be a major or a minor version.",
+      "id": "AvailableDatabaseVersion",
+      "properties": {
+        "displayName": {
+          "description": "The database version's display name.",
+          "type": "string"
+        },
+        "majorVersion": {
+          "description": "The version's major version name.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The database version name. For MySQL 8.0, this string provides the database major and minor version.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "BackupConfiguration": {
       "description": "Database instance backup configuration.",
       "id": "BackupConfiguration",
@@ -2312,6 +2521,25 @@
           "description": "The number of days of transaction logs we retain for point in time restore, from 1-7.",
           "format": "int32",
           "type": "integer"
+        },
+        "transactionalLogStorageState": {
+          "description": "Output only. This value contains the storage location of transactional logs for the database for point-in-time recovery.",
+          "enum": [
+            "TRANSACTIONAL_LOG_STORAGE_STATE_UNSPECIFIED",
+            "DISK",
+            "SWITCHING_TO_CLOUD_STORAGE",
+            "SWITCHED_TO_CLOUD_STORAGE",
+            "CLOUD_STORAGE"
+          ],
+          "enumDescriptions": [
+            "Unspecified.",
+            "The transaction logs used for PITR for the instance are stored on a data disk.",
+            "The transaction logs used for PITR for the instance are switching from being stored on a data disk to being stored in Cloud Storage. Only applicable to MySQL.",
+            "The transaction logs used for PITR for the instance are now stored in Cloud Storage. Previously, they were stored on a data disk. Only applicable to MySQL.",
+            "The transaction logs used for PITR for the instance are stored in Cloud Storage. Only applicable to MySQL and PostgreSQL."
+          ],
+          "readOnly": true,
+          "type": "string"
         }
       },
       "type": "object"
@@ -2441,6 +2669,12 @@
         },
         "location": {
           "description": "Location of the backups.",
+          "type": "string"
+        },
+        "maxChargeableBytes": {
+          "description": "Output only. The maximum chargeable bytes for the backup.",
+          "format": "int64",
+          "readOnly": true,
           "type": "string"
         },
         "selfLink": {
@@ -2585,8 +2819,12 @@
           "format": "google-datetime",
           "type": "string"
         },
+        "preferredSecondaryZone": {
+          "description": "Optional. Copy clone and point-in-time recovery clone of a regional instance in the specified zones. If not specified, clone to the same secondary zone as the source instance. This value cannot be the same as the preferred_zone field.",
+          "type": "string"
+        },
         "preferredZone": {
-          "description": "Optional. (Point-in-time recovery for PostgreSQL only) Clone to an instance in the specified zone. If no zone is specified, clone to the same zone as the source instance.",
+          "description": "Optional. Copy clone and point-in-time recovery clone of an instance to the specified zone. If no zone is specified, clone to the same primary zone as the source instance.",
           "type": "string"
         }
       },
@@ -2637,6 +2875,8 @@
             "POSTGRES_13",
             "POSTGRES_14",
             "POSTGRES_15",
+            "POSTGRES_16",
+            "POSTGRES_17",
             "MYSQL_8_0",
             "MYSQL_8_0_18",
             "MYSQL_8_0_26",
@@ -2650,6 +2890,11 @@
             "MYSQL_8_0_34",
             "MYSQL_8_0_35",
             "MYSQL_8_0_36",
+            "MYSQL_8_0_37",
+            "MYSQL_8_0_38",
+            "MYSQL_8_0_39",
+            "MYSQL_8_0_40",
+            "MYSQL_8_4",
             "SQLSERVER_2019_STANDARD",
             "SQLSERVER_2019_ENTERPRISE",
             "SQLSERVER_2019_EXPRESS",
@@ -2681,7 +2926,14 @@
             false,
             false,
             false,
+            false,
+            false,
             true,
+            false,
+            false,
+            false,
+            false,
+            false,
             false,
             false,
             false,
@@ -2715,6 +2967,8 @@
             "The database version is PostgreSQL 13.",
             "The database version is PostgreSQL 14.",
             "The database version is PostgreSQL 15.",
+            "The database version is PostgreSQL 16.",
+            "The database version is PostgreSQL 17.",
             "The database version is MySQL 8.",
             "The database major version is MySQL 8.0 and the minor version is 18.",
             "The database major version is MySQL 8.0 and the minor version is 26.",
@@ -2728,6 +2982,11 @@
             "The database major version is MySQL 8.0 and the minor version is 34.",
             "The database major version is MySQL 8.0 and the minor version is 35.",
             "The database major version is MySQL 8.0 and the minor version is 36.",
+            "The database major version is MySQL 8.0 and the minor version is 37.",
+            "The database major version is MySQL 8.0 and the minor version is 38.",
+            "The database major version is MySQL 8.0 and the minor version is 39.",
+            "The database major version is MySQL 8.0 and the minor version is 40.",
+            "The database version is MySQL 8.4.",
             "The database version is SQL Server 2019 Standard.",
             "The database version is SQL Server 2019 Enterprise.",
             "The database version is SQL Server 2019 Express.",
@@ -2765,6 +3024,20 @@
         "serverCaCert": {
           "$ref": "SslCert",
           "description": "SSL configuration."
+        },
+        "serverCaMode": {
+          "description": "Specify what type of CA is used for the server certificate.",
+          "enum": [
+            "CA_MODE_UNSPECIFIED",
+            "GOOGLE_MANAGED_INTERNAL_CA",
+            "GOOGLE_MANAGED_CAS_CA"
+          ],
+          "enumDescriptions": [
+            "CA mode is unknown.",
+            "Google-managed self-signed internal CA.",
+            "Google-managed regional CA part of root CA hierarchy hosted on Google Cloud's Certificate Authority Service (CAS)."
+          ],
+          "type": "string"
         }
       },
       "type": "object"
@@ -2911,6 +3184,8 @@
             "POSTGRES_13",
             "POSTGRES_14",
             "POSTGRES_15",
+            "POSTGRES_16",
+            "POSTGRES_17",
             "MYSQL_8_0",
             "MYSQL_8_0_18",
             "MYSQL_8_0_26",
@@ -2924,6 +3199,11 @@
             "MYSQL_8_0_34",
             "MYSQL_8_0_35",
             "MYSQL_8_0_36",
+            "MYSQL_8_0_37",
+            "MYSQL_8_0_38",
+            "MYSQL_8_0_39",
+            "MYSQL_8_0_40",
+            "MYSQL_8_4",
             "SQLSERVER_2019_STANDARD",
             "SQLSERVER_2019_ENTERPRISE",
             "SQLSERVER_2019_EXPRESS",
@@ -2955,7 +3235,14 @@
             false,
             false,
             false,
+            false,
+            false,
             true,
+            false,
+            false,
+            false,
+            false,
+            false,
             false,
             false,
             false,
@@ -2989,6 +3276,8 @@
             "The database version is PostgreSQL 13.",
             "The database version is PostgreSQL 14.",
             "The database version is PostgreSQL 15.",
+            "The database version is PostgreSQL 16.",
+            "The database version is PostgreSQL 17.",
             "The database version is MySQL 8.",
             "The database major version is MySQL 8.0 and the minor version is 18.",
             "The database major version is MySQL 8.0 and the minor version is 26.",
@@ -3002,6 +3291,11 @@
             "The database major version is MySQL 8.0 and the minor version is 34.",
             "The database major version is MySQL 8.0 and the minor version is 35.",
             "The database major version is MySQL 8.0 and the minor version is 36.",
+            "The database major version is MySQL 8.0 and the minor version is 37.",
+            "The database major version is MySQL 8.0 and the minor version is 38.",
+            "The database major version is MySQL 8.0 and the minor version is 39.",
+            "The database major version is MySQL 8.0 and the minor version is 40.",
+            "The database version is MySQL 8.4.",
             "The database version is SQL Server 2019 Standard.",
             "The database version is SQL Server 2019 Enterprise.",
             "The database version is SQL Server 2019 Express.",
@@ -3047,6 +3341,10 @@
         "gceZone": {
           "description": "The Compute Engine zone that the instance is currently serving from. This value could be different from the zone that was specified when the instance was created if the instance has failed over to its secondary zone. WARNING: Changing this might restart the instance.",
           "type": "string"
+        },
+        "geminiConfig": {
+          "$ref": "GeminiInstanceConfig",
+          "description": "Gemini instance configuration."
         },
         "instanceType": {
           "description": "The instance type.",
@@ -3122,7 +3420,7 @@
           "type": "string"
         },
         "region": {
-          "description": "The geographical region. Can be: * `us-central` (`FIRST_GEN` instances only) * `us-central1` (`SECOND_GEN` instances only) * `asia-east1` or `europe-west1`. Defaults to `us-central` or `us-central1` depending on the instance type. The region cannot be changed after instance creation.",
+          "description": "The geographical region of the Cloud SQL instance. It can be one of the [regions](https://cloud.google.com/sql/docs/mysql/locations#location-r) where Cloud SQL operates: For example, `asia-east1`, `europe-west1`, and `us-central1`. The default value is `us-central1`.",
           "type": "string"
         },
         "replicaConfiguration": {
@@ -3136,12 +3434,21 @@
           },
           "type": "array"
         },
+        "replicationCluster": {
+          "$ref": "ReplicationCluster",
+          "description": "A primary instance and disaster recovery (DR) replica pair. A DR replica is a cross-region replica that you designate for failover in the event that the primary instance experiences regional failure. Only applicable to MySQL."
+        },
         "rootPassword": {
           "description": "Initial root password. Use only on creation. You must set root passwords before you can connect to PostgreSQL instances.",
           "type": "string"
         },
+        "satisfiesPzi": {
+          "description": "Output only. This status indicates whether the instance satisfies PZI. The status is reserved for future use.",
+          "readOnly": true,
+          "type": "boolean"
+        },
         "satisfiesPzs": {
-          "description": "The status indicating if instance satisfiesPzs. Reserved for future use.",
+          "description": "This status indicates whether the instance satisfies PZS. The status is reserved for future use.",
           "type": "boolean"
         },
         "scheduledMaintenance": {
@@ -3235,6 +3542,18 @@
             ],
             "type": "string"
           },
+          "type": "array"
+        },
+        "switchTransactionLogsToCloudStorageEnabled": {
+          "description": "Input only. Whether Cloud SQL is enabled to switch storing point-in-time recovery log files from a data disk to Cloud Storage.",
+          "type": "boolean"
+        },
+        "upgradableDatabaseVersions": {
+          "description": "Output only. All database versions that are available for upgrade.",
+          "items": {
+            "$ref": "AvailableDatabaseVersion"
+          },
+          "readOnly": true,
           "type": "array"
         },
         "writeEndpoint": {
@@ -3438,6 +3757,16 @@
               "description": "Whether or not the backup can be used as a differential base copy_only backup can not be served as differential base",
               "type": "boolean"
             },
+            "exportLogEndTime": {
+              "description": "Optional. The end timestamp when transaction log will be included in the export operation. [RFC 3339](https://tools.ietf.org/html/rfc3339) format (for example, `2023-10-01T16:19:00.094`) in UTC. When omitted, all available logs until current time will be included. Only applied to Cloud SQL for SQL Server.",
+              "format": "google-datetime",
+              "type": "string"
+            },
+            "exportLogStartTime": {
+              "description": "Optional. The begin timestamp when transaction log will be included in the export operation. [RFC 3339](https://tools.ietf.org/html/rfc3339) format (for example, `2023-10-01T16:19:00.094`) in UTC. When omitted, all available logs from the beginning of retention period will be included. Only applied to Cloud SQL for SQL Server.",
+              "format": "google-datetime",
+              "type": "string"
+            },
             "stripeCount": {
               "description": "Option for specifying how many stripes to use for the export. If blank, and the value of the striped field is true, the number of stripes is automatically chosen.",
               "format": "int32",
@@ -3525,6 +3854,20 @@
               "description": "Optional. Whether or not the export should be parallel.",
               "type": "boolean"
             },
+            "postgresExportOptions": {
+              "description": "Options for exporting from a Cloud SQL for PostgreSQL instance.",
+              "properties": {
+                "clean": {
+                  "description": "Optional. Use this option to include DROP SQL statements. These statements are used to delete database objects before running the import operation.",
+                  "type": "boolean"
+                },
+                "ifExists": {
+                  "description": "Optional. Option to include an IF EXISTS SQL statement with each DROP statement produced by clean.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
+            },
             "schemaOnly": {
               "description": "Export only schemas.",
               "type": "boolean"
@@ -3606,6 +3949,8 @@
               "POSTGRES_13",
               "POSTGRES_14",
               "POSTGRES_15",
+              "POSTGRES_16",
+              "POSTGRES_17",
               "MYSQL_8_0",
               "MYSQL_8_0_18",
               "MYSQL_8_0_26",
@@ -3619,6 +3964,11 @@
               "MYSQL_8_0_34",
               "MYSQL_8_0_35",
               "MYSQL_8_0_36",
+              "MYSQL_8_0_37",
+              "MYSQL_8_0_38",
+              "MYSQL_8_0_39",
+              "MYSQL_8_0_40",
+              "MYSQL_8_4",
               "SQLSERVER_2019_STANDARD",
               "SQLSERVER_2019_ENTERPRISE",
               "SQLSERVER_2019_EXPRESS",
@@ -3650,7 +4000,14 @@
               false,
               false,
               false,
+              false,
+              false,
               true,
+              false,
+              false,
+              false,
+              false,
+              false,
               false,
               false,
               false,
@@ -3684,6 +4041,8 @@
               "The database version is PostgreSQL 13.",
               "The database version is PostgreSQL 14.",
               "The database version is PostgreSQL 15.",
+              "The database version is PostgreSQL 16.",
+              "The database version is PostgreSQL 17.",
               "The database version is MySQL 8.",
               "The database major version is MySQL 8.0 and the minor version is 18.",
               "The database major version is MySQL 8.0 and the minor version is 26.",
@@ -3697,6 +4056,11 @@
               "The database major version is MySQL 8.0 and the minor version is 34.",
               "The database major version is MySQL 8.0 and the minor version is 35.",
               "The database major version is MySQL 8.0 and the minor version is 36.",
+              "The database major version is MySQL 8.0 and the minor version is 37.",
+              "The database major version is MySQL 8.0 and the minor version is 38.",
+              "The database major version is MySQL 8.0 and the minor version is 39.",
+              "The database major version is MySQL 8.0 and the minor version is 40.",
+              "The database version is MySQL 8.4.",
               "The database version is SQL Server 2019 Standard.",
               "The database version is SQL Server 2019 Enterprise.",
               "The database version is SQL Server 2019 Express.",
@@ -3777,6 +4141,43 @@
         "kind": {
           "description": "This is always `sql#flagsList`.",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "GeminiInstanceConfig": {
+      "description": "Gemini instance configuration.",
+      "id": "GeminiInstanceConfig",
+      "properties": {
+        "activeQueryEnabled": {
+          "description": "Output only. Whether the active query is enabled.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "entitled": {
+          "description": "Output only. Whether Gemini is enabled.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "flagRecommenderEnabled": {
+          "description": "Output only. Whether the flag recommender is enabled.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "googleVacuumMgmtEnabled": {
+          "description": "Output only. Whether the vacuum management is enabled.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "indexAdvisorEnabled": {
+          "description": "Output only. Whether the index advisor is enabled.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "oomSessionCancelEnabled": {
+          "description": "Output only. Whether canceling the out-of-memory (OOM) session is enabled.",
+          "readOnly": true,
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -3942,6 +4343,35 @@
           "description": "This is always `sql#importContext`.",
           "type": "string"
         },
+        "sqlImportOptions": {
+          "description": "Optional. Options for importing data from SQL statements.",
+          "properties": {
+            "parallel": {
+              "description": "Optional. Whether or not the import should be parallel.",
+              "type": "boolean"
+            },
+            "postgresImportOptions": {
+              "description": "Optional. Options for importing from a Cloud SQL for PostgreSQL instance.",
+              "properties": {
+                "clean": {
+                  "description": "Optional. The --clean flag for the pg_restore utility. This flag applies only if you enabled Cloud SQL to import files in parallel.",
+                  "type": "boolean"
+                },
+                "ifExists": {
+                  "description": "Optional. The --if-exists flag for the pg_restore utility. This flag applies only if you enabled Cloud SQL to import files in parallel.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
+            },
+            "threads": {
+              "description": "Optional. The number of threads to use for parallel import.",
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "uri": {
           "description": "Path to the import file in Cloud Storage, in the form `gs://bucketName/fileName`. Compressed gzip files (.gz) are supported when `fileType` is `SQL`. The instance must have write permissions to the bucket and read access to the file.",
           "type": "string"
@@ -3993,6 +4423,17 @@
         "region": {
           "description": "The region of the Cloud SQL instance being referenced.",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "InstancesAcquireSsrsLeaseRequest": {
+      "description": "Request to acquire an SSRS lease for an instance.",
+      "id": "InstancesAcquireSsrsLeaseRequest",
+      "properties": {
+        "acquireSsrsLeaseContext": {
+          "$ref": "AcquireSsrsLeaseContext",
+          "description": "Contains details about the acquire SSRS lease operation."
         }
       },
       "type": "object"
@@ -4113,6 +4554,35 @@
       },
       "type": "object"
     },
+    "InstancesListServerCertificatesResponse": {
+      "description": "Instances ListServerCertificatess response.",
+      "id": "InstancesListServerCertificatesResponse",
+      "properties": {
+        "activeVersion": {
+          "description": "The `sha1_fingerprint` of the active certificate from `server_certs`.",
+          "type": "string"
+        },
+        "caCerts": {
+          "description": "List of server CA certificates for the instance.",
+          "items": {
+            "$ref": "SslCert"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "description": "This is always `sql#instancesListServerCertificates`.",
+          "type": "string"
+        },
+        "serverCerts": {
+          "description": "List of server certificates for the instance, signed by the corresponding CA from the `ca_certs` list.",
+          "items": {
+            "$ref": "SslCert"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "InstancesReencryptRequest": {
       "description": "Database Instance reencrypt request.",
       "id": "InstancesReencryptRequest",
@@ -4142,6 +4612,17 @@
         "rotateServerCaContext": {
           "$ref": "RotateServerCaContext",
           "description": "Contains details about the rotate server CA operation."
+        }
+      },
+      "type": "object"
+    },
+    "InstancesRotateServerCertificateRequest": {
+      "description": "Rotate Server Certificate request.",
+      "id": "InstancesRotateServerCertificateRequest",
+      "properties": {
+        "rotateServerCertificateContext": {
+          "$ref": "RotateServerCertificateContext",
+          "description": "Optional. Contains details about the rotate server CA operation."
         }
       },
       "type": "object"
@@ -4189,11 +4670,25 @@
           "description": "PSC settings for this instance."
         },
         "requireSsl": {
-          "description": "Use `ssl_mode` instead for MySQL and PostgreSQL. SQL Server uses this flag. Whether SSL/TLS connections over IP are enforced. If set to false, then allow both non-SSL/non-TLS and SSL/TLS connections. For SSL/TLS connections, the client certificate won't be verified. If set to true, then only allow connections encrypted with SSL/TLS and with valid client certificates. If you want to enforce SSL/TLS without enforcing the requirement for valid client certificates, then use the `ssl_mode` flag instead of the legacy `require_ssl` flag.",
+          "description": "Use `ssl_mode` instead. Whether SSL/TLS connections over IP are enforced. If set to false, then allow both non-SSL/non-TLS and SSL/TLS connections. For SSL/TLS connections, the client certificate won't be verified. If set to true, then only allow connections encrypted with SSL/TLS and with valid client certificates. If you want to enforce SSL/TLS without enforcing the requirement for valid client certificates, then use the `ssl_mode` flag instead of the legacy `require_ssl` flag.",
           "type": "boolean"
         },
+        "serverCaMode": {
+          "description": "Specify what type of CA is used for the server certificate.",
+          "enum": [
+            "CA_MODE_UNSPECIFIED",
+            "GOOGLE_MANAGED_INTERNAL_CA",
+            "GOOGLE_MANAGED_CAS_CA"
+          ],
+          "enumDescriptions": [
+            "CA mode is unknown.",
+            "Google-managed self-signed internal CA.",
+            "Google-managed regional CA part of root CA hierarchy hosted on Google Cloud's Certificate Authority Service (CAS)."
+          ],
+          "type": "string"
+        },
         "sslMode": {
-          "description": "Specify how SSL/TLS is enforced in database connections. MySQL and PostgreSQL use the `ssl_mode` flag. If you must use the `require_ssl` flag for backward compatibility, then only the following value pairs are valid: * `ssl_mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED` and `require_ssl=false` * `ssl_mode=ENCRYPTED_ONLY` and `require_ssl=false` * `ssl_mode=TRUSTED_CLIENT_CERTIFICATE_REQUIRED` and `require_ssl=true` The value of `ssl_mode` gets priority over the value of `require_ssl`. For example, for the pair `ssl_mode=ENCRYPTED_ONLY` and `require_ssl=false`, the `ssl_mode=ENCRYPTED_ONLY` means only accept SSL connections, while the `require_ssl=false` means accept both non-SSL and SSL connections. MySQL and PostgreSQL databases respect `ssl_mode` in this case and accept only SSL connections. SQL Server uses the `require_ssl` flag. You can set the value for this flag to `true` or `false`.",
+          "description": "Specify how SSL/TLS is enforced in database connections. If you must use the `require_ssl` flag for backward compatibility, then only the following value pairs are valid: For PostgreSQL and MySQL: * `ssl_mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED` and `require_ssl=false` * `ssl_mode=ENCRYPTED_ONLY` and `require_ssl=false` * `ssl_mode=TRUSTED_CLIENT_CERTIFICATE_REQUIRED` and `require_ssl=true` For SQL Server: * `ssl_mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED` and `require_ssl=false` * `ssl_mode=ENCRYPTED_ONLY` and `require_ssl=true` The value of `ssl_mode` has priority over the value of `require_ssl`. For example, for the pair `ssl_mode=ENCRYPTED_ONLY` and `require_ssl=false`, `ssl_mode=ENCRYPTED_ONLY` means accept only SSL connections, while `require_ssl=false` means accept both non-SSL and SSL connections. In this case, MySQL and PostgreSQL databases respect `ssl_mode` and accepts only SSL connections.",
           "enum": [
             "SSL_MODE_UNSPECIFIED",
             "ALLOW_UNENCRYPTED_AND_ENCRYPTED",
@@ -4202,9 +4697,9 @@
           ],
           "enumDescriptions": [
             "The SSL mode is unknown.",
-            "Allow non-SSL/non-TLS and SSL/TLS connections. For SSL/TLS connections, the client certificate won't be verified. When this value is used, the legacy `require_ssl` flag must be false or cleared to avoid the conflict between values of two flags.",
-            "Only allow connections encrypted with SSL/TLS. When this value is used, the legacy `require_ssl` flag must be false or cleared to avoid the conflict between values of two flags.",
-            "Only allow connections encrypted with SSL/TLS and with valid client certificates. When this value is used, the legacy `require_ssl` flag must be true or cleared to avoid the conflict between values of two flags."
+            "Allow non-SSL/non-TLS and SSL/TLS connections. For SSL connections to MySQL and PostgreSQL, the client certificate isn't verified. When this value is used, the legacy `require_ssl` flag must be false or cleared to avoid a conflict between the values of the two flags.",
+            "Only allow connections encrypted with SSL/TLS. For SSL connections to MySQL and PostgreSQL, the client certificate isn't verified. When this value is used, the legacy `require_ssl` flag must be false or cleared to avoid a conflict between the values of the two flags.",
+            "Only allow connections encrypted with SSL/TLS and with valid client certificates. When this value is used, the legacy `require_ssl` flag must be true or cleared to avoid the conflict between values of two flags. PostgreSQL clients or users that connect using IAM database authentication must use either the [Cloud SQL Auth Proxy](https://cloud.google.com/sql/docs/postgres/connect-auth-proxy) or [Cloud SQL Connectors](https://cloud.google.com/sql/docs/postgres/connect-connectors) to enforce client identity verification. Only applicable to MySQL and PostgreSQL. Not applicable to SQL Server."
           ],
           "type": "string"
         }
@@ -4274,12 +4769,12 @@
       "id": "MaintenanceWindow",
       "properties": {
         "day": {
-          "description": "day of week (1-7), starting on Monday.",
+          "description": "Day of week - `MONDAY`, `TUESDAY`, `WEDNESDAY`, `THURSDAY`, `FRIDAY`, `SATURDAY`, or `SUNDAY`. Specify in the UTC time zone. Returned in output as an integer, 1 to 7, where `1` equals Monday.",
           "format": "int32",
           "type": "integer"
         },
         "hour": {
-          "description": "hour of day - 0 to 23.",
+          "description": "Hour of day - 0 to 23. Specify in the UTC time zone.",
           "format": "int32",
           "type": "integer"
         },
@@ -4288,7 +4783,7 @@
           "type": "string"
         },
         "updateTrack": {
-          "description": "Maintenance timing setting: `canary` (Earlier) or `stable` (Later). [Learn more](https://cloud.google.com/sql/docs/mysql/instance-settings#maintenance-timing-2ndgen).",
+          "description": "Maintenance timing settings: `canary`, `stable`, or `week5`. For more information, see [About maintenance on Cloud SQL instances](https://cloud.google.com/sql/docs/mysql/maintenance).",
           "enum": [
             "SQL_UPDATE_TRACK_UNSPECIFIED",
             "canary",
@@ -4297,9 +4792,9 @@
           ],
           "enumDescriptions": [
             "This is an unknown maintenance timing preference.",
-            "For instance update that requires a restart, this update track indicates your instance prefer to restart for new version early in maintenance window.",
-            "For instance update that requires a restart, this update track indicates your instance prefer to let Cloud SQL choose the timing of restart (within its Maintenance window, if applicable).",
-            "For instance update that requires a restart, this update track indicates your instance prefer to let Cloud SQL choose the timing of restart (within its Maintenance window, if applicable) to be at least 5 weeks after the notification."
+            "For an instance with a scheduled maintenance window, this maintenance timing indicates that the maintenance update is scheduled 7 to 14 days after the notification is sent out. Also referred to as `Week 1` (Console) and `preview` (gcloud CLI).",
+            "For an instance with a scheduled maintenance window, this maintenance timing indicates that the maintenance update is scheduled 15 to 21 days after the notification is sent out. Also referred to as `Week 2` (Console) and `production` (gcloud CLI).",
+            "For instance with a scheduled maintenance window, this maintenance timing indicates that the maintenance update is scheduled 35 to 42 days after the notification is sent out."
           ],
           "type": "string"
         }
@@ -4420,6 +4915,10 @@
       "description": "An Operation resource. For successful operations that return an Operation resource, only the fields relevant to the operation are populated in the resource.",
       "id": "Operation",
       "properties": {
+        "acquireSsrsLeaseContext": {
+          "$ref": "AcquireSsrsLeaseContext",
+          "description": "The context for acquire SSRS lease operation, if applicable."
+        },
         "apiWarning": {
           "$ref": "ApiWarning",
           "description": "An Admin API warning message."
@@ -4499,7 +4998,14 @@
             "LOG_CLEANUP",
             "AUTO_RESTART",
             "REENCRYPT",
-            "SWITCHOVER"
+            "SWITCHOVER",
+            "ACQUIRE_SSRS_LEASE",
+            "RELEASE_SSRS_LEASE",
+            "RECONFIGURE_OLD_PRIMARY",
+            "CLUSTER_MAINTENANCE",
+            "SELF_SERVICE_MAINTENANCE",
+            "SWITCHOVER_TO_REPLICA",
+            "MAJOR_VERSION_UPGRADE"
           ],
           "enumDeprecated": [
             false,
@@ -4535,6 +5041,13 @@
             true,
             true,
             true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
             false,
             false,
             false,
@@ -4581,7 +5094,14 @@
             "Recovers logs from an instance's old data disk.",
             "Performs auto-restart of an HA-enabled Cloud SQL database for auto recovery.",
             "Re-encrypts CMEK instances with latest key version.",
-            "Switches over to replica instance from primary."
+            "Switches the roles of the primary and replica pair. The target instance should be the replica.",
+            "Acquire a lease for the setup of SQL Server Reporting Services (SSRS).",
+            "Release a lease for the setup of SQL Server Reporting Services (SSRS).",
+            "Reconfigures old primary after a promote replica operation. Effect of a promote operation to the old primary is executed in this operation, asynchronously from the promote replica operation executed to the replica.",
+            "Indicates that the instance, its read replicas, and its cascading replicas are in maintenance. Maintenance typically gets initiated on groups of replicas first, followed by the primary instance. For each instance, maintenance typically causes the instance to be unavailable for 1-3 minutes.",
+            "Indicates that the instance (and any of its replicas) are currently in maintenance. This is initiated as a self-service request by using SSM. Maintenance typically causes the instance to be unavailable for 1-3 minutes.",
+            "Switches a primary instance to a replica. This operation runs as part of a switchover operation to the original primary instance.",
+            "Updates the major version of a Cloud SQL instance."
           ],
           "type": "string"
         },
@@ -4764,7 +5284,8 @@
           "type": "string"
         },
         "disallowCompromisedCredentials": {
-          "description": "Disallow credentials that have been previously compromised by a public data breach.",
+          "deprecated": true,
+          "description": "This field is deprecated and will be removed in a future version of the API.",
           "type": "boolean"
         },
         "disallowUsernameSubstring": {
@@ -4846,6 +5367,27 @@
       },
       "type": "object"
     },
+    "ReplicationCluster": {
+      "description": "A primary instance and disaster recovery (DR) replica pair. A DR replica is a cross-region replica that you designate for failover in the event that the primary instance has regional failure. Only applicable to MySQL.",
+      "id": "ReplicationCluster",
+      "properties": {
+        "drReplica": {
+          "description": "Output only. Read-only field that indicates whether the replica is a DR replica. This field is not set if the instance is a primary instance.",
+          "readOnly": true,
+          "type": "boolean"
+        },
+        "failoverDrReplicaName": {
+          "description": "Optional. If the instance is a primary instance, then this field identifies the disaster recovery (DR) replica. A DR replica is an optional configuration for Enterprise Plus edition instances. If the instance is a read replica, then the field is not set. Set this field to a replica name to designate a DR replica for a primary instance. Remove the replica name to remove the DR replica designation.",
+          "type": "string"
+        },
+        "psaWriteEndpoint": {
+          "description": "Output only. If set, it indicates this instance has a private service access (PSA) dns endpoint that is pointing to the primary instance of the cluster. If this instance is the primary, the dns should be pointing to this instance. After Switchover or Replica failover, this DNS endpoint points to the promoted instance. This is a read-only field, returned to the user as information. This field can exist even if a standalone instance does not yet have a replica, or had a DR replica that was deleted.",
+          "readOnly": true,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Reschedule": {
       "id": "Reschedule",
       "properties": {
@@ -4912,6 +5454,21 @@
       },
       "type": "object"
     },
+    "RotateServerCertificateContext": {
+      "description": "Instance rotate server certificate context.",
+      "id": "RotateServerCertificateContext",
+      "properties": {
+        "kind": {
+          "description": "Optional. This is always `sql#rotateServerCertificateContext`.",
+          "type": "string"
+        },
+        "nextVersion": {
+          "description": "Optional. The fingerprint of the next version to be rotated to. If left unspecified, will be rotated to the most recently added server certificate version.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Settings": {
       "description": "Database instance settings.",
       "id": "Settings",
@@ -4944,7 +5501,7 @@
         },
         "advancedMachineFeatures": {
           "$ref": "AdvancedMachineFeatures",
-          "description": "Specifies advance machine configuration for the instance relevant only for SQL Server."
+          "description": "Specifies advanced machine configuration for the instances relevant only for SQL Server."
         },
         "authorizedGaeApplications": {
           "deprecated": true,
@@ -5061,6 +5618,14 @@
             "The instance is an Enterprise Plus edition."
           ],
           "type": "string"
+        },
+        "enableDataplexIntegration": {
+          "description": "Optional. By default, Cloud SQL instances have schema extraction disabled for Dataplex. When this parameter is set to true, schema extraction for Dataplex on Cloud SQL instances is activated.",
+          "type": "boolean"
+        },
+        "enableGoogleMlIntegration": {
+          "description": "Optional. When this parameter is set to true, Cloud SQL instances can connect to Vertex AI to pass requests for real-time predictions and insights to the AI. The default value is false. This applies only to Cloud SQL for PostgreSQL instances.",
+          "type": "boolean"
         },
         "insightsConfig": {
           "$ref": "InsightsConfig",
@@ -5221,7 +5786,19 @@
             "INCOMPATIBLE_DATABASE_MINOR_VERSION",
             "SOURCE_MAX_SUBSCRIPTIONS",
             "UNABLE_TO_VERIFY_DEFINERS",
-            "SUBSCRIPTION_CALCULATION_STATUS"
+            "SUBSCRIPTION_CALCULATION_STATUS",
+            "PG_SUBSCRIPTION_COUNT",
+            "PG_SYNC_PARALLEL_LEVEL",
+            "INSUFFICIENT_DISK_SIZE",
+            "INSUFFICIENT_MACHINE_TIER",
+            "UNSUPPORTED_EXTENSIONS_NOT_MIGRATED",
+            "EXTENSIONS_NOT_MIGRATED",
+            "PG_CRON_FLAG_ENABLED_IN_REPLICA",
+            "EXTENSIONS_NOT_ENABLED_IN_REPLICA",
+            "UNSUPPORTED_COLUMNS",
+            "USERS_NOT_CREATED_IN_REPLICA",
+            "UNSUPPORTED_SYSTEM_OBJECTS",
+            "UNSUPPORTED_TABLES_WITH_REPLICA_IDENTITY"
           ],
           "enumDescriptions": [
             "",
@@ -5244,7 +5821,7 @@
             "The primary instance database parameter setup doesn't allow EM sync.",
             "The gtid_mode is not supported, applicable for MySQL.",
             "SQL Server Agent is not running.",
-            "The table definition is not support due to missing primary key or replica identity, applicable for postgres.",
+            "The table definition is not support due to missing primary key or replica identity, applicable for postgres. Note that this is a warning and won't block the migration.",
             "The customer has a definer that will break EM setup.",
             "SQL Server @@SERVERNAME does not match actual host name.",
             "The primary instance has been setup and will fail the setup.",
@@ -5264,8 +5841,31 @@
             "The minor version of replica database is incompatible with the source.",
             "This warning message indicates that Cloud SQL uses the maximum number of subscriptions to migrate data from the source to the destination.",
             "Unable to verify definers on the source for MySQL.",
-            "If a time out occurs while the subscription counts are calculated, then this value is set to 1. Otherwise, this value is set to 2."
+            "If a time out occurs while the subscription counts are calculated, then this value is set to 1. Otherwise, this value is set to 2.",
+            "Count of subscriptions needed to sync source data for PostgreSQL database.",
+            "Final parallel level that is used to do migration.",
+            "The disk size of the replica instance is smaller than the data size of the source instance.",
+            "The data size of the source instance is greater than 1 TB, the number of cores of the replica instance is less than 8, and the memory of the replica is less than 32 GB.",
+            "The warning message indicates the unsupported extensions will not be migrated to the destination.",
+            "The warning message indicates the pg_cron extension and settings will not be migrated to the destination.",
+            "The error message indicates that pg_cron flags are enabled on the destination which is not supported during the migration.",
+            "This error message indicates that the specified extensions are not enabled on destination instance. For example, before you can migrate data to the destination instance, you must enable the PGAudit extension on the instance.",
+            "The source database has generated columns that can't be migrated. Please change them to regular columns before migration.",
+            "The source database has users that aren't created in the replica. First, create all users, which are in the pg_user_mappings table of the source database, in the destination instance. Then, perform the migration.",
+            "The selected objects include system objects that aren't supported for migration.",
+            "The source database has tables with the FULL or NOTHING replica identity. Before starting your migration, either remove the identity or change it to DEFAULT. Note that this is an error and will block the migration."
           ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SqlInstancesAcquireSsrsLeaseResponse": {
+      "description": "Acquire SSRS lease response.",
+      "id": "SqlInstancesAcquireSsrsLeaseResponse",
+      "properties": {
+        "operationId": {
+          "description": "The unique identifier for this operation.",
           "type": "string"
         }
       },
@@ -5307,6 +5907,17 @@
       },
       "type": "object"
     },
+    "SqlInstancesReleaseSsrsLeaseResponse": {
+      "description": "The response for the release of the SSRS lease.",
+      "id": "SqlInstancesReleaseSsrsLeaseResponse",
+      "properties": {
+        "operationId": {
+          "description": "The operation ID.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "SqlInstancesRescheduleMaintenanceRequestBody": {
       "description": "Reschedule options for maintenance windows.",
       "id": "SqlInstancesRescheduleMaintenanceRequestBody",
@@ -5327,6 +5938,20 @@
     "SqlInstancesStartExternalSyncRequest": {
       "id": "SqlInstancesStartExternalSyncRequest",
       "properties": {
+        "migrationType": {
+          "description": "Optional. MigrationType configures the migration to use physical files or logical dump files. If not set, then the logical dump file configuration is used. Valid values are `LOGICAL` or `PHYSICAL`. Only applicable to MySQL.",
+          "enum": [
+            "MIGRATION_TYPE_UNSPECIFIED",
+            "LOGICAL",
+            "PHYSICAL"
+          ],
+          "enumDescriptions": [
+            "Default value is a logical dump file-based migration",
+            "Logical dump file-based migration",
+            "Physical file-based migration"
+          ],
+          "type": "string"
+        },
         "mysqlSyncConfig": {
           "$ref": "MySqlSyncConfig",
           "description": "MySQL-specific settings for start external sync."
@@ -5371,6 +5996,20 @@
     "SqlInstancesVerifyExternalSyncSettingsRequest": {
       "id": "SqlInstancesVerifyExternalSyncSettingsRequest",
       "properties": {
+        "migrationType": {
+          "description": "Optional. MigrationType configures the migration to use physical files or logical dump files. If not set, then the logical dump file configuration is used. Valid values are `LOGICAL` or `PHYSICAL`. Only applicable to MySQL.",
+          "enum": [
+            "MIGRATION_TYPE_UNSPECIFIED",
+            "LOGICAL",
+            "PHYSICAL"
+          ],
+          "enumDescriptions": [
+            "Default value is a logical dump file-based migration",
+            "Logical dump file-based migration",
+            "Physical file-based migration"
+          ],
+          "type": "string"
+        },
         "mysqlSyncConfig": {
           "$ref": "MySqlSyncConfig",
           "description": "Optional. MySQL-specific settings for start external sync."
@@ -5386,6 +6025,22 @@
             "Unknown external sync mode, will be defaulted to ONLINE mode",
             "Online external sync will set up replication after initial data external sync",
             "Offline external sync only dumps and loads a one-time snapshot of the primary instance's data"
+          ],
+          "type": "string"
+        },
+        "syncParallelLevel": {
+          "description": "Optional. Parallel level for initial data sync. Only applicable for PostgreSQL.",
+          "enum": [
+            "EXTERNAL_SYNC_PARALLEL_LEVEL_UNSPECIFIED",
+            "MIN",
+            "OPTIMAL",
+            "MAX"
+          ],
+          "enumDescriptions": [
+            "Unknown sync parallel level. Will be defaulted to OPTIMAL.",
+            "Minimal parallel level.",
+            "Optimal parallel level.",
+            "Maximum parallel level."
           ],
           "type": "string"
         },
@@ -5811,9 +6466,9 @@
             "The database's built-in user type.",
             "Cloud IAM user.",
             "Cloud IAM service account.",
-            "Cloud IAM group non-login user.",
-            "Cloud IAM group login user.",
-            "Cloud IAM group service account."
+            "Cloud IAM group. Not used for login.",
+            "Read-only. Login for a user that belongs to the Cloud IAM group.",
+            "Read-only. Login for a service account that belongs to the Cloud IAM group."
           ],
           "type": "string"
         }

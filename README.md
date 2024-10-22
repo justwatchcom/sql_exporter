@@ -233,6 +233,11 @@ For some database backends some special functionality is available:
   which will use the equivalent of `rds generate-db-auth-token`
   for the password. For this driver, the `AWS_REGION` environment variable
   must be set.
+* rds-mysql: This type of URL expects a working AWS configuration
+  which will use the equivalent of `rds generate-db-auth-token`
+  for the password. For this driver, the `AWS_REGION` environment variable
+  must be set.
+
 
 Why this exporter exists
 ========================

@@ -15,6 +15,7 @@
 package instance
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 
@@ -73,4 +74,14 @@ func ParseConnName(cn string) (ConnName, error) {
 		name:    string(m[4]),
 	}
 	return c, nil
+}
+
+// ConnectionNameResolver resolves the connection name string into a valid
+// instance name. This allows an application to replace the default
+// resolver with a custom implementation.
+type ConnectionNameResolver interface {
+	// Resolve accepts a name, and returns a ConnName with the instance
+	// connection string for the name. If the name cannot be resolved, returns
+	// an error.
+	Resolve(ctx context.Context, name string) (ConnName, error)
 }

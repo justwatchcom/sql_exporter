@@ -314,7 +314,11 @@ func connect(ctx context.Context, config *Config, fallbackConfig *FallbackConfig
 		startupMsg.Parameters["database"] = config.Database
 	}
 
-	if _, err := pgConn.conn.Write(startupMsg.Encode(pgConn.wbuf)); err != nil {
+	buf, err := startupMsg.Encode(pgConn.wbuf)
+	if err != nil {
+		return nil, &connectError{config: config, msg: "failed to write startup message", err: err}
+	}
+	if _, err := pgConn.conn.Write(buf); err != nil {
 		pgConn.conn.Close()
 		return nil, &connectError{config: config, msg: "failed to write startup message", err: err}
 	}
@@ -419,7 +423,11 @@ func startTLS(conn net.Conn, tlsConfig *tls.Config) (net.Conn, error) {
 
 func (pgConn *PgConn) txPasswordMessage(password string) (err error) {
 	msg := &pgproto3.PasswordMessage{Password: password}
-	_, err = pgConn.conn.Write(msg.Encode(pgConn.wbuf))
+	buf, err := msg.Encode(pgConn.wbuf)
+	if err != nil {
+		return err
+	}
+	_, err = pgConn.conn.Write(buf)
 	return err
 }
 
@@ -832,9 +840,19 @@ func (pgConn *PgConn) Prepare(ctx context.Context, name, sql string, paramOIDs [
 	}
 
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Parse{Name: name, Query: sql, ParameterOIDs: paramOIDs}).Encode(buf)
-	buf = (&pgproto3.Describe{ObjectType: 'S', Name: name}).Encode(buf)
-	buf = (&pgproto3.Sync{}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Parse{Name: name, Query: sql, ParameterOIDs: paramOIDs}).Encode(buf)
+	if err != nil {
+		return nil, err
+	}
+	buf, err = (&pgproto3.Describe{ObjectType: 'S', Name: name}).Encode(buf)
+	if err != nil {
+		return nil, err
+	}
+	buf, err = (&pgproto3.Sync{}).Encode(buf)
+	if err != nil {
+		return nil, err
+	}
 
 	n, err := pgConn.conn.Write(buf)
 	if err != nil {
@@ -1006,7 +1024,14 @@ func (pgConn *PgConn) Exec(ctx context.Context, sql string) *MultiResultReader {
 	}
 
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Query{String: sql}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Query{String: sql}).Encode(buf)
+	if err != nil {
+		return &MultiResultReader{
+			closed: true,
+			err:    err,
+		}
+	}
 
 	n, err := pgConn.conn.Write(buf)
 	if err != nil {
@@ -1080,8 +1105,24 @@ func (pgConn *PgConn) ExecParams(ctx context.Context, sql string, paramValues []
 	}
 
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Parse{Query: sql, ParameterOIDs: paramOIDs}).Encode(buf)
-	buf = (&pgproto3.Bind{ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Parse{Query: sql, ParameterOIDs: paramOIDs}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return result
+	}
+
+	buf, err = (&pgproto3.Bind{ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return result
+	}
 
 	pgConn.execExtendedSuffix(buf, result)
 
@@ -1107,7 +1148,15 @@ func (pgConn *PgConn) ExecPrepared(ctx context.Context, stmtName string, paramVa
 	}
 
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Bind{PreparedStatement: stmtName, ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Bind{PreparedStatement: stmtName, ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return result
+	}
 
 	pgConn.execExtendedSuffix(buf, result)
 
@@ -1150,9 +1199,31 @@ func (pgConn *PgConn) execExtendedPrefix(ctx context.Context, paramValues [][]by
 }
 
 func (pgConn *PgConn) execExtendedSuffix(buf []byte, result *ResultReader) {
-	buf = (&pgproto3.Describe{ObjectType: 'P'}).Encode(buf)
-	buf = (&pgproto3.Execute{}).Encode(buf)
-	buf = (&pgproto3.Sync{}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Describe{ObjectType: 'P'}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return
+	}
+	buf, err = (&pgproto3.Execute{}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return
+	}
+	buf, err = (&pgproto3.Sync{}).Encode(buf)
+	if err != nil {
+		result.concludeCommand(nil, err)
+		pgConn.contextWatcher.Unwatch()
+		result.closed = true
+		pgConn.unlock()
+		return
+	}
 
 	n, err := pgConn.conn.Write(buf)
 	if err != nil {
@@ -1186,7 +1257,12 @@ func (pgConn *PgConn) CopyTo(ctx context.Context, w io.Writer, sql string) (Comm
 
 	// Send copy to command
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Query{String: sql}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Query{String: sql}).Encode(buf)
+	if err != nil {
+		pgConn.unlock()
+		return nil, err
+	}
 
 	n, err := pgConn.conn.Write(buf)
 	if err != nil {
@@ -1246,7 +1322,12 @@ func (pgConn *PgConn) CopyFrom(ctx context.Context, r io.Reader, sql string) (Co
 
 	// Send copy to command
 	buf := pgConn.wbuf
-	buf = (&pgproto3.Query{String: sql}).Encode(buf)
+	var err error
+	buf, err = (&pgproto3.Query{String: sql}).Encode(buf)
+	if err != nil {
+		pgConn.unlock()
+		return nil, err
+	}
 
 	n, err := pgConn.conn.Write(buf)
 	if err != nil {
@@ -1322,10 +1403,20 @@ func (pgConn *PgConn) CopyFrom(ctx context.Context, r io.Reader, sql string) (Co
 	buf = buf[:0]
 	if copyErr == io.EOF || pgErr != nil {
 		copyDone := &pgproto3.CopyDone{}
-		buf = copyDone.Encode(buf)
+		var err error
+		buf, err = copyDone.Encode(buf)
+		if err != nil {
+			pgConn.asyncClose()
+			return nil, err
+		}
 	} else {
 		copyFail := &pgproto3.CopyFail{Message: copyErr.Error()}
-		buf = copyFail.Encode(buf)
+		var err error
+		buf, err = copyFail.Encode(buf)
+		if err != nil {
+			pgConn.asyncClose()
+			return nil, err
+		}
 	}
 	_, err = pgConn.conn.Write(buf)
 	if err != nil {
@@ -1632,24 +1723,54 @@ func (rr *ResultReader) concludeCommand(commandTag CommandTag, err error) {
 // Batch is a collection of queries that can be sent to the PostgreSQL server in a single round-trip.
 type Batch struct {
 	buf []byte
+	err error
 }
 
 // ExecParams appends an ExecParams command to the batch. See PgConn.ExecParams for parameter descriptions.
 func (batch *Batch) ExecParams(sql string, paramValues [][]byte, paramOIDs []uint32, paramFormats []int16, resultFormats []int16) {
-	batch.buf = (&pgproto3.Parse{Query: sql, ParameterOIDs: paramOIDs}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
+
+	batch.buf, batch.err = (&pgproto3.Parse{Query: sql, ParameterOIDs: paramOIDs}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
 	batch.ExecPrepared("", paramValues, paramFormats, resultFormats)
 }
 
 // ExecPrepared appends an ExecPrepared e command to the batch. See PgConn.ExecPrepared for parameter descriptions.
 func (batch *Batch) ExecPrepared(stmtName string, paramValues [][]byte, paramFormats []int16, resultFormats []int16) {
-	batch.buf = (&pgproto3.Bind{PreparedStatement: stmtName, ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(batch.buf)
-	batch.buf = (&pgproto3.Describe{ObjectType: 'P'}).Encode(batch.buf)
-	batch.buf = (&pgproto3.Execute{}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
+
+	batch.buf, batch.err = (&pgproto3.Bind{PreparedStatement: stmtName, ParameterFormatCodes: paramFormats, Parameters: paramValues, ResultFormatCodes: resultFormats}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
+
+	batch.buf, batch.err = (&pgproto3.Describe{ObjectType: 'P'}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
+
+	batch.buf, batch.err = (&pgproto3.Execute{}).Encode(batch.buf)
+	if batch.err != nil {
+		return
+	}
 }
 
 // ExecBatch executes all the queries in batch in a single round-trip. Execution is implicitly transactional unless a
 // transaction is already in progress or SQL contains transaction control statements.
 func (pgConn *PgConn) ExecBatch(ctx context.Context, batch *Batch) *MultiResultReader {
+	if batch.err != nil {
+		return &MultiResultReader{
+			closed: true,
+			err:    batch.err,
+		}
+	}
+
 	if err := pgConn.lock(); err != nil {
 		return &MultiResultReader{
 			closed: true,
@@ -1675,7 +1796,13 @@ func (pgConn *PgConn) ExecBatch(ctx context.Context, batch *Batch) *MultiResultR
 		pgConn.contextWatcher.Watch(ctx)
 	}
 
-	batch.buf = (&pgproto3.Sync{}).Encode(batch.buf)
+	batch.buf, batch.err = (&pgproto3.Sync{}).Encode(batch.buf)
+	if batch.err != nil {
+		multiResult.closed = true
+		multiResult.err = batch.err
+		pgConn.unlock()
+		return multiResult
+	}
 
 	// A large batch can deadlock without concurrent reading and writing. If the Write fails the underlying net.Conn is
 	// closed. This is all that can be done without introducing a race condition or adding a concurrent safe communication
