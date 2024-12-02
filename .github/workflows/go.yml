@@ -26,3 +26,4 @@ jobs:
         version: "2023.1"
         # go is already installed by actions/setup-go with the correct version from go.mod
         install-go: false
+
