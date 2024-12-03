@@ -83,6 +83,8 @@ func main() {
 							continue
 						}
 
+						level.Debug(logger).Log("msg", "Non-null connection found", "connection", connection.conn)
+
 						if err := connection.conn.Ping(); err != nil {
 							// if any of the connections fails to be established, fail the /healthz request
 							http.Error(w, err.Error(), http.StatusInternalServerError)
