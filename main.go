@@ -71,14 +71,25 @@ func main() {
 	if *dbConnectivityAsHealthCheck {
 		http.HandleFunc("/healthz",
 			func(w http.ResponseWriter, r *http.Request) {
+				level.Debug(logger).Log("msg", fmt.Sprintf("Healthz request received. Starting checking connections over %d jobs", len(exporter.jobs)))
+
 				for _, job := range exporter.jobs {
+
 					if job == nil {
 						continue
 					}
+
+					level.Debug(logger).Log("msg", "Non-null job found", "job", job)
+
 					for _, connection := range job.conns {
+						level.Debug(logger).Log("msg", "Next job connection config", "connection", connection)
+
 						if connection == nil {
 							continue
 						}
+
+						level.Debug(logger).Log("msg", "DB connection", "conn", connection.conn)
+
 						if connection.conn == nil {
 							continue
 						}
