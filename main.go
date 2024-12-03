@@ -71,36 +71,34 @@ func main() {
 	if *dbConnectivityAsHealthCheck {
 		http.HandleFunc("/healthz",
 			func(w http.ResponseWriter, r *http.Request) {
-				level.Debug(logger).Log("msg", fmt.Sprintf("Healthz request received. Starting checking connections over %d jobs", len(exporter.jobs)))
-
 				for _, job := range exporter.jobs {
 
 					if job == nil {
 						continue
 					}
 
-					level.Debug(logger).Log("msg", "Non-null job found", "job", job)
-
 					for _, connection := range job.conns {
-						level.Debug(logger).Log("msg", "Next job connection config", "connection", connection)
 
 						if connection == nil {
 							continue
 						}
 
-						level.Debug(logger).Log("msg", "DB connection", "conn", connection.conn)
-
-						if connection.conn == nil {
+						if connection.conn != nil {
+							if err := connection.conn.Ping(); err != nil {
+								// if any of the connections fails to be established/verified, fail the /healthz request
+								http.Error(w, err.Error(), http.StatusInternalServerError)
+								return
+							}
+							// otherwise we've successfully verified the connection, continue to the next one
 							continue
 						}
 
-						level.Debug(logger).Log("msg", "Non-null connection found", "connection", connection.conn)
-
-						if err := connection.conn.Ping(); err != nil {
+						if err := connection.connect(job); err != nil {
 							// if any of the connections fails to be established, fail the /healthz request
 							http.Error(w, err.Error(), http.StatusInternalServerError)
 							return
 						}
+
 					}
 				}
 
