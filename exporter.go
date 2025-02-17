@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"cloud.google.com/go/cloudsqlconn"
 	"cloud.google.com/go/cloudsqlconn/mysql/mysql"
@@ -34,6 +35,22 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 	cfg, err := Read(configFile)
 	if err != nil {
 		return nil, err
+	}
+
+	// Validate config file before, this will otherwise break Prometheus metrics ("was collected before with the same name and label values")
+	uniqueQueries := make(map[string]struct{})
+	var duplicateQueries []string
+	for _, job := range cfg.Jobs {
+		for _, query := range job.Queries {
+			if _, ok := uniqueQueries[query.Name]; ok {
+				duplicateQueries = append(duplicateQueries, query.Name)
+				continue
+			}
+			uniqueQueries[query.Name] = struct{}{}
+		}
+	}
+	if len(duplicateQueries) > 0 {
+		return nil, fmt.Errorf("invalid config file, query name is not unique across jobs: %v", strings.Join(duplicateQueries, ", "))
 	}
 
 	var queryDurationHistogramBuckets []float64
