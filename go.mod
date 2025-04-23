@@ -7,7 +7,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.17.1
 	github.com/aws/aws-sdk-go v1.50.6
 	github.com/cenkalti/backoff v2.2.1+incompatible
-	github.com/denisenkom/go-mssqldb v0.12.3
+	github.com/microsoft/go-mssqldb v1.8.0
 	github.com/go-kit/log v0.2.1
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/gobwas/glob v0.2.3
