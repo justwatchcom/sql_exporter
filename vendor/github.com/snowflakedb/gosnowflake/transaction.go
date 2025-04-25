@@ -46,7 +46,8 @@ func (tx *snowflakeTx) execTxCommand(command txCommand) (err error) {
 	if tx.sc == nil || tx.sc.rest == nil {
 		return driver.ErrBadConn
 	}
-	_, err = tx.sc.exec(tx.ctx, txStr, false /* noResult */, false /* isInternal */, false /* describeOnly */, nil)
+	isInternal := isInternal(tx.ctx)
+	_, err = tx.sc.exec(tx.ctx, txStr, false /* noResult */, isInternal, false /* describeOnly */, nil)
 	if err != nil {
 		return
 	}

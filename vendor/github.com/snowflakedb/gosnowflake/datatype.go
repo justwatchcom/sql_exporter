@@ -23,6 +23,7 @@ const (
 	timestampTzType
 	objectType
 	arrayType
+	mapType
 	binaryType
 	timeType
 	booleanType
@@ -31,6 +32,9 @@ const (
 	sliceType
 	changeType
 	unSupportedType
+	nilObjectType
+	nilArrayType
+	nilMapType
 )
 
 var snowflakeToDriverType = map[string]snowflakeType{
@@ -44,6 +48,7 @@ var snowflakeToDriverType = map[string]snowflakeType{
 	"TIMESTAMP_TZ":  timestampTzType,
 	"OBJECT":        objectType,
 	"ARRAY":         arrayType,
+	"MAP":           mapType,
 	"BINARY":        binaryType,
 	"TIME":          timeType,
 	"BOOLEAN":       booleanType,
@@ -104,6 +109,12 @@ var (
 	DataTypeTime = []byte{timeType.Byte()}
 	// DataTypeBoolean is a BOOLEAN datatype.
 	DataTypeBoolean = []byte{booleanType.Byte()}
+	// DataTypeNilObject represents a nil structured object.
+	DataTypeNilObject = []byte{nilObjectType.Byte()}
+	// DataTypeNilArray represents a nil structured array.
+	DataTypeNilArray = []byte{nilArrayType.Byte()}
+	// DataTypeNilMap represents a nil structured map.
+	DataTypeNilMap = []byte{nilMapType.Byte()}
 )
 
 // dataTypeMode returns the subsequent data type in a string representation.
@@ -122,6 +133,18 @@ func dataTypeMode(v driver.Value) (tsmode snowflakeType, err error) {
 			tsmode = timestampTzType
 		case bytes.Equal(bd, DataTypeBinary):
 			tsmode = binaryType
+		case bytes.Equal(bd, DataTypeObject):
+			tsmode = objectType
+		case bytes.Equal(bd, DataTypeArray):
+			tsmode = arrayType
+		case bytes.Equal(bd, DataTypeVariant):
+			tsmode = variantType
+		case bytes.Equal(bd, DataTypeNilObject):
+			tsmode = nilObjectType
+		case bytes.Equal(bd, DataTypeNilArray):
+			tsmode = nilArrayType
+		case bytes.Equal(bd, DataTypeNilMap):
+			tsmode = nilMapType
 		default:
 			return nullType, fmt.Errorf(errMsgInvalidByteArray, v)
 		}

@@ -20,6 +20,7 @@ import (
 	"net"
 	"sort"
 
+	"cloud.google.com/go/cloudsqlconn/errtype"
 	"cloud.google.com/go/cloudsqlconn/instance"
 )
 
@@ -63,10 +64,21 @@ type DNSInstanceConnectionNameResolver struct {
 func (r *DNSInstanceConnectionNameResolver) Resolve(ctx context.Context, icn string) (instanceName instance.ConnName, err error) {
 	cn, err := instance.ParseConnName(icn)
 	if err != nil {
-		// The connection name was not project:region:instance
-		// Attempt to query a TXT record and see if it works instead.
-		cn, err = r.queryDNS(ctx, icn)
-		if err != nil {
+		// The connection name was not in project:region:instance format.
+		// Check that connection name is a valid DNS domain name.
+		if instance.IsValidDomain(icn) {
+			// Attempt to query a TXT record and see if it works instead.
+			cn, err = r.queryDNS(ctx, icn)
+			if err != nil {
+				return instance.ConnName{}, err
+			}
+		} else {
+			// Connection name is not valid instance connection name or domain name
+			err := errtype.NewConfigError(
+				"invalid connection name, expected PROJECT:REGION:INSTANCE "+
+					"format or valid DNS domain name",
+				icn,
+			)
 			return instance.ConnName{}, err
 		}
 	}
@@ -105,7 +117,7 @@ func (r *DNSInstanceConnectionNameResolver) queryDNS(ctx context.Context, domain
 	// Attempt to parse records, returning the first valid record.
 	for _, record := range records {
 		// Parse the target as a CN
-		cn, parseErr := instance.ParseConnName(record)
+		cn, parseErr := instance.ParseConnNameWithDomainName(record, domainName)
 		if parseErr != nil {
 			perr = fmt.Errorf("unable to parse TXT for %q -> %q : %v", domainName, record, parseErr)
 			continue

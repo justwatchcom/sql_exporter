@@ -15,17 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//go:build windows
 // +build windows
 
 package windows
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"time"
 	"unsafe"
-
-	"github.com/pkg/errors"
 )
 
 // Syscalls
@@ -193,7 +193,7 @@ func GetSystemTimes() (idle, kernel, user time.Duration, err error) {
 	var idleTime, kernelTime, userTime syscall.Filetime
 	err = _GetSystemTimes(&idleTime, &kernelTime, &userTime)
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "GetSystemTimes failed")
+		return 0, 0, 0, fmt.Errorf("GetSystemTimes failed: %w", err)
 	}
 
 	idle = FiletimeToDuration(&idleTime)
@@ -218,7 +218,7 @@ func GlobalMemoryStatusEx() (MemoryStatusEx, error) {
 	memoryStatusEx := MemoryStatusEx{length: sizeofMemoryStatusEx}
 	err := _GlobalMemoryStatusEx(&memoryStatusEx)
 	if err != nil {
-		return MemoryStatusEx{}, errors.Wrap(err, "GlobalMemoryStatusEx failed")
+		return MemoryStatusEx{}, fmt.Errorf("GlobalMemoryStatusEx failed: %w", err)
 	}
 
 	return memoryStatusEx, nil
@@ -243,7 +243,7 @@ func ReadProcessMemory(handle syscall.Handle, baseAddress uintptr, dest []byte) 
 func GetProcessHandleCount(process syscall.Handle) (uint32, error) {
 	var count uint32
 	if err := _GetProcessHandleCount(process, &count); err != nil {
-		return 0, errors.Wrap(err, "GetProcessHandleCount failed")
+		return 0, fmt.Errorf("GetProcessHandleCount failed: %w", err)
 	}
 	return count, nil
 }

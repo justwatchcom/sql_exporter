@@ -5,13 +5,14 @@ package gosnowflake
 import (
 	"context"
 	"fmt"
-	rlog "github.com/sirupsen/logrus"
 	"io"
 	"os"
 	"path"
 	"runtime"
 	"strings"
 	"time"
+
+	rlog "github.com/sirupsen/logrus"
 )
 
 // SFSessionIDKey is context key of session id
@@ -20,7 +21,23 @@ const SFSessionIDKey contextKey = "LOG_SESSION_ID"
 // SFSessionUserKey is context key of  user id of a session
 const SFSessionUserKey contextKey = "LOG_USER"
 
-// LogKeys these keys in context should be included in logging messages when using logger.WithContext
+// map which stores a string which will be used as a log key to the function which
+// will be called to get the log value out of the context
+var clientLogContextHooks = map[string]ClientLogContextHook{}
+
+// ClientLogContextHook is a client-defined hook that can be used to insert log
+// fields based on the Context.
+type ClientLogContextHook func(context.Context) string
+
+// RegisterLogContextHook registers a hook that can be used to extract fields
+// from the Context and associated with log messages using the provided key. This
+// function is not thread-safe and should only be called on startup.
+func RegisterLogContextHook(contextKey string, ctxExtractor ClientLogContextHook) {
+	clientLogContextHooks[contextKey] = ctxExtractor
+}
+
+// LogKeys registers string-typed context keys to be written to the logs when
+// logger.WithContext is used
 var LogKeys = [...]contextKey{SFSessionIDKey, SFSessionUserKey}
 
 // SFLogger Snowflake logger interface to expose FieldLogger defined in logrus
@@ -43,6 +60,16 @@ type defaultLogger struct {
 	inner   *rlog.Logger
 	enabled bool
 	file    *os.File
+}
+
+type sfTextFormatter struct {
+	rlog.TextFormatter
+}
+
+func (f *sfTextFormatter) Format(entry *rlog.Entry) ([]byte, error) {
+	// mask all secrets before calling the default Format method
+	entry.Message = maskSecrets(entry.Message)
+	return f.TextFormatter.Format(entry)
 }
 
 // SetLogLevel set logging level for calling defaultLogger
@@ -100,9 +127,10 @@ func (log *defaultLogger) WithContext(ctx context.Context) *rlog.Entry {
 // CreateDefaultLogger return a new instance of SFLogger with default config
 func CreateDefaultLogger() SFLogger {
 	var rLogger = rlog.New()
-	var formatter = rlog.TextFormatter{CallerPrettyfier: SFCallerPrettyfier}
+	var formatter = new(sfTextFormatter)
+	formatter.CallerPrettyfier = SFCallerPrettyfier
+	rLogger.SetFormatter(formatter)
 	rLogger.SetReportCaller(true)
-	rLogger.SetFormatter(&formatter)
 	var ret = defaultLogger{inner: rLogger, enabled: true}
 	return &ret //(&ret).(*SFLogger)
 }
@@ -425,5 +453,12 @@ func context2Fields(ctx context.Context) *rlog.Fields {
 			fields[string(LogKeys[i])] = ctx.Value(LogKeys[i])
 		}
 	}
+
+	for key, hook := range clientLogContextHooks {
+		if value := hook(ctx); value != "" {
+			fields[key] = value
+		}
+	}
+
 	return &fields
 }

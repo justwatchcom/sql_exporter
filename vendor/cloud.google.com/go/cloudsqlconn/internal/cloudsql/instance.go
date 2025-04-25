@@ -23,10 +23,10 @@ import (
 	"sync"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/errtype"
 	"cloud.google.com/go/cloudsqlconn/instance"
-	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
@@ -44,6 +44,11 @@ const (
 	// cycle to complete. This value should be greater than the
 	// refreshInterval.
 	RefreshTimeout = 60 * time.Second
+
+	// FailoverPeriod is the frequency with which the dialer will check
+	// if the DNS record has changed for connections configured using
+	// a DNS name.
+	FailoverPeriod = 30 * time.Second
 
 	// refreshBurst is the initial burst allowed by the rate limiter.
 	refreshBurst = 2
@@ -124,7 +129,7 @@ func NewRefreshAheadCache(
 	client *sqladmin.Service,
 	key *rsa.PrivateKey,
 	refreshTimeout time.Duration,
-	ts oauth2.TokenSource,
+	tp auth.TokenProvider,
 	dialerID string,
 	useIAMAuthNDial bool,
 ) *RefreshAheadCache {
@@ -137,7 +142,7 @@ func NewRefreshAheadCache(
 			l,
 			client,
 			key,
-			ts,
+			tp,
 			dialerID,
 		),
 		refreshTimeout:  refreshTimeout,
@@ -236,31 +241,45 @@ func (c ConnectionInfo) TLSConfig() *tls.Config {
 	for _, caCert := range c.ServerCACert {
 		pool.AddCert(caCert)
 	}
-	if c.ServerCAMode == "GOOGLE_MANAGED_CAS_CA" {
-		// For CAS instances, we can rely on the DNS name to verify the server identity.
+
+	// If the instance metadata does not contain a domain name, use the legacy
+	// validation checking the CN field for the instance connection name.
+	if c.DNSName == "" {
 		return &tls.Config{
-			ServerName:   c.DNSName,
+			ServerName:   c.ConnectionName.String(),
 			Certificates: []tls.Certificate{c.ClientCertificate},
 			RootCAs:      pool,
-			MinVersion:   tls.VersionTLS13,
+			// We need to set InsecureSkipVerify to true due to
+			// https://github.com/GoogleCloudPlatform/cloudsql-proxy/issues/194
+			// https://tip.golang.org/doc/go1.11#crypto/x509
+			//
+			// Since we have a secure channel to the Cloud SQL API which we use to
+			// retrieve the certificates, we instead need to implement our own
+			// VerifyPeerCertificate function that will verify that the certificate
+			// is OK.
+			InsecureSkipVerify:    true,
+			VerifyPeerCertificate: verifyPeerCertificateFunc(c.ConnectionName, pool),
+			MinVersion:            tls.VersionTLS13,
 		}
 	}
+
+	// If the connector was configured with a domain name, use that domain name
+	// to validate the certificate. Otherwise, use the DNS name from the
+	// instance metadata retrieved from the ConnectSettings API endpoint.
+	serverName := c.ConnectionName.DomainName()
+	if serverName == "" {
+		serverName = c.DNSName
+	}
+
+	// By default, use Standard TLS hostname verification name to
+	// verify the server identity.
 	return &tls.Config{
-		ServerName:   c.ConnectionName.String(),
+		ServerName:   serverName,
 		Certificates: []tls.Certificate{c.ClientCertificate},
 		RootCAs:      pool,
-		// We need to set InsecureSkipVerify to true due to
-		// https://github.com/GoogleCloudPlatform/cloudsql-proxy/issues/194
-		// https://tip.golang.org/doc/go1.11#crypto/x509
-		//
-		// Since we have a secure channel to the Cloud SQL API which we use to
-		// retrieve the certificates, we instead need to implement our own
-		// VerifyPeerCertificate function that will verify that the certificate
-		// is OK.
-		InsecureSkipVerify:    true,
-		VerifyPeerCertificate: verifyPeerCertificateFunc(c.ConnectionName, pool),
-		MinVersion:            tls.VersionTLS13,
+		MinVersion:   tls.VersionTLS13,
 	}
+
 }
 
 // verifyPeerCertificateFunc creates a VerifyPeerCertificate func that

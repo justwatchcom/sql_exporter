@@ -51,7 +51,7 @@ import (
 func (aixSystem) Processes() ([]types.Process, error) {
 	// Retrieve processes using /proc instead of calling
 	// getprocs which will also retrieve kernel threads.
-	files, err := ioutil.ReadDir("/proc")
+	files, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("error while reading /proc: %w", err)
 	}

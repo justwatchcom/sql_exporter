@@ -3,6 +3,7 @@
 package gosnowflake
 
 import (
+	"context"
 	"database/sql/driver"
 	"io"
 	"reflect"
@@ -44,6 +45,8 @@ type snowflakeRows struct {
 	err                 error
 	errChannel          chan error
 	location            *time.Location
+	ctx                 context.Context
+	format              resultFormat
 }
 
 func (rows *snowflakeRows) getLocation() *time.Location {
@@ -135,7 +138,7 @@ func (rows *snowflakeRows) Columns() []string {
 	if err := rows.waitForAsyncQueryStatus(); err != nil {
 		return make([]string, 0)
 	}
-	logger.Debug("Rows.Columns")
+	logger.WithContext(rows.ctx).Debug("Rows.Columns")
 	ret := make([]string, len(rows.ChunkDownloader.getRowType()))
 	for i, n := 0, len(rows.ChunkDownloader.getRowType()); i < n; i++ {
 		ret[i] = rows.ChunkDownloader.getRowType()[i].Name
@@ -147,9 +150,7 @@ func (rows *snowflakeRows) ColumnTypeScanType(index int) reflect.Type {
 	if err := rows.waitForAsyncQueryStatus(); err != nil {
 		return nil
 	}
-	return snowflakeTypeToGo(
-		getSnowflakeType(rows.ChunkDownloader.getRowType()[index].Type),
-		rows.ChunkDownloader.getRowType()[index].Scale)
+	return snowflakeTypeToGo(rows.ctx, getSnowflakeType(rows.ChunkDownloader.getRowType()[index].Type), rows.ChunkDownloader.getRowType()[index].Scale, rows.ChunkDownloader.getRowType()[index].Fields)
 }
 
 func (rows *snowflakeRows) GetQueryID() string {
@@ -166,6 +167,10 @@ func (rows *snowflakeRows) GetArrowBatches() ([]*ArrowBatch, error) {
 	// Otherwise, a panic error "invalid memory address or nil pointer dereference" will be thrown.
 	if err := rows.waitForAsyncQueryStatus(); err != nil {
 		return nil, err
+	}
+
+	if rows.format != arrowFormat {
+		return nil, errNonArrowResponseForArrowBatches(rows.queryID).exceptionTelemetry(rows.sc)
 	}
 
 	return rows.ChunkDownloader.getArrowBatches(), nil
@@ -192,7 +197,7 @@ func (rows *snowflakeRows) Next(dest []driver.Value) (err error) {
 		for i, n := 0, len(row.RowSet); i < n; i++ {
 			// could move to chunk downloader so that each go routine
 			// can convert data
-			err = stringToValue(&dest[i], rows.ChunkDownloader.getRowType()[i], row.RowSet[i], rows.getLocation())
+			err = stringToValue(rows.ctx, &dest[i], rows.ChunkDownloader.getRowType()[i], row.RowSet[i], rows.getLocation(), rows.sc.cfg.Params)
 			if err != nil {
 				return err
 			}

@@ -51,7 +51,7 @@ func (sc *snowflakeConn) handleMultiExec(
 		if isDml(childResultType) {
 			childData, err := sc.getQueryResultResp(ctx, resultPath)
 			if err != nil {
-				logger.Errorf("error: %v", err)
+				logger.WithContext(ctx).Errorf("error: %v", err)
 				return nil, err
 			}
 			if childData != nil && !childData.Success {

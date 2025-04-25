@@ -1,3 +1,7 @@
+## Support
+
+For official support and urgent, production-impacting issues, please [contact Snowflake Support](https://community.snowflake.com/s/article/How-To-Submit-a-Support-Case-in-Snowflake-Lodge).
+
 # Go Snowflake Driver
 
 <a href="https://codecov.io/github/snowflakedb/gosnowflake?branch=master">
@@ -21,7 +25,7 @@ The following software packages are required to use the Go Snowflake Driver.
 
 ## Go
 
-The latest driver requires the [Go language](https://golang.org/) 1.19 or higher. The supported operating systems are Linux, Mac OS, and Windows, but you may run the driver on other platforms if the Go language works correctly on those platforms.
+The latest driver requires the [Go language](https://golang.org/) 1.22 or higher. The supported operating systems are Linux, Mac OS, and Windows, but you may run the driver on other platforms if the Go language works correctly on those platforms.
 
 
 # Installation
@@ -43,18 +47,22 @@ go get -u github.com/snowflakedb/gosnowflake
 For detailed documentation and basic usage examples, please see the documentation at
 [godoc.org](https://godoc.org/github.com/snowflakedb/gosnowflake/).
 
+## Note
+
+This driver currently does not support GCP regional endpoints. Please ensure that any workloads using through this driver do not require support for regional endpoints on GCP. If you have questions about this, please contact Snowflake Support.
+
 # Sample Programs
 
-Snowflake provides a set of sample programs to test with. Set the environment variable ``$GOPATH`` to the top directory of your workspace, e.g., ``~/go`` and make certain to 
+Snowflake provides a set of sample programs to test with. Set the environment variable ``$GOPATH`` to the top directory of your workspace, e.g., ``~/go`` and make certain to
 include ``$GOPATH/bin`` in the environment variable ``$PATH``. Run the ``make`` command to build all sample programs.
 
-```
+```sh
 make install
 ```
 
 In the following example, the program ``select1.go`` is built and installed in ``$GOPATH/bin`` and can be run from the command line:
 
-```
+```sh
 SNOWFLAKE_TEST_ACCOUNT=<your_account> \
 SNOWFLAKE_TEST_USER=<your_user> \
 SNOWFLAKE_TEST_PASSWORD=<your_password> \
@@ -71,7 +79,7 @@ The developer notes are hosted with the source code on [GitHub](https://github.c
 
 Set the Snowflake connection info in ``parameters.json``:
 
-```
+```json
 {
     "testconnection": {
         "SNOWFLAKE_TEST_USER":      "<your_user>",
@@ -80,22 +88,61 @@ Set the Snowflake connection info in ``parameters.json``:
         "SNOWFLAKE_TEST_WAREHOUSE": "<your_warehouse>",
         "SNOWFLAKE_TEST_DATABASE":  "<your_database>",
         "SNOWFLAKE_TEST_SCHEMA":    "<your_schema>",
-        "SNOWFLAKE_TEST_ROLE":      "<your_role>"
+        "SNOWFLAKE_TEST_ROLE":      "<your_role>",
+        "SNOWFLAKE_TEST_DEBUG":     "false"
     }
 }
 ```
 
 Install [jq](https://stedolan.github.io/jq) so that the parameters can get parsed correctly, and run ``make test`` in your Go development environment:
 
-```
+```sh
 make test
 ```
 
+### Setting debug mode during tests
+This is for debugging Large SQL statements (greater than 300 characters). If you want to enable debug mode, set `SNOWFLAKE_TEST_DEBUG` to `true` in `parameters.json`, or export it in your shell instance.
+
+## customizing Logging Tags
+
+If you would like to ensure that certain tags are always present in the logs, `RegisterClientLogContextHook` can be used in your init function. See example below.
+```go
+import "github.com/snowflakedb/gosnowflake"
+
+func init() {
+    // each time the logger is used, the logs will contain a REQUEST_ID field with requestID the value extracted 
+    // from the context
+	gosnowflake.RegisterClientLogContextHook("REQUEST_ID", func(ctx context.Context) interface{} {
+		return requestIdFromContext(ctx)
+	})
+}
+```
+
+## Setting Log Level
+If you want to change the log level, `SetLogLevel` can be used in your init function like this:
+```go
+import "github.com/snowflakedb/gosnowflake"
+
+func init() {
+    // The following line changes the log level to debug
+	_ = gosnowflake.GetLogger().SetLogLevel("debug")
+}
+```
+The following is a list of options you can pass in to set the level from least to most verbose: 
+- `"OFF"`
+- `"error"`
+- `"warn"`
+- `"print"`
+- `"trace"`
+- `"debug"`
+- `"info"`
+
+
 ## Capturing Code Coverage
 
-Configure your testing environment as described above and run ``make cov``. The coverage percentage will be printed on the console when the testing completes. 
+Configure your testing environment as described above and run ``make cov``. The coverage percentage will be printed on the console when the testing completes.
 
-```
+```sh
 make cov
 ```
 
@@ -103,7 +150,7 @@ For more detailed analysis, results are printed to ``coverage.txt`` in the proje
 
 To read the coverage report, run:
 
-```
+```sh
 go tool cover -html=coverage.txt
 ```
 
@@ -111,8 +158,13 @@ go tool cover -html=coverage.txt
 
 You may use your preferred editor to edit the driver code. Make certain to run ``make fmt lint`` before submitting any pull request to Snowflake. This command formats your source code according to the standard Go style and detects any coding style issues.
 
-## Support
+## Runaway `dbus-daemon` processes on certain OS
+This only affects certain Linux distributions, one of them is confirmed to be RHEL. Due to a bug in one of the dependencies (`keyring`),
+on the affected OS, each invocation of a program depending on gosnowflake (or any other program depending on the same `keyring`),
+will generate a new instance of `dbus-daemon` fork which can, due to not being cleaned up, eventually fill the fd limits.
 
-For official support, contact Snowflake support at:
-[https://support.snowflake.net/](https://support.snowflake.net/).
+Until we replace the offending dependency with one which doesn't have the bug, a workaround needs to be applied, which can be:
+* cleaning up the runaway processes periodically
+* setting envvar `DBUS_SESSION_BUS_ADDRESS=$XDG_RUNTIME_DIR/bus` (if that socket exists, or create it) or even `DBUS_SESSION_BUS_ADDRESS=/dev/null`
 
+Details in [issue 773](https://github.com/snowflakedb/gosnowflake/issues/773)

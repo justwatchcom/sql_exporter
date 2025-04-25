@@ -15,6 +15,10 @@ Extensively unit tested and cross tested (100+ tests) for compatibility with [jo
 Used in production. GA ready. Current version is 1.6.
 
 ## Important
+v1.8 added experimental RSA-OAEP-384 and RSA-OAEP-512 key management algorithms
+
+v1.7 introduced deflate decompression memory limits to avoid denial-of-service attacks aka 'deflate-bomb'. See [Customizing compression](#customizing-compression) section for details.
+
 v1.6 security tuning options
 
 v1.5 bug fix release
@@ -73,7 +77,7 @@ token, err := jose.Encrypt(payload, jose.DIR, jose.A128GCM, key, jose.Zip(jose.D
 
 **Encryption**
 - RSAES OAEP (using SHA-1 and MGF1 with SHA-1) encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
-- RSAES OAEP 256 (using SHA-256 and MGF1 with SHA-256) encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
+- RSAES OAEP 256, 384, 512 (using SHA-256, 384, 512 and MGF1 with SHA-256, 384, 512) encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
 - RSAES-PKCS1-V1_5 encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
 - A128KW, A192KW, A256KW encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
 - A128GCMKW, A192GCMKW, A256GCMKW encryption with A128CBC-HS256, A192CBC-HS384, A256CBC-HS512, A128GCM, A192GCM, A256GCM
@@ -215,8 +219,8 @@ func main() {
 ```
 
 ### Creating encrypted tokens
-#### RSA-OAEP-256, RSA-OAEP and RSA1\_5 key management algorithm
-RSA-OAEP-256, RSA-OAEP and RSA1_5 key management expecting `*rsa.PublicKey` public key of corresponding length.
+#### RSA-OAEP-512, RSA-OAEP-384, RSA-OAEP-256, RSA-OAEP and RSA1\_5 key management algorithm
+RSA-OAEP-512, RSA-OAEP-384, RSA-OAEP-256, RSA-OAEP and RSA1_5 key management expecting `*rsa.PublicKey` public key of corresponding length.
 
 ```Go
 package main
@@ -487,7 +491,7 @@ func main() {
 }
 ```
 
-**RSA-OAEP-256**, **RSA-OAEP** and **RSA1_5** key management algorithms expecting `*rsa.PrivateKey` private key of corresponding length:
+**RSA-OAEP-512**, **RSA-OAEP-384** ,**RSA-OAEP-256**, **RSA-OAEP** and **RSA1_5** key management algorithms expecting `*rsa.PrivateKey` private key of corresponding length:
 
 ```Go
 package main
@@ -997,7 +1001,24 @@ test, headers, err := Decode(token, func(headers map[string]interface{}, payload
 })
 ```
 
+### Customizing compression
+There were denial-of-service attacks reported on JWT libraries that supports deflate compression by constructing malicious payload that explodes in terms of RAM on decompression. See for details: [#33](https://github.com/dvsekhvalnov/jose2go/issues/33)
+
+As of v1.7.0 `jose2go` limits decompression buffer to 250Kb to limit memory consumption and additionaly provides a way to adjust the limit according to specific scenarios:
+
+```Go
+    // Override compression alg with new limits (10Kb example)
+    jose.RegisterJwc(RegisterJwc(NewDeflate(10240)))
+```
+
 ## Changelog
+### 1.8
+- RSA-OAEP-384 and RSA-OAEP-512 key management algorithms
+
+### 1.7
+- 250Kb limit on decompression buffer
+- ability to register deflate compressor with custom limits
+
 ### 1.6
 - ability to deregister specific algorithms
 - configurable min/max restrictions for PBES2-HS256+A128KW, PBES2-HS384+A192KW, PBES2-HS512+A256KW

@@ -18,15 +18,13 @@
 package linux
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/joeshaw/multierror"
 	"github.com/prometheus/procfs"
 
 	"github.com/elastic/go-sysinfo/internal/registry"
@@ -35,7 +33,9 @@ import (
 )
 
 func init() {
-	registry.Register(newLinuxSystem(""))
+	// register wrappers that implement the HostFS versions of the ProcessProvider and HostProvider
+	registry.Register(func(opts registry.ProviderOptions) registry.HostProvider { return newLinuxSystem(opts.Hostfs) })
+	registry.Register(func(opts registry.ProviderOptions) registry.ProcessProvider { return newLinuxSystem(opts.Hostfs) })
 }
 
 type linuxSystem struct {
@@ -46,7 +46,7 @@ func newLinuxSystem(hostFS string) linuxSystem {
 	mountPoint := filepath.Join(hostFS, procfs.DefaultMountPoint)
 	fs, _ := procfs.NewFS(mountPoint)
 	return linuxSystem{
-		procFS: procFS{FS: fs, mountPoint: mountPoint},
+		procFS: procFS{FS: fs, mountPoint: mountPoint, baseMount: hostFS},
 	}
 }
 
@@ -60,28 +60,36 @@ type host struct {
 	info   types.HostInfo
 }
 
+// Info returns host info
 func (h *host) Info() types.HostInfo {
 	return h.info
 }
 
+// Memory returns memory info
 func (h *host) Memory() (*types.HostMemoryInfo, error) {
-	content, err := ioutil.ReadFile(h.procFS.path("meminfo"))
+	path := h.procFS.path("meminfo")
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading meminfo file %s: %w", path, err)
 	}
 
 	return parseMemInfo(content)
 }
 
+func (h *host) FQDNWithContext(ctx context.Context) (string, error) {
+	return shared.FQDNWithContext(ctx)
+}
+
 func (h *host) FQDN() (string, error) {
-	return shared.FQDN()
+	return h.FQDNWithContext(context.Background())
 }
 
 // VMStat reports data from /proc/vmstat on linux.
 func (h *host) VMStat() (*types.VMStatInfo, error) {
-	content, err := ioutil.ReadFile(h.procFS.path("vmstat"))
+	path := h.procFS.path("vmstat")
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading vmstat file %s: %w", path, err)
 	}
 
 	return parseVMStat(content)
@@ -91,7 +99,7 @@ func (h *host) VMStat() (*types.VMStatInfo, error) {
 func (h *host) LoadAverage() (*types.LoadAverageInfo, error) {
 	loadAvg, err := h.procFS.LoadAvg()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching load averages: %w", err)
 	}
 
 	return &types.LoadAverageInfo{
@@ -103,31 +111,34 @@ func (h *host) LoadAverage() (*types.LoadAverageInfo, error) {
 
 // NetworkCounters reports data from /proc/net on linux
 func (h *host) NetworkCounters() (*types.NetworkCountersInfo, error) {
-	snmpRaw, err := ioutil.ReadFile(h.procFS.path("net/snmp"))
+	snmpFile := h.procFS.path("net/snmp")
+	snmpRaw, err := os.ReadFile(snmpFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching net/snmp file %s: %w", snmpFile, err)
 	}
 	snmp, err := getNetSnmpStats(snmpRaw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error parsing SNMP stats: %w", err)
 	}
 
-	netstatRaw, err := ioutil.ReadFile(h.procFS.path("net/netstat"))
+	netstatFile := h.procFS.path("net/netstat")
+	netstatRaw, err := os.ReadFile(netstatFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching net/netstat file %s: %w", netstatFile, err)
 	}
 	netstat, err := getNetstatStats(netstatRaw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error parsing netstat file: %w", err)
 	}
 
 	return &types.NetworkCountersInfo{SNMP: snmp, Netstat: netstat}, nil
 }
 
+// CPUTime returns host CPU usage metrics
 func (h *host) CPUTime() (types.CPUTimes, error) {
 	stat, err := h.procFS.Stat()
 	if err != nil {
-		return types.CPUTimes{}, err
+		return types.CPUTimes{}, fmt.Errorf("error fetching CPU stats: %w", err)
 	}
 
 	return types.CPUTimes{
@@ -151,6 +162,7 @@ func newHost(fs procFS) (*host, error) {
 	h := &host{stat: stat, procFS: fs}
 	r := &reader{}
 	r.architecture(h)
+	r.nativeArchitecture(h)
 	r.bootTime(h)
 	r.containerized(h)
 	r.hostname(h)
@@ -179,7 +191,7 @@ func (r *reader) addErr(err error) bool {
 
 func (r *reader) Err() error {
 	if len(r.errs) > 0 {
-		return &multierror.MultiError{Errors: r.errs}
+		return errors.Join(r.errs...)
 	}
 	return nil
 }
@@ -190,6 +202,14 @@ func (r *reader) architecture(h *host) {
 		return
 	}
 	h.info.Architecture = v
+}
+
+func (r *reader) nativeArchitecture(h *host) {
+	v, err := NativeArchitecture()
+	if r.addErr(err) {
+		return
+	}
+	h.info.NativeArchitecture = v
 }
 
 func (r *reader) bootTime(h *host) {
@@ -213,7 +233,7 @@ func (r *reader) hostname(h *host) {
 	if r.addErr(err) {
 		return
 	}
-	h.info.Hostname = strings.ToLower(v)
+	h.info.Hostname = v
 }
 
 func (r *reader) network(h *host) {
@@ -234,7 +254,7 @@ func (r *reader) kernelVersion(h *host) {
 }
 
 func (r *reader) os(h *host) {
-	v, err := OperatingSystem()
+	v, err := getOSInfo(h.procFS.baseMount)
 	if r.addErr(err) {
 		return
 	}
@@ -246,7 +266,7 @@ func (r *reader) time(h *host) {
 }
 
 func (r *reader) uniqueID(h *host) {
-	v, err := MachineID()
+	v, err := MachineIDHostfs(h.procFS.baseMount)
 	if r.addErr(err) {
 		return
 	}
@@ -256,6 +276,7 @@ func (r *reader) uniqueID(h *host) {
 type procFS struct {
 	procfs.FS
 	mountPoint string
+	baseMount  string
 }
 
 func (fs *procFS) path(p ...string) string {

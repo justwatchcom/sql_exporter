@@ -37,6 +37,8 @@ const (
 	RSA1_5             = "RSA1_5"             //RSAES with PKCS #1 v1.5 padding, RFC 3447
 	RSA_OAEP           = "RSA-OAEP"           //RSAES using Optimal Assymetric Encryption Padding, RFC 3447
 	RSA_OAEP_256       = "RSA-OAEP-256"       //RSAES using Optimal Assymetric Encryption Padding with SHA-256, RFC 3447
+	RSA_OAEP_384       = "RSA-OAEP-384"       //RSAES using Optimal Assymetric Encryption Padding with SHA-384, RFC 3447
+	RSA_OAEP_512       = "RSA-OAEP-512"       //RSAES using Optimal Assymetric Encryption Padding with SHA-512, RFC 3447
 	A128KW             = "A128KW"             //AES Key Wrap Algorithm using 128 bit keys, RFC 3394
 	A192KW             = "A192KW"             //AES Key Wrap Algorithm using 192 bit keys, RFC 3394
 	A256KW             = "A256KW"             //AES Key Wrap Algorithm using 256 bit keys, RFC 3394
@@ -140,7 +142,7 @@ type JwsAlgorithm interface {
 // JwcAlgorithm is a contract for implementing compression algorithm
 type JwcAlgorithm interface {
 	Compress(plainText []byte) []byte
-	Decompress(compressedText []byte) []byte
+	Decompress(compressedText []byte) ([]byte, error)
 	Name() string
 }
 
@@ -427,7 +429,9 @@ func decrypt(parts [][]byte, key interface{}) (plainText []byte, headers map[str
 							return nil, nil, errors.New(fmt.Sprintf("jwt.decrypt(): Unknown compression algorithm '%v'", zip))
 						}
 
-						plainBytes = zipAlg.Decompress(plainBytes)
+						if plainBytes, err = zipAlg.Decompress(plainBytes); err != nil {
+							return nil, nil, err
+						}
 					}
 
 					return plainBytes, jwtHeader, nil

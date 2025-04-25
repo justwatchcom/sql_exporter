@@ -23,6 +23,7 @@ const (
 	queryIDKey       = "QueryID"
 	driverTypeKey    = "DriverType"
 	driverVersionKey = "DriverVersion"
+	golangVersionKey = "GolangVersion"
 	sqlStateKey      = "SQLState"
 	reasonKey        = "reason"
 	errorNumberKey   = "ErrorNumber"

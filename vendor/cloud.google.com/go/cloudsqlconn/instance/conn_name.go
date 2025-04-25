@@ -27,17 +27,23 @@ var (
 	// Additionally, we have to support legacy "domain-scoped" projects
 	// (e.g. "google.com:PROJECT")
 	connNameRegex = regexp.MustCompile("([^:]+(:[^:]+)?):([^:]+):([^:]+)")
+	// The domain name pattern in accordance with RFC 1035, RFC 1123 and RFC 2181.
+	domainNameRegex = regexp.MustCompile(`^(?:[_a-z0-9](?:[_a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)?$`)
 )
 
 // ConnName represents the "instance connection name", in the format
 // "project:region:name".
 type ConnName struct {
-	project string
-	region  string
-	name    string
+	project    string
+	region     string
+	name       string
+	domainName string
 }
 
 func (c *ConnName) String() string {
+	if c.domainName != "" {
+		return fmt.Sprintf("%s -> %s:%s:%s", c.domainName, c.project, c.region, c.name)
+	}
 	return fmt.Sprintf("%s:%s:%s", c.project, c.region, c.name)
 }
 
@@ -56,8 +62,34 @@ func (c *ConnName) Name() string {
 	return c.name
 }
 
+// DomainName returns the domain name for this instance
+func (c *ConnName) DomainName() string {
+	return c.domainName
+}
+
+// HasDomainName returns whether the Cloud SQL instance has a domain name
+func (c *ConnName) HasDomainName() bool {
+	return c.domainName != ""
+}
+
+// IsValidDomain validates that a string is a well-formed domain name
+func IsValidDomain(dn string) bool {
+	b := []byte(dn)
+	m := domainNameRegex.FindSubmatch(b)
+	if m == nil {
+		return false
+	}
+	return true
+}
+
 // ParseConnName initializes a new ConnName struct.
 func ParseConnName(cn string) (ConnName, error) {
+	return ParseConnNameWithDomainName(cn, "")
+}
+
+// ParseConnNameWithDomainName initializes a new ConnName struct,
+// also setting the domain name.
+func ParseConnNameWithDomainName(cn string, dn string) (ConnName, error) {
 	b := []byte(cn)
 	m := connNameRegex.FindSubmatch(b)
 	if m == nil {
@@ -69,9 +101,10 @@ func ParseConnName(cn string) (ConnName, error) {
 	}
 
 	c := ConnName{
-		project: string(m[1]),
-		region:  string(m[3]),
-		name:    string(m[4]),
+		project:    string(m[1]),
+		region:     string(m[3]),
+		name:       string(m[4]),
+		domainName: dn,
 	}
 	return c, nil
 }

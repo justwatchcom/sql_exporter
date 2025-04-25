@@ -22,7 +22,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 )
 
@@ -51,7 +51,7 @@ func parseKeyValue(content []byte, separator byte, callback func(key, value []by
 }
 
 func findValue(filename, separator, key string) (string, error) {
-	content, err := ioutil.ReadFile(filename)
+	content, err := os.ReadFile(filename)
 	if err != nil {
 		return "", err
 	}
@@ -93,6 +93,7 @@ func decodeBitMap(s string, lookupName func(int) string) ([]string, error) {
 	return names, nil
 }
 
+// parses a meminfo field, returning either a raw numerical value, or the kB value converted to bytes
 func parseBytesOrNumber(data []byte) (uint64, error) {
 	parts := bytes.Fields(data)
 

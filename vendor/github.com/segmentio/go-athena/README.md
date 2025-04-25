@@ -1,9 +1,6 @@
 [![](https://godoc.org/github.com/segmentio/go-athena?status.svg)](https://godoc.org/github.com/segmentio/go-athena)
 # go-athena
 
-> **Note**  
-> Segment has paused maintenance on this project, but may return it to an active status in the future. Issues and pull requests from external contributors are not being considered, although internal contributions may appear from time to time. The project remains available under its open source license for anyone to use.
-
 go-athena is a simple Golang [database/sql] driver for [Amazon Athena](https://aws.amazon.com/athena/).
 
 ```go

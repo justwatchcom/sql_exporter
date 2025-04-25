@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Replace pkg/errors with Go 1.13 native errors #18.
+
 ### Changed
+
+- go.mod - Require Go 1.18 or newer. #27
 
 ### Deprecated
 

@@ -158,7 +158,7 @@ func NewDownloader(c DownloadAPIClient, options ...func(*Downloader)) *Downloade
 //	// pre-allocate in memory buffer, where headObject type is *s3.HeadObjectOutput
 //	buf := make([]byte, int(headObject.ContentLength))
 //	// wrap with aws.WriteAtBuffer
-//	w := s3manager.NewWriteAtBuffer(buf)
+//	w := manager.NewWriteAtBuffer(buf)
 //	// download file into the memory
 //	numBytesDownloaded, err := downloader.Download(ctx, w, &s3.GetObjectInput{
 //		Bucket: aws.String(bucket),
@@ -183,7 +183,10 @@ func (d Downloader) Download(ctx context.Context, w io.WriterAt, input *s3.GetOb
 	// Copy ClientOptions
 	clientOptions := make([]func(*s3.Options), 0, len(impl.cfg.ClientOptions)+1)
 	clientOptions = append(clientOptions, func(o *s3.Options) {
-		o.APIOptions = append(o.APIOptions, middleware.AddSDKAgentKey(middleware.FeatureMetadata, userAgentKey))
+		o.APIOptions = append(o.APIOptions,
+			middleware.AddSDKAgentKey(middleware.FeatureMetadata, userAgentKey),
+			addFeatureUserAgent, // yes, there are two of these
+		)
 	})
 	clientOptions = append(clientOptions, impl.cfg.ClientOptions...)
 	impl.cfg.ClientOptions = clientOptions
@@ -217,14 +220,15 @@ type downloader struct {
 	in *s3.GetObjectInput
 	w  io.WriterAt
 
-	wg sync.WaitGroup
-	m  sync.Mutex
+	wg   sync.WaitGroup
+	m    sync.Mutex
+	once sync.Once
 
-	pos        int64
-	totalBytes int64
-	written    int64
-	err        error
-
+	pos                int64
+	totalBytes         int64
+	written            int64
+	err                error
+	etag               string
 	partBodyMaxRetries int
 }
 
@@ -355,6 +359,9 @@ func (d *downloader) downloadChunk(chunk dlchunk) error {
 
 	// Get the next byte range of data
 	params.Range = aws.String(chunk.ByteRange())
+	if params.VersionId == nil && d.etag != "" {
+		params.IfMatch = aws.String(d.etag)
+	}
 
 	var n int64
 	var err error
@@ -398,6 +405,9 @@ func (d *downloader) tryDownloadChunk(params *s3.GetObjectInput, w io.Writer) (i
 		return 0, err
 	}
 	d.setTotalBytes(resp) // Set total if not yet set.
+	d.once.Do(func() {
+		d.etag = aws.ToString(resp.ETag)
+	})
 
 	var src io.Reader = resp.Body
 	if d.cfg.BufferProvider != nil {

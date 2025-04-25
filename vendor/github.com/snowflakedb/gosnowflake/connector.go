@@ -20,7 +20,7 @@ type Connector struct {
 }
 
 // NewConnector creates a new connector with the given SnowflakeDriver and Config.
-func NewConnector(driver InternalSnowflakeDriver, config Config) Connector {
+func NewConnector(driver InternalSnowflakeDriver, config Config) driver.Connector {
 	return Connector{driver, config}
 }
 
