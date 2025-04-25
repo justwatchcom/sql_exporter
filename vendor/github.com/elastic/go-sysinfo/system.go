@@ -30,6 +30,21 @@ import (
 	_ "github.com/elastic/go-sysinfo/providers/windows"
 )
 
+type ProviderOption func(*registry.ProviderOptions)
+
+// WithHostFS returns a provider with a custom HostFS root path,
+// enabling use of the library from within a container, or an alternate root path on linux.
+// For example, WithHostFS("/hostfs") can be used when /hostfs points to the root filesystem of the container host.
+// For full functionality, the alternate hostfs should have:
+//   - /proc
+//   - /var
+//   - /etc
+func WithHostFS(hostfs string) ProviderOption {
+	return func(po *registry.ProviderOptions) {
+		po.Hostfs = hostfs
+	}
+}
+
 // Go returns information about the Go runtime.
 func Go() types.GoInfo {
 	return types.GoInfo{
@@ -40,12 +55,31 @@ func Go() types.GoInfo {
 	}
 }
 
+func applyOptsAndReturnProvider(opts ...ProviderOption) registry.ProviderOptions {
+	options := registry.ProviderOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return options
+}
+
+// setupProcessProvider returns a ProcessProvider.
+// Most of the exported functions here deal with processes,
+// so this just gets wrapped by all the external functions
+func setupProcessProvider(opts ...ProviderOption) (registry.ProcessProvider, error) {
+	provider := registry.GetProcessProvider(applyOptsAndReturnProvider(opts...))
+	if provider == nil {
+		return nil, types.ErrNotImplemented
+	}
+	return provider, nil
+}
+
 // Host returns information about host on which this process is running. If
 // host information collection is not implemented for this platform then
 // types.ErrNotImplemented is returned.
 // On Darwin (macOS) a types.ErrNotImplemented is returned with cgo disabled.
-func Host() (types.Host, error) {
-	provider := registry.GetHostProvider()
+func Host(opts ...ProviderOption) (types.Host, error) {
+	provider := registry.GetHostProvider(applyOptsAndReturnProvider(opts...))
 	if provider == nil {
 		return nil, types.ErrNotImplemented
 	}
@@ -56,10 +90,10 @@ func Host() (types.Host, error) {
 // with the given PID. The types.Process object can be used to query information
 // about the process.  If process information collection is not implemented for
 // this platform then types.ErrNotImplemented is returned.
-func Process(pid int) (types.Process, error) {
-	provider := registry.GetProcessProvider()
-	if provider == nil {
-		return nil, types.ErrNotImplemented
+func Process(pid int, opts ...ProviderOption) (types.Process, error) {
+	provider, err := setupProcessProvider(opts...)
+	if err != nil {
+		return nil, err
 	}
 	return provider.Process(pid)
 }
@@ -67,10 +101,10 @@ func Process(pid int) (types.Process, error) {
 // Processes return a list of all processes. If process information collection
 // is not implemented for this platform then types.ErrNotImplemented is
 // returned.
-func Processes() ([]types.Process, error) {
-	provider := registry.GetProcessProvider()
-	if provider == nil {
-		return nil, types.ErrNotImplemented
+func Processes(opts ...ProviderOption) ([]types.Process, error) {
+	provider, err := setupProcessProvider(opts...)
+	if err != nil {
+		return nil, err
 	}
 	return provider.Processes()
 }
@@ -78,10 +112,10 @@ func Processes() ([]types.Process, error) {
 // Self return a types.Process object representing this process. If process
 // information collection is not implemented for this platform then
 // types.ErrNotImplemented is returned.
-func Self() (types.Process, error) {
-	provider := registry.GetProcessProvider()
-	if provider == nil {
-		return nil, types.ErrNotImplemented
+func Self(opts ...ProviderOption) (types.Process, error) {
+	provider, err := setupProcessProvider(opts...)
+	if err != nil {
+		return nil, err
 	}
 	return provider.Self()
 }

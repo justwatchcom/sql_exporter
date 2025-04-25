@@ -54,8 +54,8 @@ func (hc *heartbeat) stop() {
 func (hc *heartbeat) heartbeatMain() error {
 	logger.Info("Heartbeating!")
 	params := &url.Values{}
-	params.Add(requestIDKey, NewUUID().String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	params.Set(requestIDKey, NewUUID().String())
+	params.Set(requestGUIDKey, NewUUID().String())
 	headers := getHeaders()
 	token, _, _ := hc.restful.TokenAccessor.GetTokens()
 	headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)

@@ -71,17 +71,32 @@ const (
 
 	// defaultOCSPResponderTimeout is the total timeout for OCSP responder.
 	defaultOCSPResponderTimeout = 10 * time.Second
+	// defaultOCSPMaxRetryCount specifies maximum numbere of subsequent retries to OCSP (cache and server)
+	defaultOCSPMaxRetryCount = 2
+
+	// defaultOCSPResponseCacheClearingInterval is the default value for clearing OCSP response cache
+	defaultOCSPResponseCacheClearingInterval = 15 * time.Minute
+)
+
+var (
+	// OcspCacheServerTimeout is a timeout for OCSP cache server.
+	OcspCacheServerTimeout = defaultOCSPCacheServerTimeout
+	// OcspResponderTimeout is a timeout for OCSP responders.
+	OcspResponderTimeout = defaultOCSPResponderTimeout
+	// OcspMaxRetryCount is a number of retires to OCSP (cache server and responders).
+	OcspMaxRetryCount = defaultOCSPMaxRetryCount
 )
 
 const (
 	cacheFileBaseName = "ocsp_response_cache.json"
 	// cacheExpire specifies cache data expiration time in seconds.
-	cacheExpire           = float64(24 * 60 * 60)
-	cacheServerURL        = "http://ocsp.snowflakecomputing.com"
-	cacheServerEnabledEnv = "SF_OCSP_RESPONSE_CACHE_SERVER_ENABLED"
-	cacheServerURLEnv     = "SF_OCSP_RESPONSE_CACHE_SERVER_URL"
-	cacheDirEnv           = "SF_OCSP_RESPONSE_CACHE_DIR"
-	ocspRetryURLEnv       = "SF_OCSP_RESPONSE_RETRY_URL"
+	cacheExpire                                   = float64(24 * 60 * 60)
+	defaultCacheServerURL                         = "http://ocsp.snowflakecomputing.com"
+	cacheServerEnabledEnv                         = "SF_OCSP_RESPONSE_CACHE_SERVER_ENABLED"
+	cacheServerURLEnv                             = "SF_OCSP_RESPONSE_CACHE_SERVER_URL"
+	cacheDirEnv                                   = "SF_OCSP_RESPONSE_CACHE_DIR"
+	ocspRetryURLEnv                               = "SF_OCSP_RESPONSE_RETRY_URL"
+	ocspResponseCacheClearingIntervalInSecondsEnv = "SF_OCSP_RESPONSE_CACHE_CLEARING_INTERVAL_IN_SECONDS"
 )
 
 const (
@@ -97,6 +112,8 @@ const (
 	tolerableValidityRatio = 100               // buffer for certificate revocation update time
 	maxClockSkew           = 900 * time.Second // buffer for clock skew
 )
+
+var stopOCSPCacheClearing = make(chan struct{})
 
 type ocspStatusCode int
 
@@ -380,30 +397,30 @@ func checkOCSPCacheServer(
 	ocspS *ocspStatus) {
 	var respd map[string][]interface{}
 	headers := make(map[string]string)
-	res, err := newRetryHTTP(ctx, client, req, ocspServerHost, headers, totalTimeout, defaultMaxRetryCount, defaultTimeProvider, nil).execute()
+	res, err := newRetryHTTP(ctx, client, req, ocspServerHost, headers, totalTimeout, OcspMaxRetryCount, defaultTimeProvider, nil).execute()
 	if err != nil {
-		logger.Errorf("failed to get OCSP cache from OCSP Cache Server. %v", err)
+		logger.WithContext(ctx).Errorf("failed to get OCSP cache from OCSP Cache Server. %v", err)
 		return nil, &ocspStatus{
 			code: ocspFailedSubmit,
 			err:  err,
 		}
 	}
 	defer res.Body.Close()
-	logger.Debugf("StatusCode from OCSP Cache Server: %v", res.StatusCode)
+	logger.WithContext(ctx).Debugf("StatusCode from OCSP Cache Server: %v", res.StatusCode)
 	if res.StatusCode != http.StatusOK {
 		return nil, &ocspStatus{
 			code: ocspFailedResponse,
 			err:  fmt.Errorf("HTTP code is not OK. %v: %v", res.StatusCode, res.Status),
 		}
 	}
-	logger.Debugf("reading contents")
+	logger.WithContext(ctx).Debugf("reading contents")
 
 	dec := json.NewDecoder(res.Body)
 	for {
 		if err := dec.Decode(&respd); err == io.EOF {
 			break
 		} else if err != nil {
-			logger.Errorf("failed to decode OCSP cache. %v", err)
+			logger.WithContext(ctx).Errorf("failed to decode OCSP cache. %v", err)
 			return nil, &ocspStatus{
 				code: ocspFailedExtractResponse,
 				err:  err,
@@ -443,7 +460,7 @@ func retryOCSP(
 	}
 	res, err := newRetryHTTP(
 		ctx, client, req, ocspHost, headers,
-		totalTimeout*time.Duration(multiplier), defaultMaxRetryCount, defaultTimeProvider, nil).doPost().setBody(reqBody).execute()
+		totalTimeout*time.Duration(multiplier), OcspMaxRetryCount, defaultTimeProvider, nil).doPost().setBody(reqBody).execute()
 	if err != nil {
 		return ocspRes, ocspResBytes, &ocspStatus{
 			code: ocspFailedSubmit,
@@ -451,7 +468,7 @@ func retryOCSP(
 		}
 	}
 	defer res.Body.Close()
-	logger.Debugf("StatusCode from OCSP Server: %v\n", res.StatusCode)
+	logger.WithContext(ctx).Debugf("StatusCode from OCSP Server: %v\n", res.StatusCode)
 	if res.StatusCode != http.StatusOK {
 		return ocspRes, ocspResBytes, &ocspStatus{
 			code: ocspFailedResponse,
@@ -467,12 +484,21 @@ func retryOCSP(
 	}
 	ocspRes, err = ocsp.ParseResponse(ocspResBytes, issuer)
 	if err != nil {
-		logger.Warnf("error when parsing ocsp response: %v", err)
-		logger.Warnf("performing GET fallback request to OCSP")
-		return fallbackRetryOCSPToGETRequest(ctx, client, req, ocspHost, headers, issuer, totalTimeout)
+		_, ok1 := err.(asn1.StructuralError)
+		_, ok2 := err.(asn1.SyntaxError)
+		if ok1 || ok2 {
+			logger.WithContext(ctx).Warnf("error when parsing ocsp response: %v", err)
+			logger.WithContext(ctx).Warnf("performing GET fallback request to OCSP")
+			return fallbackRetryOCSPToGETRequest(ctx, client, req, ocspHost, headers, issuer, totalTimeout)
+		}
+		logger.Warnf("Unknown response status from OCSP responder: %v", err)
+		return nil, nil, &ocspStatus{
+			code: ocspStatusUnknown,
+			err:  err,
+		}
 	}
 
-	logger.Debugf("OCSP Status from server: %v", printStatus(ocspRes))
+	logger.WithContext(ctx).Debugf("OCSP Status from server: %v", printStatus(ocspRes))
 	return ocspRes, ocspResBytes, &ocspStatus{
 		code: ocspSuccess,
 	}
@@ -496,7 +522,7 @@ func fallbackRetryOCSPToGETRequest(
 		multiplier = 3 // up to 3 times for Fail Close mode
 	}
 	res, err := newRetryHTTP(ctx, client, req, ocspHost, headers,
-		totalTimeout*time.Duration(multiplier), defaultMaxRetryCount, defaultTimeProvider, nil).execute()
+		totalTimeout*time.Duration(multiplier), OcspMaxRetryCount, defaultTimeProvider, nil).execute()
 	if err != nil {
 		return ocspRes, ocspResBytes, &ocspStatus{
 			code: ocspFailedSubmit,
@@ -504,7 +530,7 @@ func fallbackRetryOCSPToGETRequest(
 		}
 	}
 	defer res.Body.Close()
-	logger.Debugf("GET fallback StatusCode from OCSP Server: %v", res.StatusCode)
+	logger.WithContext(ctx).Debugf("GET fallback StatusCode from OCSP Server: %v", res.StatusCode)
 	if res.StatusCode != http.StatusOK {
 		return ocspRes, ocspResBytes, &ocspStatus{
 			code: ocspFailedResponse,
@@ -526,7 +552,7 @@ func fallbackRetryOCSPToGETRequest(
 		}
 	}
 
-	logger.Debugf("GET fallback OCSP Status from server: %v", printStatus(ocspRes))
+	logger.WithContext(ctx).Debugf("GET fallback OCSP Status from server: %v", printStatus(ocspRes))
 	return ocspRes, ocspResBytes, &ocspStatus{
 		code: ocspSuccess,
 	}
@@ -558,7 +584,7 @@ func fullOCSPURL(url *url.URL) string {
 
 // getRevocationStatus checks the certificate revocation status for subject using issuer certificate.
 func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate) *ocspStatus {
-	logger.Infof("Subject: %v, Issuer: %v", subject.Subject, issuer.Subject)
+	logger.WithContext(ctx).Tracef("Subject: %v, Issuer: %v", subject.Subject, issuer.Subject)
 
 	status, ocspReq, encodedCertID := validateWithCache(subject, issuer)
 	if isValidOCSPStatus(status.code) {
@@ -567,9 +593,10 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 	if ocspReq == nil || encodedCertID == nil {
 		return status
 	}
-	logger.Infof("cache missed")
-	logger.Infof("OCSP Server: %v", subject.OCSPServer)
-	if len(subject.OCSPServer) == 0 || isTestNoOCSPURL() {
+	logger.WithContext(ctx).Infof("cache missed")
+	logger.WithContext(ctx).Infof("OCSP Server: %v", subject.OCSPServer)
+	testResponderURL := os.Getenv(ocspTestResponderURLEnv)
+	if (len(subject.OCSPServer) == 0 || isTestNoOCSPURL()) && testResponderURL == "" {
 		return &ocspStatus{
 			code: ocspNoServer,
 			err: &SnowflakeError{
@@ -579,7 +606,10 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 			},
 		}
 	}
-	ocspHost := subject.OCSPServer[0]
+	ocspHost := testResponderURL
+	if ocspHost == "" && len(subject.OCSPServer) > 0 {
+		ocspHost = subject.OCSPServer[0]
+	}
 	u, err := url.Parse(ocspHost)
 	if err != nil {
 		return &ocspStatus{
@@ -587,7 +617,6 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 			err:  fmt.Errorf("failed to parse OCSP server host. %v", ocspHost),
 		}
 	}
-	hostnameStr := os.Getenv(ocspTestResponderURLEnv)
 	var hostname string
 	if retryURL := os.Getenv(ocspRetryURLEnv); retryURL != "" {
 		hostname = fmt.Sprintf(retryURL, fullOCSPURL(u), base64.StdEncoding.EncodeToString(ocspReq))
@@ -599,16 +628,9 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 	} else {
 		hostname = fullOCSPURL(u)
 	}
-	if hostnameStr != "" {
-		u0, err := url.Parse(hostnameStr)
-		if err == nil {
-			hostname = u0.Hostname()
-			u = u0
-		}
-	}
 
-	logger.Debugf("Fetching OCSP response from server: %v", u)
-	logger.Debugf("Host in headers: %v", hostname)
+	logger.WithContext(ctx).Debugf("Fetching OCSP response from server: %v", u)
+	logger.WithContext(ctx).Debugf("Host in headers: %v", hostname)
 
 	headers := make(map[string]string)
 	headers[httpHeaderContentType] = "application/ocsp-request"
@@ -616,7 +638,7 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 	headers[httpHeaderContentLength] = strconv.Itoa(len(ocspReq))
 	headers[httpHeaderHost] = hostname
 	timeoutStr := os.Getenv(ocspTestResponderTimeoutEnv)
-	timeout := defaultOCSPResponderTimeout
+	timeout := OcspResponderTimeout
 	if timeoutStr != "" {
 		var timeoutInMilliseconds int
 		timeoutInMilliseconds, err = strconv.Atoi(timeoutStr)
@@ -626,7 +648,7 @@ func getRevocationStatus(ctx context.Context, subject, issuer *x509.Certificate)
 	}
 	ocspClient := &http.Client{
 		Timeout:   timeout,
-		Transport: snowflakeInsecureTransport,
+		Transport: snowflakeNoOcspTransport,
 	}
 	ocspRes, ocspResBytes, ocspS := retryOCSP(
 		ctx, ocspClient, http.NewRequest, u, headers, ocspReq, issuer, timeout)
@@ -659,6 +681,8 @@ func verifyPeerCertificate(ctx context.Context, verifiedChains [][]*x509.Certifi
 	for i := 0; i < len(verifiedChains); i++ {
 		// Certificate signed by Root CA. This should be one before the last in the Certificate Chain
 		numberOfNoneRootCerts := len(verifiedChains[i]) - 1
+		logger.Tracef("checking cert, %v, %v, isCa: %v, rawIssuer: %v, rawSubject: %v", i, numberOfNoneRootCerts, verifiedChains[i][numberOfNoneRootCerts].IsCA, string(verifiedChains[i][numberOfNoneRootCerts].RawIssuer), string(verifiedChains[i][numberOfNoneRootCerts].RawSubject))
+		logger.Tracef("checking cert, base64, rawIssuer: %v, rawSubject: %v", base64.StdEncoding.EncodeToString(verifiedChains[i][numberOfNoneRootCerts].RawIssuer), base64.StdEncoding.EncodeToString(verifiedChains[i][numberOfNoneRootCerts].RawSubject))
 		if !verifiedChains[i][numberOfNoneRootCerts].IsCA || string(verifiedChains[i][numberOfNoneRootCerts].RawIssuer) != string(verifiedChains[i][numberOfNoneRootCerts].RawSubject) {
 			// Check if the last Non Root Cert is also a CA or is self signed.
 			// if the last certificate is not, add it to the list
@@ -712,11 +736,7 @@ func canEarlyExitForOCSP(results []*ocspStatus, chainSize int) *ocspStatus {
 		}
 	}
 	if len(msg) > 0 {
-		logger.Warnf(
-			"WARNING!!! Using fail-open to connect. Driver is connecting to an "+
-				"HTTPS endpoint without OCSP based Certificate Revocation checking "+
-				"as it could not obtain a valid OCSP Response to use from the CA OCSP "+
-				"responder. Detail: %v", msg[1:])
+		logger.Debugf("OCSP responder didn't respond correctly. Assuming certificate is not revoked. Detail: %v", msg[1:])
 	}
 	return nil
 }
@@ -761,7 +781,7 @@ func downloadOCSPCacheServer() {
 	}
 	ocspCacheServerURL := os.Getenv(cacheServerURLEnv)
 	if ocspCacheServerURL == "" {
-		ocspCacheServerURL = fmt.Sprintf("%v/%v", cacheServerURL, cacheFileBaseName)
+		ocspCacheServerURL = fmt.Sprintf("%v/%v", defaultCacheServerURL, cacheFileBaseName)
 	}
 	u, err := url.Parse(ocspCacheServerURL)
 	if err != nil {
@@ -769,7 +789,7 @@ func downloadOCSPCacheServer() {
 	}
 	logger.Infof("downloading OCSP Cache from server %v", ocspCacheServerURL)
 	timeoutStr := os.Getenv(ocspTestResponseCacheServerTimeoutEnv)
-	timeout := defaultOCSPCacheServerTimeout
+	timeout := OcspCacheServerTimeout
 	if timeoutStr != "" {
 		var timeoutInMilliseconds int
 		timeoutInMilliseconds, err = strconv.Atoi(timeoutStr)
@@ -779,7 +799,7 @@ func downloadOCSPCacheServer() {
 	}
 	ocspClient := &http.Client{
 		Timeout:   timeout,
-		Transport: snowflakeInsecureTransport,
+		Transport: snowflakeNoOcspTransport,
 	}
 	ret, ocspStatus := checkOCSPCacheServer(context.Background(), ocspClient, http.NewRequest, u, timeout)
 	if ocspStatus.code != ocspSuccess {
@@ -831,13 +851,13 @@ func overrideCacheDir() {
 
 // initOCSPCache initializes OCSP Response cache file.
 func initOCSPCache() {
+	ocspResponseCacheLock = &sync.RWMutex{}
+	ocspParsedRespCacheLock = &sync.Mutex{}
+	ocspResponseCache = make(map[certIDKey]*certCacheValue)
+	ocspParsedRespCache = make(map[parsedOcspRespKey]*ocspStatus)
 	if strings.EqualFold(os.Getenv(cacheServerEnabledEnv), "false") {
 		return
 	}
-	ocspResponseCache = make(map[certIDKey]*certCacheValue)
-	ocspParsedRespCache = make(map[parsedOcspRespKey]*ocspStatus)
-	ocspResponseCacheLock = &sync.RWMutex{}
-	ocspParsedRespCacheLock = &sync.Mutex{}
 
 	logger.Infof("reading OCSP Response cache file. %v\n", cacheFileName)
 	f, err := os.OpenFile(cacheFileName, os.O_CREATE|os.O_RDONLY, readWriteFileMode)
@@ -944,7 +964,7 @@ func extractOCSPCacheResponseValue(certIDKey *certIDKey, certCacheValue *certCac
 		status = validateOCSP(ocspResponse)
 		ocspParsedRespCache[cacheKey] = status
 	}
-	logger.Debugf("OCSP status found in cache: %v; certIdKey: %v", status, certIDKey)
+	logger.Tracef("OCSP status found in cache: %v; certIdKey: %v", status, certIDKey)
 	return status
 }
 
@@ -1062,14 +1082,60 @@ func createOCSPCacheDir() {
 	logger.Infof("reset OCSP cache file. %v", cacheFileName)
 }
 
+func initOCSPCacheClearer() {
+	interval := defaultOCSPResponseCacheClearingInterval
+	if intervalFromEnv := os.Getenv(ocspResponseCacheClearingIntervalInSecondsEnv); intervalFromEnv != "" {
+		intervalAsSeconds, err := strconv.Atoi(intervalFromEnv)
+		if err != nil {
+			logger.Warnf("unparsable %v value: %v", ocspResponseCacheClearingIntervalInSecondsEnv, intervalFromEnv)
+		} else {
+			interval = time.Duration(intervalAsSeconds) * time.Second
+		}
+	}
+	logger.Debugf("initializing OCSP cache clearer to %v", interval)
+	go GoroutineWrapper(context.Background(), func() {
+		ticker := time.NewTicker(interval)
+		for {
+			select {
+			case <-ticker.C:
+				clearOCSPCaches()
+			case <-stopOCSPCacheClearing:
+				logger.Debug("stopped clearing OCSP cache")
+				ticker.Stop()
+				return
+			}
+		}
+	})
+}
+
+func stopOCSPCacheClearer() {
+	stopOCSPCacheClearing <- struct{}{}
+}
+
+func clearOCSPCaches() {
+	logger.Debugf("clearing OCSP caches")
+	func() {
+		ocspResponseCacheLock.Lock()
+		defer ocspResponseCacheLock.Unlock()
+		ocspResponseCache = make(map[certIDKey]*certCacheValue)
+	}()
+
+	func() {
+		ocspParsedRespCacheLock.Lock()
+		defer ocspParsedRespCacheLock.Unlock()
+		ocspParsedRespCache = make(map[parsedOcspRespKey]*ocspStatus)
+	}()
+}
+
 func init() {
 	readCACerts()
 	createOCSPCacheDir()
 	initOCSPCache()
+	initOCSPCacheClearer()
 }
 
-// snowflakeInsecureTransport is the transport object that doesn't do certificate revocation check.
-var snowflakeInsecureTransport = &http.Transport{
+// snowflakeNoOcspTransport is the transport object that doesn't do certificate revocation check with OCSP.
+var snowflakeNoOcspTransport http.RoundTripper = &http.Transport{
 	MaxIdleConns:    10,
 	IdleConnTimeout: 30 * time.Minute,
 	Proxy:           http.ProxyFromEnvironment,

@@ -23,22 +23,50 @@ import (
 	"github.com/elastic/go-sysinfo/types"
 )
 
-var (
-	hostProvider    HostProvider
-	processProvider ProcessProvider
+type (
+	HostOptsCreator    = func(ProviderOptions) HostProvider
+	ProcessOptsCreator = func(ProviderOptions) ProcessProvider
 )
 
+// HostProvider defines interfaces that provide host-specific metrics
 type HostProvider interface {
 	Host() (types.Host, error)
 }
 
+// ProcessProvider defines interfaces that provide process-specific metrics
 type ProcessProvider interface {
 	Processes() ([]types.Process, error)
 	Process(pid int) (types.Process, error)
 	Self() (types.Process, error)
 }
 
+type ProviderOptions struct {
+	Hostfs string
+}
+
+var (
+	hostProvider            HostProvider
+	processProvider         ProcessProvider
+	processProviderWithOpts ProcessOptsCreator
+	hostProviderWithOpts    HostOptsCreator
+)
+
+// Register a metrics provider. `provider` should implement one or more of `ProcessProvider` or `HostProvider`
 func Register(provider interface{}) {
+	if h, ok := provider.(ProcessOptsCreator); ok {
+		if processProviderWithOpts != nil {
+			panic(fmt.Sprintf("ProcessOptsCreator already registered: %T", processProviderWithOpts))
+		}
+		processProviderWithOpts = h
+	}
+
+	if h, ok := provider.(HostOptsCreator); ok {
+		if hostProviderWithOpts != nil {
+			panic(fmt.Sprintf("HostOptsCreator already registered: %T", hostProviderWithOpts))
+		}
+		hostProviderWithOpts = h
+	}
+
 	if h, ok := provider.(HostProvider); ok {
 		if hostProvider != nil {
 			panic(fmt.Sprintf("HostProvider already registered: %v", hostProvider))
@@ -54,5 +82,18 @@ func Register(provider interface{}) {
 	}
 }
 
-func GetHostProvider() HostProvider       { return hostProvider }
-func GetProcessProvider() ProcessProvider { return processProvider }
+// GetHostProvider returns the HostProvider registered for the system. May return nil.
+func GetHostProvider(opts ProviderOptions) HostProvider {
+	if hostProviderWithOpts != nil {
+		return hostProviderWithOpts(opts)
+	}
+	return hostProvider
+}
+
+// GetProcessProvider returns the ProcessProvider registered on the system. May return nil.
+func GetProcessProvider(opts ProviderOptions) ProcessProvider {
+	if processProviderWithOpts != nil {
+		return processProviderWithOpts(opts)
+	}
+	return processProvider
+}

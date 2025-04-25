@@ -79,3 +79,9 @@ This table lists the OS and architectures for which a "provider" is implemented.
 | windows/arm    |              |        |
 
 * On darwin (macOS) host information like machineid and process information like memory, cpu, user and starttime require cgo.
+
+### Supported Go versions
+
+go-sysinfo supports the [two most recent Go releases][ci_go_versions].
+
+[ci_go_versions]: https://github.com/elastic/go-sysinfo/blob/main/.github/workflows/go.yml#L40-L41

@@ -75,7 +75,7 @@ func (se *SnowflakeError) sendExceptionTelemetry(sc *snowflakeConn, data *teleme
 func (se *SnowflakeError) exceptionTelemetry(sc *snowflakeConn) *SnowflakeError {
 	data := se.generateTelemetryExceptionData()
 	if err := se.sendExceptionTelemetry(sc, data); err != nil {
-		logger.Debugf("failed to log to telemetry: %v", data)
+		logger.WithContext(sc.ctx).Debugf("failed to log to telemetry: %v", data)
 	}
 	return se
 }
@@ -101,15 +101,15 @@ func populateErrorFields(code int, data *execResponse) *SnowflakeError {
 const (
 	/* connection */
 
-	// ErrCodeEmptyAccountCode is an error code for the case where a DNS doesn't include account parameter
+	// ErrCodeEmptyAccountCode is an error code for the case where a DSN doesn't include account parameter
 	ErrCodeEmptyAccountCode = 260000
-	// ErrCodeEmptyUsernameCode is an error code for the case where a DNS doesn't include user parameter
+	// ErrCodeEmptyUsernameCode is an error code for the case where a DSN doesn't include user parameter
 	ErrCodeEmptyUsernameCode = 260001
-	// ErrCodeEmptyPasswordCode is an error code for the case where a DNS doesn't include password parameter
+	// ErrCodeEmptyPasswordCode is an error code for the case where a DSN doesn't include password parameter
 	ErrCodeEmptyPasswordCode = 260002
-	// ErrCodeFailedToParseHost is an error code for the case where a DNS includes an invalid host name
+	// ErrCodeFailedToParseHost is an error code for the case where a DSN includes an invalid host name
 	ErrCodeFailedToParseHost = 260003
-	// ErrCodeFailedToParsePort is an error code for the case where a DNS includes an invalid port number
+	// ErrCodeFailedToParsePort is an error code for the case where a DSN includes an invalid port number
 	ErrCodeFailedToParsePort = 260004
 	// ErrCodeIdpConnectionError is an error code for the case where a IDP connection failed
 	ErrCodeIdpConnectionError = 260005
@@ -127,6 +127,14 @@ const (
 	ErrCodeFailedToParseAuthenticator = 260011
 	// ErrCodeClientConfigFailed is an error code for the case where clientConfigFile is invalid or applying client configuration fails
 	ErrCodeClientConfigFailed = 260012
+	// ErrCodeTomlFileParsingFailed is an error code for the case where parsing the toml file is failed because of invalid value.
+	ErrCodeTomlFileParsingFailed = 260013
+	// ErrCodeFailedToFindDSNInToml is an error code for the case where the DSN does not exist in the toml file.
+	ErrCodeFailedToFindDSNInToml = 260014
+	// ErrCodeInvalidFilePermission is an error code for the case where the user does not have 0600 permission to the toml file .
+	ErrCodeInvalidFilePermission = 260015
+	// ErrCodeEmptyPasswordAndToken is an error code for the case where a DSN do includes neither password nor token
+	ErrCodeEmptyPasswordAndToken = 260016
 
 	/* network */
 
@@ -157,6 +165,8 @@ const (
 
 	// ErrFailedToGetChunk is an error code for the case where it failed to get chunk of result set
 	ErrFailedToGetChunk = 262000
+	// ErrNonArrowResponseInArrowBatches is an error code for case where ArrowBatches mode is enabled, but response is not Arrow-based
+	ErrNonArrowResponseInArrowBatches = 262001
 
 	/* transaction*/
 
@@ -213,13 +223,17 @@ const (
 
 	// ErrInvalidTimestampTz is an error code for the case where a returned TIMESTAMP_TZ internal value is invalid
 	ErrInvalidTimestampTz = 268000
-	// ErrInvalidOffsetStr is an error code for the case where a offset string is invalid. The input string must
+	// ErrInvalidOffsetStr is an error code for the case where an offset string is invalid. The input string must
 	// consist of sHHMI where one sign character '+'/'-' followed by zero filled hours and minutes
 	ErrInvalidOffsetStr = 268001
 	// ErrInvalidBinaryHexForm is an error code for the case where a binary data in hex form is invalid.
 	ErrInvalidBinaryHexForm = 268002
 	// ErrTooHighTimestampPrecision is an error code for the case where cannot convert Snowflake timestamp to arrow.Timestamp
 	ErrTooHighTimestampPrecision = 268003
+	// ErrNullValueInArray is an error code for the case where there are null values in an array without arrayValuesNullable set to true
+	ErrNullValueInArray = 268004
+	// ErrNullValueInMap is an error code for the case where there are null values in a map without mapValuesNullable set to true
+	ErrNullValueInMap = 268005
 
 	/* OCSP */
 
@@ -293,6 +307,12 @@ const (
 	errMsgQueryStatus                        = "server ErrorCode=%s, ErrorMessage=%s"
 	errMsgInvalidPadding                     = "invalid padding on input"
 	errMsgClientConfigFailed                 = "client configuration failed: %v"
+	errMsgNullValueInArray                   = "for handling null values in arrays use WithArrayValuesNullable(ctx)"
+	errMsgNullValueInMap                     = "for handling null values in maps use WithMapValuesNullable(ctx)"
+	errMsgFailedToParseTomlFile              = "failed to parse toml file. the params %v occurred error with value %v"
+	errMsgFailedToFindDSNInTomlFile          = "failed to find DSN in toml file."
+	errMsgInvalidPermissionToTomlFile        = "file permissions different than read/write for user. Your Permission: %v"
+	errMsgNonArrowResponseInArrowBatches     = "arrow batches enabled, but the response is not Arrow based"
 )
 
 // Returned if a DNS doesn't include account parameter.
@@ -319,8 +339,15 @@ func errEmptyPassword() *SnowflakeError {
 	}
 }
 
+func errEmptyPasswordAndToken() *SnowflakeError {
+	return &SnowflakeError{
+		Number:  ErrCodeEmptyPasswordAndToken,
+		Message: "both password and token are empty",
+	}
+}
+
 // Returned if a DSN's implicit region from account parameter and explicit region parameter conflict.
-func errInvalidRegion() *SnowflakeError {
+func errRegionConflict() *SnowflakeError {
 	return &SnowflakeError{
 		Number:  ErrCodeRegionOverlap,
 		Message: "two regions specified",
@@ -342,5 +369,27 @@ func errUnknownError() *SnowflakeError {
 		SQLState: "-1",
 		Message:  "an unknown server side error occurred",
 		QueryID:  "-1",
+	}
+}
+
+func errNullValueInArray() *SnowflakeError {
+	return &SnowflakeError{
+		Number:  ErrNullValueInArray,
+		Message: errMsgNullValueInArray,
+	}
+}
+
+func errNullValueInMap() *SnowflakeError {
+	return &SnowflakeError{
+		Number:  ErrNullValueInMap,
+		Message: errMsgNullValueInMap,
+	}
+}
+
+func errNonArrowResponseForArrowBatches(queryID string) *SnowflakeError {
+	return &SnowflakeError{
+		QueryID: queryID,
+		Number:  ErrNonArrowResponseInArrowBatches,
+		Message: errMsgNonArrowResponseInArrowBatches,
 	}
 }

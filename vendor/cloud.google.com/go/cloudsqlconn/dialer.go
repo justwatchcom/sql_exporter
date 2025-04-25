@@ -24,11 +24,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"cloud.google.com/go/auth"
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/httptransport"
 	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/errtype"
 	"cloud.google.com/go/cloudsqlconn/instance"
@@ -36,8 +41,6 @@ import (
 	"cloud.google.com/go/cloudsqlconn/internal/trace"
 	"github.com/google/uuid"
 	"golang.org/x/net/proxy"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
@@ -50,6 +53,12 @@ const (
 	// iamLoginScope is the OAuth2 scope used for tokens embedded in the ephemeral
 	// certificate.
 	iamLoginScope = "https://www.googleapis.com/auth/sqlservice.login"
+	// universeDomainEnvVar is the environment variable for setting the default
+	// service domain for a given Cloud universe.
+	universeDomainEnvVar = "GOOGLE_CLOUD_UNIVERSE_DOMAIN"
+	// defaultUniverseDomain is the default value for universe domain.
+	// Universe domain is the default service domain for a given Cloud universe.
+	defaultUniverseDomain = "googleapis.com"
 )
 
 var (
@@ -110,12 +119,30 @@ type connectionInfoCache interface {
 	io.Closer
 }
 
-// monitoredCache is a wrapper around a connectionInfoCache that tracks the
-// number of connections to the associated instance.
-type monitoredCache struct {
-	openConns *uint64
+type cacheKey struct {
+	domainName string
+	project    string
+	region     string
+	name       string
+}
 
-	connectionInfoCache
+// getClientUniverseDomain returns the default service domain for a given Cloud
+// universe, with the following precedence:
+//
+// 1. A non-empty option.WithUniverseDomain or similar client option.
+// 2. A non-empty environment variable GOOGLE_CLOUD_UNIVERSE_DOMAIN.
+// 3. The default value "googleapis.com".
+//
+// This is the universe domain configured for the client, which will be compared
+// to the universe domain that is separately configured for the credentials.
+func (c *dialerConfig) getClientUniverseDomain() string {
+	if c.clientUniverseDomain != "" {
+		return c.clientUniverseDomain
+	}
+	if envUD := os.Getenv(universeDomainEnvVar); envUD != "" {
+		return envUD
+	}
+	return defaultUniverseDomain
 }
 
 // A Dialer is used to create connections to Cloud SQL instances.
@@ -123,7 +150,7 @@ type monitoredCache struct {
 // Use NewDialer to initialize a Dialer.
 type Dialer struct {
 	lock           sync.RWMutex
-	cache          map[instance.ConnName]monitoredCache
+	cache          map[cacheKey]*monitoredCache
 	keyGenerator   *keyGenerator
 	refreshTimeout time.Duration
 	// closed reports if the dialer has been closed.
@@ -151,11 +178,12 @@ type Dialer struct {
 	// network. By default, it is golang.org/x/net/proxy#Dial.
 	dialFunc func(cxt context.Context, network, addr string) (net.Conn, error)
 
-	// iamTokenSource supplies the OAuth2 token used for IAM DB Authn.
-	iamTokenSource oauth2.TokenSource
+	// iamTokenProvider supplies the OAuth2 token used for IAM DB Authn.
+	iamTokenProvider auth.TokenProvider
 
 	// resolver converts instance names into DNS names.
-	resolver instance.ConnectionNameResolver
+	resolver       instance.ConnectionNameResolver
+	failoverPeriod time.Duration
 }
 
 var (
@@ -174,11 +202,11 @@ func (nullLogger) Debugf(_ context.Context, _ string, _ ...interface{}) {}
 // RSA keypair is generated will be faster.
 func NewDialer(ctx context.Context, opts ...Option) (*Dialer, error) {
 	cfg := &dialerConfig{
-		refreshTimeout:  cloudsql.RefreshTimeout,
-		dialFunc:        proxy.Dial,
-		logger:          nullLogger{},
-		useragents:      []string{userAgent},
-		serviceUniverse: "googleapis.com",
+		refreshTimeout: cloudsql.RefreshTimeout,
+		dialFunc:       proxy.Dial,
+		logger:         nullLogger{},
+		useragents:     []string{userAgent},
+		failoverPeriod: cloudsql.FailoverPeriod,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -192,43 +220,57 @@ func NewDialer(ctx context.Context, opts ...Option) (*Dialer, error) {
 	if cfg.setIAMAuthNTokenSource && !cfg.useIAMAuthN {
 		return nil, errUseTokenSource
 	}
-	// Add this to the end to make sure it's not overridden
-	cfg.sqladminOpts = append(cfg.sqladminOpts, option.WithUserAgent(strings.Join(cfg.useragents, " ")))
 
-	// If callers have not provided a token source, either explicitly with
-	// WithTokenSource or implicitly with WithCredentialsJSON etc., then use the
-	// default token source.
+	// If callers have not provided a credential source, either explicitly with
+	// WithTokenSource or implicitly with WithCredentialsJSON etc., then use
+	// default credentials
 	if !cfg.setCredentials {
-		c, err := google.FindDefaultCredentials(ctx, sqladmin.SqlserviceAdminScope)
+		c, err := credentials.DetectDefault(&credentials.DetectOptions{
+			Scopes: []string{sqladmin.SqlserviceAdminScope},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create default credentials: %v", err)
 		}
-		ud, err := c.GetUniverseDomain()
+		cfg.authCredentials = c
+		// create second set of credentials, scoped for IAM AuthN login only
+		scoped, err := credentials.DetectDefault(&credentials.DetectOptions{
+			Scopes: []string{iamLoginScope},
+		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to get universe domain: %v", err)
+			return nil, fmt.Errorf("failed to create scoped credentials: %v", err)
 		}
-		cfg.credentialsUniverse = ud
-		cfg.sqladminOpts = append(cfg.sqladminOpts, option.WithTokenSource(c.TokenSource))
-		scoped, err := google.DefaultTokenSource(ctx, iamLoginScope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create scoped token source: %v", err)
-		}
-		cfg.iamLoginTokenSource = scoped
+		cfg.iamLoginTokenProvider = scoped.TokenProvider
 	}
 
-	if cfg.setUniverseDomain && cfg.setAdminAPIEndpoint {
-		return nil, errors.New(
-			"can not use WithAdminAPIEndpoint and WithUniverseDomain Options together, " +
-				"use WithAdminAPIEndpoint (it already contains the universe domain)",
-		)
-	}
+	// For all credential paths, use auth library's built-in
+	// httptransport.NewClient
+	if cfg.authCredentials != nil {
+		// Set headers for auth client as below WithHTTPClient will ignore
+		// WithQuotaProject and WithUserAgent Options
+		headers := http.Header{}
+		headers.Set("User-Agent", strings.Join(cfg.useragents, " "))
+		if cfg.quotaProject != "" {
+			headers.Set("X-Goog-User-Project", cfg.quotaProject)
+		}
 
-	if cfg.credentialsUniverse != "" && cfg.serviceUniverse != "" {
-		if cfg.credentialsUniverse != cfg.serviceUniverse {
-			return nil, fmt.Errorf(
-				"the configured service universe domain (%s) does not match the credential universe domain (%s)",
-				cfg.serviceUniverse, cfg.credentialsUniverse,
-			)
+		authClient, err := httptransport.NewClient(&httptransport.Options{
+			Headers:        headers,
+			Credentials:    cfg.authCredentials,
+			UniverseDomain: cfg.getClientUniverseDomain(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create auth client: %v", err)
+		}
+		// If callers have not provided an HTTPClient explicitly with
+		// WithHTTPClient, then use auth client
+		if !cfg.setHTTPClient {
+			cfg.sqladminOpts = append(cfg.sqladminOpts, option.WithHTTPClient(authClient))
+		}
+	} else {
+		// Add this to the end to make sure it's not overridden
+		cfg.sqladminOpts = append(cfg.sqladminOpts, option.WithUserAgent(strings.Join(cfg.useragents, " ")))
+		if cfg.quotaProject != "" {
+			cfg.sqladminOpts = append(cfg.sqladminOpts, option.WithQuotaProject(cfg.quotaProject))
 		}
 	}
 
@@ -263,7 +305,7 @@ func NewDialer(ctx context.Context, opts ...Option) (*Dialer, error) {
 
 	d := &Dialer{
 		closed:            make(chan struct{}),
-		cache:             make(map[instance.ConnName]monitoredCache),
+		cache:             make(map[cacheKey]*monitoredCache),
 		lazyRefresh:       cfg.lazyRefresh,
 		keyGenerator:      g,
 		refreshTimeout:    cfg.refreshTimeout,
@@ -271,10 +313,12 @@ func NewDialer(ctx context.Context, opts ...Option) (*Dialer, error) {
 		logger:            cfg.logger,
 		defaultDialConfig: dc,
 		dialerID:          uuid.New().String(),
-		iamTokenSource:    cfg.iamLoginTokenSource,
+		iamTokenProvider:  cfg.iamLoginTokenProvider,
 		dialFunc:          cfg.dialFunc,
 		resolver:          r,
+		failoverPeriod:    cfg.failoverPeriod,
 	}
+
 	return d, nil
 }
 
@@ -300,6 +344,10 @@ func (d *Dialer) Dial(ctx context.Context, icn string, opts ...DialOption) (conn
 	cn, err := d.resolver.Resolve(ctx, icn)
 	if err != nil {
 		return nil, err
+	}
+	// Log if resolver changed the instance name input string.
+	if cn.String() != icn {
+		d.logger.Debugf(ctx, "resolved instance %s to %s", icn, cn)
 	}
 
 	cfg := d.defaultDialConfig
@@ -371,31 +419,65 @@ func (d *Dialer) Dial(ctx context.Context, icn string, opts ...DialOption) (conn
 	tlsConn := tls.Client(conn, ci.TLSConfig())
 	err = tlsConn.HandshakeContext(ctx)
 	if err != nil {
+		// TLS handshake errors are fatal and require a refresh. Remove the instance
+		// from the cache so that future calls to Dial() will block until the
+		// certificate is refreshed successfully.
 		d.logger.Debugf(ctx, "[%v] TLS handshake failed: %v", cn.String(), err)
-		// refresh the instance info in case it caused the handshake failure
-		c.ForceRefresh()
+		d.removeCached(ctx, cn, c, err)
 		_ = tlsConn.Close() // best effort close attempt
 		return nil, errtype.NewDialError("handshake failed", cn.String(), err)
 	}
 
 	latency := time.Since(startTime).Milliseconds()
 	go func() {
-		n := atomic.AddUint64(c.openConns, 1)
+		n := atomic.AddUint64(c.openConnsCount, 1)
 		trace.RecordOpenConnections(ctx, int64(n), d.dialerID, cn.String())
 		trace.RecordDialLatency(ctx, icn, d.dialerID, latency)
 	}()
 
-	return newInstrumentedConn(tlsConn, func() {
-		n := atomic.AddUint64(c.openConns, ^uint64(0))
+	closeFunc := func() {
+		n := atomic.AddUint64(c.openConnsCount, ^uint64(0)) // c.openConnsCount = c.openConnsCount - 1
 		trace.RecordOpenConnections(context.Background(), int64(n), d.dialerID, cn.String())
-	}, d.dialerID, cn.String()), nil
+	}
+	errFunc := func(err error) {
+		// io.EOF occurs when the server closes the connection. This is safe to
+		// ignore.
+		if err == io.EOF {
+			return
+		}
+		d.logger.Debugf(ctx, "[%v] IO Error on Read or Write: %v", cn.String(), err)
+		if d.isTLSError(err) {
+			// TLS handshake errors are fatal. Remove the instance from the cache
+			// so that future calls to Dial() will block until the certificate
+			// is refreshed successfully.
+			d.removeCached(ctx, cn, c, err)
+			_ = tlsConn.Close() // best effort close attempt
+		}
+	}
+	iConn := newInstrumentedConn(tlsConn, closeFunc, errFunc, d.dialerID, cn.String())
+
+	// If this connection was opened using a Domain Name, then store it for later
+	// in case it needs to be forcibly closed.
+	if cn.HasDomainName() {
+		c.mu.Lock()
+		c.openConns = append(c.openConns, iConn)
+		c.mu.Unlock()
+	}
+	return iConn, nil
+}
+func (d *Dialer) isTLSError(err error) bool {
+	if nErr, ok := err.(net.Error); ok {
+		return !nErr.Timeout() && // it's a permanent net error
+			strings.Contains(nErr.Error(), "tls") // it's a TLS-related error
+	}
+	return false
 }
 
-// removeCached stops all background refreshes and deletes the connection
-// info cache from the map of caches.
+// removeCached stops all background refreshes, closes open sockets, and deletes
+// the cache entry.
 func (d *Dialer) removeCached(
 	ctx context.Context,
-	i instance.ConnName, c connectionInfoCache, err error,
+	i instance.ConnName, c *monitoredCache, err error,
 ) {
 	d.logger.Debugf(
 		ctx,
@@ -403,10 +485,19 @@ func (d *Dialer) removeCached(
 		i.String(),
 		err,
 	)
+
+	// If this instance of monitoredCache is still in the cache, remove it.
+	// If this instance was already removed from the cache or
+	// if *a separate goroutine* replaced it with a new instance, do nothing.
+	key := createKey(i)
 	d.lock.Lock()
-	defer d.lock.Unlock()
+	if cachedC, ok := d.cache[key]; ok && cachedC == c {
+		delete(d.cache, key)
+	}
+	d.lock.Unlock()
+
+	// Close the monitoredCache, this call is idempotent.
 	c.Close()
-	delete(d.cache, i)
 }
 
 // validClientCert checks that the ephemeral client certificate retrieved from
@@ -479,10 +570,11 @@ func (d *Dialer) Warmup(ctx context.Context, icn string, opts ...DialOption) err
 
 // newInstrumentedConn initializes an instrumentedConn that on closing will
 // decrement the number of open connects and record the result.
-func newInstrumentedConn(conn net.Conn, closeFunc func(), dialerID, connName string) *instrumentedConn {
+func newInstrumentedConn(conn net.Conn, closeFunc func(), errFunc func(error), dialerID, connName string) *instrumentedConn {
 	return &instrumentedConn{
 		Conn:      conn,
 		closeFunc: closeFunc,
+		errFunc:   errFunc,
 		dialerID:  dialerID,
 		connName:  connName,
 	}
@@ -493,6 +585,9 @@ func newInstrumentedConn(conn net.Conn, closeFunc func(), dialerID, connName str
 type instrumentedConn struct {
 	net.Conn
 	closeFunc func()
+	errFunc   func(error)
+	mu        sync.RWMutex
+	closed    bool
 	dialerID  string
 	connName  string
 }
@@ -503,6 +598,8 @@ func (i *instrumentedConn) Read(b []byte) (int, error) {
 	bytesRead, err := i.Conn.Read(b)
 	if err == nil {
 		go trace.RecordBytesReceived(context.Background(), int64(bytesRead), i.connName, i.dialerID)
+	} else {
+		i.errFunc(err)
 	}
 	return bytesRead, err
 }
@@ -513,13 +610,25 @@ func (i *instrumentedConn) Write(b []byte) (int, error) {
 	bytesWritten, err := i.Conn.Write(b)
 	if err == nil {
 		go trace.RecordBytesSent(context.Background(), int64(bytesWritten), i.connName, i.dialerID)
+	} else {
+		i.errFunc(err)
 	}
 	return bytesWritten, err
+}
+
+// isClosed returns true if this connection is closing or is already closed.
+func (i *instrumentedConn) isClosed() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.closed
 }
 
 // Close delegates to the underlying net.Conn interface and reports the close
 // to the provided closeFunc only when Close returns no error.
 func (i *instrumentedConn) Close() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.closed = true
 	err := i.Conn.Close()
 	if err != nil {
 		return err
@@ -546,55 +655,81 @@ func (d *Dialer) Close() error {
 	return nil
 }
 
+// createKey creates a key for the cache from an instance.ConnName.
+// An instance.ConnName uniquely identifies a connection using
+// project:region:instance + domainName. However, in the dialer cache,
+// we want to to identify entries either by project:region:instance, or
+// by domainName, but not the combination of the two.
+func createKey(cn instance.ConnName) cacheKey {
+	if cn.HasDomainName() {
+		return cacheKey{domainName: cn.DomainName()}
+	}
+	return cacheKey{
+		name:    cn.Name(),
+		project: cn.Project(),
+		region:  cn.Region(),
+	}
+}
+
 // connectionInfoCache is a helper function for returning the appropriate
 // connection info Cache in a threadsafe way. It will create a new cache,
 // modify the existing one, or leave it unchanged as needed.
 func (d *Dialer) connectionInfoCache(
 	ctx context.Context, cn instance.ConnName, useIAMAuthN *bool,
-) (monitoredCache, error) {
+) (*monitoredCache, error) {
+	k := createKey(cn)
+
 	d.lock.RLock()
-	c, ok := d.cache[cn]
+	c, ok := d.cache[k]
 	d.lock.RUnlock()
-	if !ok {
-		d.lock.Lock()
-		defer d.lock.Unlock()
-		// Recheck to ensure instance wasn't created or changed between locks
-		c, ok = d.cache[cn]
-		if !ok {
-			var useIAMAuthNDial bool
-			if useIAMAuthN != nil {
-				useIAMAuthNDial = *useIAMAuthN
-			}
-			d.logger.Debugf(ctx, "[%v] Connection info added to cache", cn.String())
-			k, err := d.keyGenerator.rsaKey()
-			if err != nil {
-				return monitoredCache{}, err
-			}
-			var cache connectionInfoCache
-			if d.lazyRefresh {
-				cache = cloudsql.NewLazyRefreshCache(
-					cn,
-					d.logger,
-					d.sqladmin, k,
-					d.refreshTimeout, d.iamTokenSource,
-					d.dialerID, useIAMAuthNDial,
-				)
-			} else {
-				cache = cloudsql.NewRefreshAheadCache(
-					cn,
-					d.logger,
-					d.sqladmin, k,
-					d.refreshTimeout, d.iamTokenSource,
-					d.dialerID, useIAMAuthNDial,
-				)
-			}
-			var count uint64
-			c = monitoredCache{openConns: &count, connectionInfoCache: cache}
-			d.cache[cn] = c
-		}
+
+	if ok && !c.isClosed() {
+		c.UpdateRefresh(useIAMAuthN)
+		return c, nil
 	}
 
-	c.UpdateRefresh(useIAMAuthN)
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	// Recheck to ensure instance wasn't created or changed between locks
+	c, ok = d.cache[k]
+
+	// c exists and is not closed
+	if ok && !c.isClosed() {
+		c.UpdateRefresh(useIAMAuthN)
+		return c, nil
+	}
+
+	// Create a new instance of monitoredCache
+	var useIAMAuthNDial bool
+	if useIAMAuthN != nil {
+		useIAMAuthNDial = *useIAMAuthN
+	}
+	d.logger.Debugf(ctx, "[%v] Connection info added to cache", cn.String())
+	rsaKey, err := d.keyGenerator.rsaKey()
+	if err != nil {
+		return nil, err
+	}
+	var cache connectionInfoCache
+	if d.lazyRefresh {
+		cache = cloudsql.NewLazyRefreshCache(
+			cn,
+			d.logger,
+			d.sqladmin, rsaKey,
+			d.refreshTimeout, d.iamTokenProvider,
+			d.dialerID, useIAMAuthNDial,
+		)
+	} else {
+		cache = cloudsql.NewRefreshAheadCache(
+			cn,
+			d.logger,
+			d.sqladmin, rsaKey,
+			d.refreshTimeout, d.iamTokenProvider,
+			d.dialerID, useIAMAuthNDial,
+		)
+	}
+	c = newMonitoredCache(ctx, cache, cn, d.failoverPeriod, d.resolver, d.logger)
+	d.cache[k] = c
 
 	return c, nil
 }

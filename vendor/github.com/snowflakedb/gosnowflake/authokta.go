@@ -59,6 +59,7 @@ func authenticateBySAML(
 	account string,
 	user string,
 	password string,
+	disableSamlURLCheck ConfigBool,
 ) (samlResponse []byte, err error) {
 	logger.WithContext(ctx).Info("step 1: query GS to obtain IDP token and SSO url")
 	headers := make(map[string]string)
@@ -92,11 +93,10 @@ func authenticateBySAML(
 		return nil, err
 	}
 	if !respd.Success {
-		logger.Errorln("Authentication FAILED")
+		logger.WithContext(ctx).Errorln("Authentication FAILED")
 		sr.TokenAccessor.SetTokens("", "", -1)
 		code, err := strconv.Atoi(respd.Code)
 		if err != nil {
-			code = -1
 			return nil, err
 		}
 		return nil, &SnowflakeError{
@@ -152,20 +152,22 @@ func authenticateBySAML(
 	if err != nil {
 		return nil, err
 	}
-	logger.WithContext(ctx).Info("step 5: validate post_back_url matches Snowflake URL")
-	tgtURL, err := postBackURL(bd)
-	if err != nil {
-		return nil, err
-	}
+	if disableSamlURLCheck == ConfigBoolFalse {
+		logger.WithContext(ctx).Info("step 5: validate post_back_url matches Snowflake URL")
+		tgtURL, err := postBackURL(bd)
+		if err != nil {
+			return nil, err
+		}
 
-	fullURL := sr.getURL()
-	logger.WithContext(ctx).Infof("tgtURL: %v, origURL: %v", tgtURL, fullURL)
-	if !isPrefixEqual(tgtURL, fullURL) {
-		return nil, &SnowflakeError{
-			Number:      ErrCodeSSOURLNotMatch,
-			SQLState:    SQLStateConnectionRejected,
-			Message:     errMsgSSOURLNotMatch,
-			MessageArgs: []interface{}{tgtURL, fullURL},
+		fullURL := sr.getURL()
+		logger.WithContext(ctx).Infof("tgtURL: %v, origURL: %v", tgtURL, fullURL)
+		if !isPrefixEqual(tgtURL, fullURL) {
+			return nil, &SnowflakeError{
+				Number:      ErrCodeSSOURLNotMatch,
+				SQLState:    SQLStateConnectionRejected,
+				Message:     errMsgSSOURLNotMatch,
+				MessageArgs: []interface{}{tgtURL, fullURL},
+			}
 		}
 	}
 	return bd, nil
@@ -212,10 +214,10 @@ func postAuthSAML(
 	data *authResponse, err error) {
 
 	params := &url.Values{}
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
 	fullURL := sr.getFullURL(authenticatorRequestPath, params)
 
-	logger.Infof("fullURL: %v", fullURL)
+	logger.WithContext(ctx).Infof("fullURL: %v", fullURL)
 	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return nil, err
@@ -269,7 +271,7 @@ func postAuthOKTA(
 	fullURL string,
 	timeout time.Duration) (
 	data *authOKTAResponse, err error) {
-	logger.Infof("fullURL: %v", fullURL)
+	logger.WithContext(ctx).Infof("fullURL: %v", fullURL)
 	targetURL, err := url.Parse(fullURL)
 	if err != nil {
 		return nil, err
@@ -290,7 +292,7 @@ func postAuthOKTA(
 	}
 	_, err = io.ReadAll(resp.Body)
 	if err != nil {
-		logger.Errorf("failed to extract HTTP response body. err: %v", err)
+		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
 	}
 	logger.WithContext(ctx).Infof("HTTP: %v, URL: %v", resp.StatusCode, fullURL)

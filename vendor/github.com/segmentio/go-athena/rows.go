@@ -1,16 +1,16 @@
 package athena
 
 import (
+	"context"
 	"database/sql/driver"
 	"io"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/athena"
-	"github.com/aws/aws-sdk-go/service/athena/athenaiface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
 )
 
 type rows struct {
-	athena  athenaiface.AthenaAPI
+	athena  athenaAPI
 	queryID string
 
 	done          bool
@@ -19,19 +19,19 @@ type rows struct {
 }
 
 type rowsConfig struct {
-	Athena     athenaiface.AthenaAPI
+	Athena     athenaAPI
 	QueryID    string
 	SkipHeader bool
 }
 
-func newRows(cfg rowsConfig) (*rows, error) {
+func newRows(ctx context.Context, cfg rowsConfig) (*rows, error) {
 	r := rows{
 		athena:        cfg.Athena,
 		queryID:       cfg.QueryID,
 		skipHeaderRow: cfg.SkipHeader,
 	}
 
-	shouldContinue, err := r.fetchNextPage(nil)
+	shouldContinue, err := r.fetchNextPage(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,9 @@ func (r *rows) Next(dest []driver.Value) error {
 			return io.EOF
 		}
 
-		cont, err := r.fetchNextPage(r.out.NextToken)
+		// A context cannot be passed into the Next function because it is defined
+		// in the database.sql.driver.Rows interface.
+		cont, err := r.fetchNextPage(context.Background(), r.out.NextToken)
 		if err != nil {
 			return err
 		}
@@ -90,9 +92,9 @@ func (r *rows) Next(dest []driver.Value) error {
 	return nil
 }
 
-func (r *rows) fetchNextPage(token *string) (bool, error) {
+func (r *rows) fetchNextPage(ctx context.Context, token *string) (bool, error) {
 	var err error
-	r.out, err = r.athena.GetQueryResults(&athena.GetQueryResultsInput{
+	r.out, err = r.athena.GetQueryResults(ctx, &athena.GetQueryResultsInput{
 		QueryExecutionId: aws.String(r.queryID),
 		NextToken:        token,
 	})

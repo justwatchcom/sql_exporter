@@ -8,16 +8,18 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/form3tech-oss/jwt-go"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -25,8 +27,6 @@ const (
 )
 
 const (
-	idToken                        = "ID_TOKEN"
-	mfaToken                       = "MFATOKEN"
 	clientStoreTemporaryCredential = "CLIENT_STORE_TEMPORARY_CREDENTIAL"
 	clientRequestMfaToken          = "CLIENT_REQUEST_MFA_TOKEN"
 	idTokenAuthenticator           = "ID_TOKEN"
@@ -50,6 +50,8 @@ const (
 	AuthTypeTokenAccessor
 	// AuthTypeUsernamePasswordMFA is to use username and password with mfa
 	AuthTypeUsernamePasswordMFA
+	// AuthTypePat is to use programmatic access token
+	AuthTypePat
 )
 
 func determineAuthenticatorType(cfg *Config, value string) error {
@@ -73,6 +75,9 @@ func determineAuthenticatorType(cfg *Config, value string) error {
 	} else if upperCaseValue == AuthTypeTokenAccessor.String() {
 		cfg.Authenticator = AuthTypeTokenAccessor
 		return nil
+	} else if upperCaseValue == AuthTypePat.String() && experimentalAuthEnabled() {
+		cfg.Authenticator = AuthTypePat
+		return nil
 	} else {
 		// possibly Okta case
 		oktaURLString, err := url.QueryUnescape(lowerCaseValue)
@@ -93,7 +98,7 @@ func determineAuthenticatorType(cfg *Config, value string) error {
 			}
 		}
 
-		if oktaURL.Scheme != "https" || !strings.HasSuffix(oktaURL.Host, "okta.com") {
+		if oktaURL.Scheme != "https" {
 			return &SnowflakeError{
 				Number:      ErrCodeFailedToParseAuthenticator,
 				Message:     errMsgFailedToParseAuthenticator,
@@ -122,6 +127,8 @@ func (authType AuthType) String() string {
 		return "TOKENACCESSOR"
 	case AuthTypeUsernamePasswordMFA:
 		return "USERNAME_PASSWORD_MFA"
+	case AuthTypePat:
+		return "PROGRAMMATIC_ACCESS_TOKEN"
 	default:
 		return "UNKNOWN"
 	}
@@ -147,7 +154,9 @@ type authRequestClientEnvironment struct {
 	Os          string `json:"OS"`
 	OsVersion   string `json:"OS_VERSION"`
 	OCSPMode    string `json:"OCSP_MODE"`
+	GoVersion   string `json:"GO_VERSION"`
 }
+
 type authRequestData struct {
 	ClientAppID             string                       `json:"CLIENT_APP_ID"`
 	ClientAppVersion        string                       `json:"CLIENT_APP_VERSION"`
@@ -221,11 +230,11 @@ func postAuth(
 	bodyCreator bodyCreatorType,
 	timeout time.Duration) (
 	data *authResponse, err error) {
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestGUIDKey, NewUUID().String())
 
 	fullURL := sr.getFullURL(loginRequestPath, params)
-	logger.Infof("full URL: %v", fullURL)
+	logger.WithContext(ctx).Infof("full URL: %v", fullURL)
 	resp, err := sr.FuncAuthPost(ctx, client, fullURL, headers, bodyCreator, timeout, sr.MaxRetryCount)
 	if err != nil {
 		return nil, err
@@ -235,7 +244,7 @@ func postAuth(
 		var respd authResponse
 		err = json.NewDecoder(resp.Body).Decode(&respd)
 		if err != nil {
-			logger.Errorf("failed to decode JSON. err: %v", err)
+			logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
 			return nil, err
 		}
 		return &respd, nil
@@ -260,11 +269,11 @@ func postAuth(
 	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logger.Errorf("failed to extract HTTP response body. err: %v", err)
+		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
 	}
-	logger.Infof("HTTP: %v, URL: %v, Body: %v", resp.StatusCode, fullURL, b)
-	logger.Infof("Header: %v", resp.Header)
+	logger.WithContext(ctx).Infof("HTTP: %v, URL: %v, Body: %v", resp.StatusCode, fullURL, b)
+	logger.WithContext(ctx).Infof("Header: %v", resp.Header)
 	return nil, &SnowflakeError{
 		Number:      ErrFailedToAuth,
 		SQLState:    SQLStateConnectionRejected,
@@ -293,7 +302,7 @@ func authenticate(
 	proofKey []byte,
 ) (resp *authResponseMain, err error) {
 	if sc.cfg.Authenticator == AuthTypeTokenAccessor {
-		logger.Info("Bypass authentication using existing token from token accessor")
+		logger.WithContext(ctx).Info("Bypass authentication using existing token from token accessor")
 		sessionInfo := authResponseSessionInfo{
 			DatabaseName:  sc.cfg.Database,
 			SchemaName:    sc.cfg.Schema,
@@ -315,6 +324,7 @@ func authenticate(
 		Os:          operatingSystem,
 		OsVersion:   platform,
 		OCSPMode:    sc.cfg.ocspMode(),
+		GoVersion:   runtime.Version(),
 	}
 
 	sessionParameters := make(map[string]interface{})
@@ -350,7 +360,7 @@ func authenticate(
 		params.Add("roleName", sc.cfg.Role)
 	}
 
-	logger.WithContext(sc.ctx).Infof("PARAMS for Auth: %v, %v, %v, %v, %v, %v",
+	logger.WithContext(ctx).WithContext(sc.ctx).Infof("PARAMS for Auth: %v, %v, %v, %v, %v, %v",
 		params, sc.rest.Protocol, sc.rest.Host, sc.rest.Port, sc.rest.LoginTimeout, sc.cfg.Authenticator.String())
 
 	respd, err := sc.rest.FuncPostAuth(ctx, sc.rest, sc.rest.getClientFor(sc.cfg.Authenticator), params, headers, bodyCreator, sc.rest.LoginTimeout)
@@ -358,17 +368,16 @@ func authenticate(
 		return nil, err
 	}
 	if !respd.Success {
-		logger.Errorln("Authentication FAILED")
+		logger.WithContext(ctx).Errorln("Authentication FAILED")
 		sc.rest.TokenAccessor.SetTokens("", "", -1)
 		if sessionParameters[clientRequestMfaToken] == true {
-			deleteCredential(sc, mfaToken)
+			credentialsStorage.deleteCredential(newMfaTokenSpec(sc.cfg.Host, sc.cfg.User))
 		}
 		if sessionParameters[clientStoreTemporaryCredential] == true {
-			deleteCredential(sc, idToken)
+			credentialsStorage.deleteCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User))
 		}
 		code, err := strconv.Atoi(respd.Code)
 		if err != nil {
-			code = -1
 			return nil, err
 		}
 		return nil, (&SnowflakeError{
@@ -377,15 +386,15 @@ func authenticate(
 			Message:  respd.Message,
 		}).exceptionTelemetry(sc)
 	}
-	logger.Info("Authentication SUCCESS")
+	logger.WithContext(ctx).Info("Authentication SUCCESS")
 	sc.rest.TokenAccessor.SetTokens(respd.Data.Token, respd.Data.MasterToken, respd.Data.SessionID)
 	if sessionParameters[clientRequestMfaToken] == true {
 		token := respd.Data.MfaToken
-		setCredential(sc, mfaToken, token)
+		credentialsStorage.setCredential(newMfaTokenSpec(sc.cfg.Host, sc.cfg.User), token)
 	}
 	if sessionParameters[clientStoreTemporaryCredential] == true {
 		token := respd.Data.IDToken
-		setCredential(sc, idToken, token)
+		credentialsStorage.setCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User), token)
 	}
 	return &respd.Data, nil
 }
@@ -418,6 +427,18 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 		requestMain.Authenticator = AuthTypeOAuth.String()
 		requestMain.Token = sc.cfg.Token
 	case AuthTypeOkta:
+		samlResponse, err := authenticateBySAML(
+			sc.ctx,
+			sc.rest,
+			sc.cfg.OktaURL,
+			sc.cfg.Application,
+			sc.cfg.Account,
+			sc.cfg.User,
+			sc.cfg.Password,
+			sc.cfg.DisableSamlURLCheck)
+		if err != nil {
+			return nil, err
+		}
 		requestMain.RawSAMLResponse = string(samlResponse)
 	case AuthTypeJwt:
 		requestMain.Authenticator = AuthTypeJwt.String()
@@ -427,8 +448,19 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 			return nil, err
 		}
 		requestMain.Token = jwtTokenString
+	case AuthTypePat:
+		if !experimentalAuthEnabled() {
+			return nil, errors.New("programmatic access tokens are not ready to use")
+		}
+		logger.WithContext(sc.ctx).Info("Programmatic access token")
+		requestMain.Authenticator = AuthTypePat.String()
+		requestMain.LoginName = sc.cfg.User
+		requestMain.Token = sc.cfg.Token
+		if sc.cfg.Password != "" && sc.cfg.Token == "" {
+			requestMain.Token = sc.cfg.Password
+		}
 	case AuthTypeSnowflake:
-		logger.Info("Username and password")
+		logger.WithContext(sc.ctx).Info("Username and password")
 		requestMain.LoginName = sc.cfg.User
 		requestMain.Password = sc.cfg.Password
 		switch {
@@ -439,11 +471,17 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 			requestMain.ExtAuthnDuoMethod = "passcode"
 		}
 	case AuthTypeUsernamePasswordMFA:
-		logger.Info("Username and password MFA")
+		logger.WithContext(sc.ctx).Info("Username and password MFA")
 		requestMain.LoginName = sc.cfg.User
 		requestMain.Password = sc.cfg.Password
-		if sc.cfg.MfaToken != "" {
+		switch {
+		case sc.cfg.MfaToken != "":
 			requestMain.Token = sc.cfg.MfaToken
+		case sc.cfg.PasscodeInPassword:
+			requestMain.ExtAuthnDuoMethod = "passcode"
+		case sc.cfg.Passcode != "":
+			requestMain.Passcode = sc.cfg.Passcode
+			requestMain.ExtAuthnDuoMethod = "passcode"
 		}
 	}
 
@@ -459,23 +497,28 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 
 // Generate a JWT token in string given the configuration
 func prepareJWTToken(config *Config) (string, error) {
+	if config.PrivateKey == nil {
+		return "", errors.New("trying to use keypair authentication, but PrivateKey was not provided in the driver config")
+	}
+	logger.Debug("preparing JWT for keypair authentication")
 	pubBytes, err := x509.MarshalPKIXPublicKey(config.PrivateKey.Public())
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.Sum256(pubBytes)
 
-	accountName := strings.ToUpper(config.Account)
+	accountName := extractAccountName(config.Account)
 	userName := strings.ToUpper(config.User)
 
 	issueAtTime := time.Now().UTC()
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+	jwtClaims := jwt.MapClaims{
 		"iss": fmt.Sprintf("%s.%s.%s", accountName, userName, "SHA256:"+base64.StdEncoding.EncodeToString(hash[:])),
 		"sub": fmt.Sprintf("%s.%s", accountName, userName),
 		"iat": issueAtTime.Unix(),
 		"nbf": time.Date(2015, 10, 10, 12, 0, 0, 0, time.UTC).Unix(),
 		"exp": issueAtTime.Add(config.JWTExpireTimeout).Unix(),
-	})
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwtClaims)
 
 	tokenString, err := token.SignedString(config.PrivateKey)
 
@@ -483,6 +526,7 @@ func prepareJWTToken(config *Config) (string, error) {
 		return "", err
 	}
 
+	logger.Debugf("successfully generated JWT with following claims: %v", jwtClaims)
 	return tokenString, err
 }
 
@@ -499,7 +543,11 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 			sc.cfg.ClientStoreTemporaryCredential = ConfigBoolTrue
 		}
 		if sc.cfg.ClientStoreTemporaryCredential == ConfigBoolTrue {
-			fillCachedIDToken(sc)
+			sc.cfg.IDToken = credentialsStorage.getCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User))
+		}
+		// Disable console login by default
+		if sc.cfg.DisableConsoleLogin == configBoolNotSet {
+			sc.cfg.DisableConsoleLogin = ConfigBoolTrue
 		}
 	}
 
@@ -508,11 +556,11 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 			sc.cfg.ClientRequestMfaToken = ConfigBoolTrue
 		}
 		if sc.cfg.ClientRequestMfaToken == ConfigBoolTrue {
-			fillCachedMfaToken(sc)
+			sc.cfg.MfaToken = credentialsStorage.getCredential(newMfaTokenSpec(sc.cfg.Host, sc.cfg.User))
 		}
 	}
 
-	logger.Infof("Authenticating via %v", sc.cfg.Authenticator.String())
+	logger.WithContext(sc.ctx).Infof("Authenticating via %v", sc.cfg.Authenticator.String())
 	switch sc.cfg.Authenticator {
 	case AuthTypeExternalBrowser:
 		if sc.cfg.IDToken == "" {
@@ -524,24 +572,12 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 				sc.cfg.Account,
 				sc.cfg.User,
 				sc.cfg.Password,
-				sc.cfg.ExternalBrowserTimeout)
+				sc.cfg.ExternalBrowserTimeout,
+				sc.cfg.DisableConsoleLogin)
 			if err != nil {
 				sc.cleanup()
 				return err
 			}
-		}
-	case AuthTypeOkta:
-		samlResponse, err = authenticateBySAML(
-			sc.ctx,
-			sc.rest,
-			sc.cfg.OktaURL,
-			sc.cfg.Application,
-			sc.cfg.Account,
-			sc.cfg.User,
-			sc.cfg.Password)
-		if err != nil {
-			sc.cleanup()
-			return err
 		}
 	}
 	authData, err = authenticate(
@@ -558,10 +594,7 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 	return nil
 }
 
-func fillCachedIDToken(sc *snowflakeConn) {
-	getCredential(sc, idToken)
-}
-
-func fillCachedMfaToken(sc *snowflakeConn) {
-	getCredential(sc, mfaToken)
+func experimentalAuthEnabled() bool {
+	val, ok := os.LookupEnv("ENABLE_EXPERIMENTAL_AUTHENTICATION")
+	return ok && strings.EqualFold(val, "true")
 }

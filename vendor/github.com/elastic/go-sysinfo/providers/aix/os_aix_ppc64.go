@@ -21,7 +21,7 @@ package aix
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 
@@ -40,7 +40,7 @@ func getOSInfo() (*types.OSInfo, error) {
 	}
 
 	// Retrieve build version from "/proc/version".
-	procVersion, err := ioutil.ReadFile("/proc/version")
+	procVersion, err := os.ReadFile("/proc/version")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OS info: cannot open /proc/version: %w", err)
 	}

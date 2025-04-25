@@ -1,6 +1,7 @@
 package athena
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -9,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/athena"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
 )
 
 var (
@@ -21,7 +22,7 @@ var (
 
 // Driver is a sql.Driver. It's intended for db/sql.Open().
 type Driver struct {
-	cfg *Config
+	cfg *DriverConfig
 }
 
 // NewDriver allows you to register your own driver with `sql.Register`.
@@ -29,7 +30,7 @@ type Driver struct {
 // https://github.com/segmentio/go-athena/pull/3
 //
 // Generally, sql.Open() or athena.Open() should suffice.
-func NewDriver(cfg *Config) *Driver {
+func NewDriver(cfg *DriverConfig) *Driver {
 	return &Driver{cfg}
 }
 
@@ -65,7 +66,8 @@ func (d *Driver) Open(connStr string) (driver.Conn, error) {
 	cfg := d.cfg
 	if cfg == nil {
 		var err error
-		cfg, err = configFromConnectionString(connStr)
+		// TODO: Implement DriverContext to get proper access to context
+		cfg, err = configFromConnectionString(context.TODO(), connStr)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +78,7 @@ func (d *Driver) Open(connStr string) (driver.Conn, error) {
 	}
 
 	return &conn{
-		athena:         athena.New(cfg.Session),
+		athena:         athena.NewFromConfig(*cfg.Config),
 		db:             cfg.Database,
 		OutputLocation: cfg.OutputLocation,
 		pollFrequency:  cfg.PollFrequency,
@@ -86,7 +88,7 @@ func (d *Driver) Open(connStr string) (driver.Conn, error) {
 // Open is a more robust version of `db.Open`, as it accepts a raw aws.Session.
 // This is useful if you have a complex AWS session since the driver doesn't
 // currently attempt to serialize all options into a string.
-func Open(cfg Config) (*sql.DB, error) {
+func Open(cfg DriverConfig) (*sql.DB, error) {
 	if cfg.Database == "" {
 		return nil, errors.New("db is required")
 	}
@@ -95,8 +97,8 @@ func Open(cfg Config) (*sql.DB, error) {
 		return nil, errors.New("s3_staging_url is required")
 	}
 
-	if cfg.Session == nil {
-		return nil, errors.New("session is required")
+	if cfg.Config == nil {
+		return nil, errors.New("AWS config is required")
 	}
 
 	// This hack was copied from jackc/pgx. Sorry :(
@@ -111,30 +113,30 @@ func Open(cfg Config) (*sql.DB, error) {
 }
 
 // Config is the input to Open().
-type Config struct {
-	Session        *session.Session
+type DriverConfig struct {
+	Config         *aws.Config
 	Database       string
 	OutputLocation string
 
 	PollFrequency time.Duration
 }
 
-func configFromConnectionString(connStr string) (*Config, error) {
+func configFromConnectionString(ctx context.Context, connStr string) (*DriverConfig, error) {
 	args, err := url.ParseQuery(connStr)
 	if err != nil {
 		return nil, err
 	}
 
-	var cfg Config
+	var cfg DriverConfig
 
-	var acfg []*aws.Config
-	if region := args.Get("region"); region != "" {
-		acfg = append(acfg, &aws.Config{Region: aws.String(region)})
-	}
-	cfg.Session, err = session.NewSession(acfg...)
+	awsConfig, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if region := args.Get("region"); region != "" {
+		awsConfig.Region = region
+	}
+	cfg.Config = &awsConfig
 
 	cfg.Database = args.Get("db")
 	cfg.OutputLocation = args.Get("output_location")

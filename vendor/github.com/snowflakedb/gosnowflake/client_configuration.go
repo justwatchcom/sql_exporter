@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -26,39 +28,47 @@ const (
 	clientConfEnvName = "SF_CLIENT_CONFIG_FILE"
 )
 
-func getClientConfig(filePathFromConnectionString string) (*ClientConfig, error) {
-	configPredefinedFilePaths := clientConfigPredefinedDirs()
-	filePath := findClientConfigFilePath(filePathFromConnectionString, configPredefinedFilePaths)
-	if filePath == "" { // we did not find a config file
-		return nil, nil
+func getClientConfig(filePathFromConnectionString string) (*ClientConfig, string, error) {
+	configPredefinedDirPaths := clientConfigPredefinedDirs()
+	filePath, err := findClientConfigFilePath(filePathFromConnectionString, configPredefinedDirPaths)
+	if err != nil {
+		return nil, "", err
 	}
-	return parseClientConfiguration(filePath)
+	if filePath == "" { // we did not find a config file
+		return nil, "", nil
+	}
+	config, err := parseClientConfiguration(filePath)
+	return config, filePath, err
 }
 
-func findClientConfigFilePath(filePathFromConnectionString string, configPredefinedDirs []string) string {
+func findClientConfigFilePath(filePathFromConnectionString string, configPredefinedDirs []string) (string, error) {
 	if filePathFromConnectionString != "" {
-		return filePathFromConnectionString
+		logger.Infof("Using client configuration path from a connection string: %s", filePathFromConnectionString)
+		return filePathFromConnectionString, nil
 	}
 	envConfigFilePath := os.Getenv(clientConfEnvName)
 	if envConfigFilePath != "" {
-		return envConfigFilePath
+		logger.Infof("Using client configuration path from an environment variable: %s", envConfigFilePath)
+		return envConfigFilePath, nil
 	}
 	return searchForConfigFile(configPredefinedDirs)
 }
 
-func searchForConfigFile(directories []string) string {
+func searchForConfigFile(directories []string) (string, error) {
 	for _, dir := range directories {
 		filePath := path.Join(dir, defaultConfigName)
 		exists, err := existsFile(filePath)
 		if err != nil {
-			logger.Errorf("Error while searching for the client config in %s directory: %s", dir, err)
-			continue
+			return "", fmt.Errorf("error while searching for client config in directory: %s, err: %s", dir, err)
 		}
 		if exists {
-			return filePath
+			logger.Infof("Using client configuration from a default directory: %s", filePath)
+			return filePath, nil
 		}
+		logger.Debugf("No client config found in directory: %s", dir)
 	}
-	return ""
+	logger.Info("No client config file found in default directories")
+	return "", nil
 }
 
 func existsFile(filePath string) (bool, error) {
@@ -73,12 +83,23 @@ func existsFile(filePath string) (bool, error) {
 }
 
 func clientConfigPredefinedDirs() []string {
+	var predefinedDirs []string
+	exeFile, err := os.Executable()
+	if err != nil {
+		logger.Warnf("Unable to access the application directory for client configuration search, err: %v", err)
+	} else {
+		predefinedDirs = append(predefinedDirs, filepath.Dir(exeFile))
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		logger.Warnf("Home dir could not be determined: %w", err)
-		return []string{".", os.TempDir()}
+		logger.Warnf("Unable to access Home directory for client configuration search, err: %v", err)
+	} else {
+		predefinedDirs = append(predefinedDirs, homeDir)
 	}
-	return []string{".", homeDir, os.TempDir()}
+	if predefinedDirs == nil {
+		return []string{}
+	}
+	return predefinedDirs
 }
 
 // ClientConfig config root
@@ -100,16 +121,45 @@ func parseClientConfiguration(filePath string) (*ClientConfig, error) {
 	if err != nil {
 		return nil, parsingClientConfigError(err)
 	}
+	err = validateCfgPerm(filePath)
+	if err != nil {
+		return nil, parsingClientConfigError(err)
+	}
 	var clientConfig ClientConfig
 	err = json.Unmarshal(fileContents, &clientConfig)
 	if err != nil {
 		return nil, parsingClientConfigError(err)
+	}
+	unknownValues := getUnknownValues(fileContents)
+	if len(unknownValues) > 0 {
+		for val := range unknownValues {
+			logger.Warnf("Unknown configuration entry: %s with value: %s", val, unknownValues[val])
+		}
 	}
 	err = validateClientConfiguration(&clientConfig)
 	if err != nil {
 		return nil, parsingClientConfigError(err)
 	}
 	return &clientConfig, nil
+}
+
+func getUnknownValues(fileContents []byte) map[string]interface{} {
+	var values map[string]interface{}
+	err := json.Unmarshal(fileContents, &values)
+	if err != nil {
+		return nil
+	}
+	if values["common"] == nil {
+		return nil
+	}
+	commonValues := values["common"].(map[string]interface{})
+	lowercaseCommonValues := make(map[string]interface{}, len(commonValues))
+	for k, v := range commonValues {
+		lowercaseCommonValues[strings.ToLower(k)] = v
+	}
+	delete(lowercaseCommonValues, "log_level")
+	delete(lowercaseCommonValues, "log_path")
+	return lowercaseCommonValues
 }
 
 func parsingClientConfigError(err error) error {
@@ -129,10 +179,26 @@ func validateClientConfiguration(clientConfig *ClientConfig) error {
 func validateLogLevel(clientConfig ClientConfig) error {
 	var logLevel = clientConfig.Common.LogLevel
 	if logLevel != "" {
-		_, error := toLogLevel(logLevel)
-		if error != nil {
-			return error
+		_, err := toLogLevel(logLevel)
+		if err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateCfgPerm(filePath string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return err
+	}
+	perm := stat.Mode()
+	// Check if group (5th LSB) or others (2nd LSB) have a write permission to the file
+	if perm&(1<<4) != 0 || perm&(1<<1) != 0 {
+		return fmt.Errorf("configuration file: %s can be modified by group or others", filePath)
 	}
 	return nil
 }
