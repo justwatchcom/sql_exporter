@@ -39,7 +39,7 @@ github.com/99designs/go-keychain
 # github.com/99designs/keyring v1.2.2
 ## explicit; go 1.19
 github.com/99designs/keyring
-# github.com/Azure/azure-sdk-for-go/sdk/azcore v1.9.1
+# github.com/Azure/azure-sdk-for-go/sdk/azcore v1.11.1
 ## explicit; go 1.18
 github.com/Azure/azure-sdk-for-go/sdk/azcore
 github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud
@@ -58,7 +58,7 @@ github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime
 github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming
 github.com/Azure/azure-sdk-for-go/sdk/azcore/to
 github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing
-# github.com/Azure/azure-sdk-for-go/sdk/internal v1.5.1
+# github.com/Azure/azure-sdk-for-go/sdk/internal v1.8.0
 ## explicit; go 1.18
 github.com/Azure/azure-sdk-for-go/sdk/internal/diag
 github.com/Azure/azure-sdk-for-go/sdk/internal/errorinfo
@@ -282,13 +282,6 @@ github.com/cespare/xxhash/v2
 # github.com/danieljoos/wincred v1.2.1
 ## explicit; go 1.18
 github.com/danieljoos/wincred
-# github.com/denisenkom/go-mssqldb v0.12.3
-## explicit; go 1.13
-github.com/denisenkom/go-mssqldb
-github.com/denisenkom/go-mssqldb/internal/cp
-github.com/denisenkom/go-mssqldb/internal/decimal
-github.com/denisenkom/go-mssqldb/internal/querytext
-github.com/denisenkom/go-mssqldb/msdsn
 # github.com/dvsekhvalnov/jose2go v1.6.0
 ## explicit; go 1.15
 github.com/dvsekhvalnov/jose2go
@@ -423,6 +416,9 @@ github.com/googleapis/gax-go/v2/internal
 # github.com/gsterjov/go-libsecret v0.0.0-20161001094733-a6f4afe4910c
 ## explicit
 github.com/gsterjov/go-libsecret
+# github.com/hashicorp/go-uuid v1.0.3
+## explicit
+github.com/hashicorp/go-uuid
 # github.com/jackc/chunkreader/v2 v2.0.1
 ## explicit; go 1.12
 github.com/jackc/chunkreader/v2
@@ -451,6 +447,57 @@ github.com/jackc/pgtype
 github.com/jackc/pgx/v4
 github.com/jackc/pgx/v4/internal/sanitize
 github.com/jackc/pgx/v4/stdlib
+# github.com/jcmturner/aescts/v2 v2.0.0
+## explicit; go 1.13
+github.com/jcmturner/aescts/v2
+# github.com/jcmturner/dnsutils/v2 v2.0.0
+## explicit; go 1.13
+github.com/jcmturner/dnsutils/v2
+# github.com/jcmturner/gofork v1.7.6
+## explicit; go 1.7
+github.com/jcmturner/gofork/encoding/asn1
+github.com/jcmturner/gofork/x/crypto/pbkdf2
+# github.com/jcmturner/goidentity/v6 v6.0.1
+## explicit; go 1.13
+github.com/jcmturner/goidentity/v6
+# github.com/jcmturner/gokrb5/v8 v8.4.4
+## explicit; go 1.16
+github.com/jcmturner/gokrb5/v8/asn1tools
+github.com/jcmturner/gokrb5/v8/client
+github.com/jcmturner/gokrb5/v8/config
+github.com/jcmturner/gokrb5/v8/credentials
+github.com/jcmturner/gokrb5/v8/crypto
+github.com/jcmturner/gokrb5/v8/crypto/common
+github.com/jcmturner/gokrb5/v8/crypto/etype
+github.com/jcmturner/gokrb5/v8/crypto/rfc3961
+github.com/jcmturner/gokrb5/v8/crypto/rfc3962
+github.com/jcmturner/gokrb5/v8/crypto/rfc4757
+github.com/jcmturner/gokrb5/v8/crypto/rfc8009
+github.com/jcmturner/gokrb5/v8/gssapi
+github.com/jcmturner/gokrb5/v8/iana
+github.com/jcmturner/gokrb5/v8/iana/addrtype
+github.com/jcmturner/gokrb5/v8/iana/adtype
+github.com/jcmturner/gokrb5/v8/iana/asnAppTag
+github.com/jcmturner/gokrb5/v8/iana/chksumtype
+github.com/jcmturner/gokrb5/v8/iana/errorcode
+github.com/jcmturner/gokrb5/v8/iana/etypeID
+github.com/jcmturner/gokrb5/v8/iana/flags
+github.com/jcmturner/gokrb5/v8/iana/keyusage
+github.com/jcmturner/gokrb5/v8/iana/msgtype
+github.com/jcmturner/gokrb5/v8/iana/nametype
+github.com/jcmturner/gokrb5/v8/iana/patype
+github.com/jcmturner/gokrb5/v8/kadmin
+github.com/jcmturner/gokrb5/v8/keytab
+github.com/jcmturner/gokrb5/v8/krberror
+github.com/jcmturner/gokrb5/v8/messages
+github.com/jcmturner/gokrb5/v8/pac
+github.com/jcmturner/gokrb5/v8/service
+github.com/jcmturner/gokrb5/v8/spnego
+github.com/jcmturner/gokrb5/v8/types
+# github.com/jcmturner/rpc/v2 v2.0.3
+## explicit; go 1.13
+github.com/jcmturner/rpc/v2/mstypes
+github.com/jcmturner/rpc/v2/ndr
 # github.com/jmespath/go-jmespath v0.4.0
 ## explicit; go 1.14
 github.com/jmespath/go-jmespath
@@ -478,6 +525,23 @@ github.com/klauspost/cpuid/v2
 github.com/lib/pq
 github.com/lib/pq/oid
 github.com/lib/pq/scram
+# github.com/microsoft/go-mssqldb v1.8.0
+## explicit; go 1.18
+github.com/microsoft/go-mssqldb
+github.com/microsoft/go-mssqldb/aecmk
+github.com/microsoft/go-mssqldb/integratedauth
+github.com/microsoft/go-mssqldb/integratedauth/krb5
+github.com/microsoft/go-mssqldb/integratedauth/ntlm
+github.com/microsoft/go-mssqldb/integratedauth/winsspi
+github.com/microsoft/go-mssqldb/internal/cp
+github.com/microsoft/go-mssqldb/internal/decimal
+github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg/algorithms
+github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg/crypto
+github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg/encryption
+github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg/keys
+github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg/utils
+github.com/microsoft/go-mssqldb/internal/querytext
+github.com/microsoft/go-mssqldb/msdsn
 # github.com/mtibben/percent v0.2.1
 ## explicit; go 1.14
 github.com/mtibben/percent
@@ -670,10 +734,15 @@ golang.org/x/term
 # golang.org/x/text v0.21.0
 ## explicit; go 1.18
 golang.org/x/text/cases
+golang.org/x/text/encoding
+golang.org/x/text/encoding/internal
+golang.org/x/text/encoding/internal/identifier
+golang.org/x/text/encoding/unicode
 golang.org/x/text/internal
 golang.org/x/text/internal/language
 golang.org/x/text/internal/language/compact
 golang.org/x/text/internal/tag
+golang.org/x/text/internal/utf8internal
 golang.org/x/text/language
 golang.org/x/text/runes
 golang.org/x/text/secure/bidirule

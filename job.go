@@ -12,7 +12,8 @@ import (
 
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
-	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
+	_ "github.com/microsoft/go-mssqldb" // register the MS-SQL driver
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver

@@ -7,12 +7,12 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.17.1
 	github.com/aws/aws-sdk-go v1.50.6
 	github.com/cenkalti/backoff v2.2.1+incompatible
-	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/go-kit/log v0.2.1
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/gobwas/glob v0.2.3
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
+	github.com/microsoft/go-mssqldb v1.8.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/common v0.60.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -31,8 +31,8 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
 	github.com/99designs/keyring v1.2.2 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.9.1 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/internal v1.5.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.11.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.8.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.2.1 // indirect
 	github.com/ClickHouse/ch-go v0.61.2 // indirect
 	github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c // indirect
@@ -76,6 +76,7 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.13.0 // indirect
 	github.com/gsterjov/go-libsecret v0.0.0-20161001094733-a6f4afe4910c // indirect
+	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/jackc/chunkreader/v2 v2.0.1 // indirect
 	github.com/jackc/pgconn v1.14.3 // indirect
 	github.com/jackc/pgio v1.0.0 // indirect
@@ -84,6 +85,12 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgtype v1.14.1 // indirect
 	github.com/jackc/pgx/v4 v4.18.3 // indirect
+	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
+	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
+	github.com/jcmturner/gofork v1.7.6 // indirect
+	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
+	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
+	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
