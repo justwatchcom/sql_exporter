@@ -11,15 +11,15 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
-	"github.com/cenkalti/backoff"
-	_ "github.com/microsoft/go-mssqldb" // register the MS-SQL driver
-	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
+	"github.com/cenkalti/backoff/v5"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
 	"github.com/gobwas/glob"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // register the PostgreSQL driver
+	_ "github.com/lib/pq"                                   // register the PostgreSQL driver
+	_ "github.com/microsoft/go-mssqldb"                     // register the MS-SQL driver
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
 	"github.com/snowflakedb/gosnowflake"

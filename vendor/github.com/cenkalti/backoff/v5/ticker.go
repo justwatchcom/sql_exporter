@@ -12,7 +12,8 @@ import (
 type Ticker struct {
 	C        <-chan time.Time
 	c        chan time.Time
-	b        BackOffContext
+	b        BackOff
+	timer    timer
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -26,10 +27,11 @@ type Ticker struct {
 func NewTicker(b BackOff) *Ticker {
 	c := make(chan time.Time)
 	t := &Ticker{
-		C:    c,
-		c:    c,
-		b:    ensureContext(b),
-		stop: make(chan struct{}),
+		C:     c,
+		c:     c,
+		b:     b,
+		timer: &defaultTimer{},
+		stop:  make(chan struct{}),
 	}
 	t.b.Reset()
 	go t.run()
@@ -59,8 +61,6 @@ func (t *Ticker) run() {
 		case <-t.stop:
 			t.c = nil // Prevent future ticks from being sent to the channel.
 			return
-		case <-t.b.Context().Done():
-			return
 		}
 	}
 }
@@ -78,5 +78,6 @@ func (t *Ticker) send(tick time.Time) <-chan time.Time {
 		return nil
 	}
 
-	return time.After(next)
+	t.timer.Start(next)
+	return t.timer.C()
 }
