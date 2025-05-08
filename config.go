@@ -26,14 +26,8 @@ func getenv(key, defaultVal string) string {
 }
 
 var (
-	metricsPrefix = "sql_exporter"
-	failedScrapes = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("%s_last_scrape_failed", metricsPrefix),
-			Help: "Failed scrapes",
-		},
-		[]string{"driver", "host", "database", "user", "sql_job", "query"},
-	)
+	metricsPrefix             = "sql_exporter"
+	failedScrapes             *prometheus.GaugeVec
 	tmplStart                 = getenv("TEMPLATE_START", "{{")
 	tmplEnd                   = getenv("TEMPLATE_END", "}}")
 	reEnvironmentPlaceholders = regexp.MustCompile(
@@ -55,11 +49,10 @@ var (
 	DefaultQueryDurationHistogramBuckets = prometheus.DefBuckets
 	// To make the buckets configurable lets init it after loading the configuration.
 	queryDurationHistogram *prometheus.HistogramVec
-)
 
-func init() {
-	prometheus.MustRegister(failedScrapes)
-}
+	// globally redacted labels, those labels will be hidden from every metrics
+	redactedLabels []string
+)
 
 // Read attempts to parse the given config and return a file
 // object
@@ -118,6 +111,7 @@ type File struct {
 	Jobs           []*Job            `yaml:"jobs"`
 	Queries        map[string]string `yaml:"queries"`
 	CloudSQLConfig *CloudSQLConfig   `yaml:"cloudsql_config"`
+	RedactedLabels []string          `yaml:"redacted_labels"` // globally redacted labels
 }
 
 type Configuration struct {
