@@ -36,6 +36,17 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 		return nil, err
 	}
 
+	// initialize global variables failedScrapes and redactedLabels
+	redactedLabels = cfg.RedactedLabels
+	failedScrapes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("%s_last_scrape_failed", metricsPrefix),
+			Help: "Failed scrapes",
+		},
+		GetLabelsForFailedScrapes(),
+	)
+	prometheus.MustRegister(failedScrapes)
+
 	var queryDurationHistogramBuckets []float64
 	if len(cfg.Configuration.HistogramBuckets) == 0 {
 		queryDurationHistogramBuckets = DefaultQueryDurationHistogramBuckets

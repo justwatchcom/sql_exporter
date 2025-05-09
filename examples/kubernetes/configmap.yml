@@ -6,6 +6,7 @@ metadata:
 data:
   config.yml: |
     ---
+    redacted_labels: []
     jobs:
     - name: "master-nodes"
       interval: '1m'
@@ -127,7 +128,7 @@ data:
         values:
           - "replication_lag"
         query:  |
-                WITH lag AS ( 
+                WITH lag AS (
                 SELECT
                   CASE
                     WHEN pg_last_xlog_receive_location() = pg_last_xlog_replay_location() THEN 0

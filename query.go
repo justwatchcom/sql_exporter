@@ -33,7 +33,7 @@ func (q *Query) Run(conn *connection) error {
 	now := time.Now()
 	rows, err := conn.conn.Queryx(q.Query)
 	if err != nil {
-		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return err
 	}
@@ -48,25 +48,25 @@ func (q *Query) Run(conn *connection) error {
 		err := rows.MapScan(res)
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			continue
 		}
 		m, err := q.updateMetrics(conn, res, "", "")
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			continue
 		}
 		metrics = append(metrics, m...)
 		updated++
-		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 	}
 
 	if updated < 1 {
 		if q.AllowZeroRows {
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		} else {
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 			return fmt.Errorf("zero rows returned")
 		}
@@ -106,7 +106,7 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 	for _, iv := range ivs {
 		rows, err := conn.conn.Queryx(q.ReplaceIterator(ph, iv))
 		if err != nil {
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 			return err
 		}
@@ -117,18 +117,18 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 			err := rows.MapScan(res)
 			if err != nil {
 				level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
-				failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+				failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 				continue
 			}
 			m, err := q.updateMetrics(conn, res, iv, il)
 			if err != nil {
 				level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
-				failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+				failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 				continue
 			}
 			metrics = append(metrics, m...)
 			updated++
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		}
 	}
 
@@ -137,7 +137,7 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 
 	if updated < 1 {
 		if q.AllowZeroRows {
-			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		} else {
 			return fmt.Errorf("zero rows returned")
 		}
@@ -237,7 +237,7 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 	}
 	// make space for all defined variable label columns and the "static" labels
 	// added below
-	labels := make([]string, 0, len(q.Labels)+5)
+	labels := make([]string, 0, len(q.Labels)+(5-len(redactedLabels)))
 	for _, label := range q.Labels {
 		// append iterator value to the labels
 		if label == il && iv != "" {
@@ -262,11 +262,9 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 		}
 		labels = append(labels, lv)
 	}
-	labels = append(labels, conn.driver)
-	labels = append(labels, conn.host)
-	labels = append(labels, conn.database)
-	labels = append(labels, conn.user)
-	labels = append(labels, valueName)
+
+	labels = AppendLabelValuesForSQLGauges(labels, conn, valueName)
+
 	// create a new immutable const metric that can be cached and returned on
 	// every scrape. Remember that the order of the label values in the labels
 	// slice must match the order of the label names in the descriptor!

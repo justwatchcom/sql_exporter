@@ -1,4 +1,6 @@
 ---
+# supports "host", "database", "user"
+redacted_labels: []
 jobs:
 - name: "global"
   interval: '5m'
