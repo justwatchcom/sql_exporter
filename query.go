@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +33,7 @@ func (q *Query) Run(conn *connection) error {
 	now := time.Now()
 	rows, err := conn.conn.Queryx(q.Query)
 	if err != nil {
-		failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 		failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 		return err
 	}
@@ -49,25 +48,25 @@ func (q *Query) Run(conn *connection) error {
 		err := rows.MapScan(res)
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			continue
 		}
 		m, err := q.updateMetrics(conn, res, "", "")
 		if err != nil {
 			level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			continue
 		}
 		metrics = append(metrics, m...)
 		updated++
-		failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(0.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 	}
 
 	if updated < 1 {
 		if q.AllowZeroRows {
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		} else {
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 			return fmt.Errorf("zero rows returned")
 		}
@@ -107,7 +106,7 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 	for _, iv := range ivs {
 		rows, err := conn.conn.Queryx(q.ReplaceIterator(ph, iv))
 		if err != nil {
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 			return err
 		}
@@ -118,18 +117,18 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 			err := rows.MapScan(res)
 			if err != nil {
 				level.Error(q.log).Log("msg", "Failed to scan", "err", err, "host", conn.host, "db", conn.database)
-				failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+				failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 				continue
 			}
 			m, err := q.updateMetrics(conn, res, iv, il)
 			if err != nil {
 				level.Error(q.log).Log("msg", "Failed to update metrics", "err", err, "host", conn.host, "db", conn.database)
-				failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+				failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 				continue
 			}
 			metrics = append(metrics, m...)
 			updated++
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		}
 	}
 
@@ -138,7 +137,7 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 
 	if updated < 1 {
 		if q.AllowZeroRows {
-			failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(0.0)
+			failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(0.0)
 		} else {
 			return fmt.Errorf("zero rows returned")
 		}
@@ -150,30 +149,6 @@ func (q *Query) RunIterator(conn *connection, ph string, ivs []string, il string
 	q.Unlock()
 
 	return nil
-}
-
-func (q *Query) filteredLabelValues(conn *connection) []string {
-	var labels []string
-	if !slices.Contains(redactedLabels, "driver") {
-		labels = append(labels, conn.driver)
-	}
-	if !slices.Contains(redactedLabels, "host") {
-		labels = append(labels, conn.host)
-	}
-	if !slices.Contains(redactedLabels, "database") {
-		labels = append(labels, conn.database)
-	}
-	if !slices.Contains(redactedLabels, "user") {
-		labels = append(labels, conn.user)
-	}
-	if !slices.Contains(redactedLabels, "sql_job") {
-		labels = append(labels, q.jobName)
-	}
-	if !slices.Contains(redactedLabels, "query") {
-		labels = append(labels, q.Name)
-	}
-
-	return labels
 }
 
 // HasIterator returns true if the query contains the given placeholder
@@ -288,23 +263,7 @@ func (q *Query) updateMetric(conn *connection, res map[string]interface{}, value
 		labels = append(labels, lv)
 	}
 
-	// TODO: start
-	if !slices.Contains(redactedLabels, "driver") {
-		labels = append(labels, conn.driver)
-	}
-	if !slices.Contains(redactedLabels, "host") {
-		labels = append(labels, conn.host)
-	}
-	if !slices.Contains(redactedLabels, "database") {
-		labels = append(labels, conn.database)
-	}
-	if !slices.Contains(redactedLabels, "user") {
-		labels = append(labels, conn.user)
-	}
-	if !slices.Contains(redactedLabels, "col") {
-		labels = append(labels, valueName)
-	}
-	// TODO: end
+	labels = AppendLabelValuesForSQLGauges(labels, conn, valueName)
 
 	// create a new immutable const metric that can be cached and returned on
 	// every scrape. Remember that the order of the label values in the labels

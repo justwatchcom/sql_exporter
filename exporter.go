@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"cloud.google.com/go/cloudsqlconn"
 	"cloud.google.com/go/cloudsqlconn/mysql/mysql"
@@ -38,26 +37,15 @@ func NewExporter(logger log.Logger, configFile string) (*Exporter, error) {
 	}
 
 	// initialize global variables failedScrapes and redactedLabels
-	standardLabels := [6]string{"driver", "host", "database", "user", "sql_job", "query"}
-	var filteredLabels []string
-	for _, l := range standardLabels {
-		if !slices.Contains(cfg.RedactedLabels, l) {
-			filteredLabels = append(filteredLabels, l)
-		}
-	}
-
+	redactedLabels = cfg.RedactedLabels
 	failedScrapes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: fmt.Sprintf("%s_last_scrape_failed", metricsPrefix),
 			Help: "Failed scrapes",
 		},
-		filteredLabels,
+		GetLabelsForFailedScrapes(),
 	)
-
 	prometheus.MustRegister(failedScrapes)
-
-	redactedLabels = cfg.RedactedLabels
-	// TODO: end
 
 	var queryDurationHistogramBuckets []float64
 	if len(cfg.Configuration.HistogramBuckets) == 0 {

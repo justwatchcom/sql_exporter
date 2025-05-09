@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -94,16 +93,6 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 			q.Labels = append(q.Labels, j.Iterator.Label)
 		}
 
-		// TODO: start
-		standardLabels := [5]string{"driver", "host", "database", "user", "col"}
-		var filteredLabels []string
-		for _, l := range standardLabels {
-			if !slices.Contains(redactedLabels, l) {
-				filteredLabels = append(filteredLabels, l)
-			}
-		}
-		// TODO: end
-
 		// prepare a new metrics descriptor
 		//
 		// the tricky part here is that the *order* of labels has to match the
@@ -111,7 +100,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		q.desc = prometheus.NewDesc(
 			name,
 			help,
-			append(q.Labels, filteredLabels...),
+			append(q.Labels, GetLabelsForSQLGauges()...),
 			prometheus.Labels{
 				"sql_job": j.Name,
 			},
@@ -507,7 +496,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 func (j *Job) markFailed(conn *connection) {
 	for _, q := range j.Queries {
-		failedScrapes.WithLabelValues(q.filteredLabelValues(conn)...).Set(1.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 	}
 }
 
