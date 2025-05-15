@@ -1,8 +1,7 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,9 +18,11 @@ const (
 	gcsMetadataMatdescKey         = gcsMetadataPrefix + "matdesc"
 	gcsMetadataEncryptionDataProp = gcsMetadataPrefix + "encryptiondata"
 	gcsFileHeaderDigest           = "gcs-file-header-digest"
+	gcsRegionMeCentral2           = "me-central2"
 )
 
 type snowflakeGcsClient struct {
+	cfg *Config
 }
 
 type gcsLocation struct {
@@ -50,7 +51,7 @@ func (util *snowflakeGcsClient) getFileHeader(meta *fileMetadata, filename strin
 	if meta.presignedURL != nil {
 		meta.resStatus = notFoundFile
 	} else {
-		URL, err := util.generateFileURL(meta.stageInfo.Location, strings.TrimLeft(filename, "/"))
+		URL, err := util.generateFileURL(meta.stageInfo, strings.TrimLeft(filename, "/"))
 		if err != nil {
 			return nil, err
 		}
@@ -62,34 +63,41 @@ func (util *snowflakeGcsClient) getFileHeader(meta *fileMetadata, filename strin
 			"Authorization": "Bearer " + accessToken,
 		}
 
-		req, err := http.NewRequest("HEAD", URL.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range gcsHeaders {
-			req.Header.Add(k, v)
-		}
-		client := newGcsClient()
-		// for testing only
-		if meta.mockGcsClient != nil {
-			client = meta.mockGcsClient
-		}
-		resp, err := client.Do(req)
+		resp, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, "HEAD", URL.String(), nil)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range gcsHeaders {
+				req.Header.Add(k, v)
+			}
+			client := newGcsClient(util.cfg)
+			// for testing only
+			if meta.mockGcsClient != nil {
+				client = meta.mockGcsClient
+			}
+			resp, err := client.Do(req)
+			if err != nil && strings.HasSuffix(err.Error(), "EOF") {
+				logger.Debug("Retrying HEAD request because of EOF")
+				resp, err = client.Do(req)
+			}
+			return resp, err
+		})
 		if err != nil {
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = errStatus
 			if resp.StatusCode == 403 || resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 503 {
-				meta.lastError = fmt.Errorf(resp.Status)
+				meta.lastError = fmt.Errorf("%v", resp.Status)
 				meta.resStatus = needRetry
 				return nil, meta.lastError
 			}
 			if resp.StatusCode == 404 {
 				meta.resStatus = notFoundFile
 			} else if util.isTokenExpired(resp) {
-				meta.lastError = fmt.Errorf(resp.Status)
+				meta.lastError = fmt.Errorf("%v", resp.Status)
 				meta.resStatus = renewToken
 			}
 			return nil, meta.lastError
@@ -135,7 +143,6 @@ type gcsAPI interface {
 func (util *snowflakeGcsClient) uploadFile(
 	dataFile string,
 	meta *fileMetadata,
-	encryptMeta *encryptMetadata,
 	maxConcurrency int,
 	multiPartThreshold int64) error {
 	uploadURL := meta.presignedURL
@@ -143,7 +150,7 @@ func (util *snowflakeGcsClient) uploadFile(
 	var err error
 
 	if uploadURL == nil {
-		uploadURL, err = util.generateFileURL(meta.stageInfo.Location, strings.TrimLeft(meta.dstFileName, "/"))
+		uploadURL, err = util.generateFileURL(meta.stageInfo, strings.TrimLeft(meta.dstFileName, "/"))
 		if err != nil {
 			return err
 		}
@@ -170,19 +177,19 @@ func (util *snowflakeGcsClient) uploadFile(
 		gcsHeaders["Authorization"] = "Bearer " + accessToken
 	}
 
-	if encryptMeta != nil {
+	if meta.encryptMeta != nil {
 		encryptData := encryptionData{
 			"FullBlob",
 			contentKey{
 				"symmKey1",
-				encryptMeta.key,
+				meta.encryptMeta.key,
 				"AES_CBC_256",
 			},
 			encryptionAgent{
 				"1.0",
 				"AES_CBC_256",
 			},
-			encryptMeta.iv,
+			meta.encryptMeta.iv,
 			keyMetadata{
 				"Java 5.3.0",
 			},
@@ -192,7 +199,7 @@ func (util *snowflakeGcsClient) uploadFile(
 			return err
 		}
 		gcsHeaders[gcsMetadataEncryptionDataProp] = string(b)
-		gcsHeaders[gcsMetadataMatdescKey] = encryptMeta.matdesc
+		gcsHeaders[gcsMetadataMatdescKey] = meta.encryptMeta.matdesc
 	}
 
 	var uploadSrc io.Reader
@@ -208,34 +215,37 @@ func (util *snowflakeGcsClient) uploadFile(
 		}
 	}
 
-	req, err := http.NewRequest("PUT", uploadURL.String(), uploadSrc)
-	if err != nil {
-		return err
-	}
-	for k, v := range gcsHeaders {
-		req.Header.Add(k, v)
-	}
-	client := newGcsClient()
-	// for testing only
-	if meta.mockGcsClient != nil {
-		client = meta.mockGcsClient
-	}
-	resp, err := client.Do(req)
+	resp, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL.String(), uploadSrc)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range gcsHeaders {
+			req.Header.Add(k, v)
+		}
+		client := newGcsClient(util.cfg)
+		// for testing only
+		if meta.mockGcsClient != nil {
+			client = meta.mockGcsClient
+		}
+		return client.Do(req)
+	})
+
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == 403 || resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 503 {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = needRetry
 		} else if accessToken == "" && resp.StatusCode == 400 && meta.lastError == nil {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = renewPresignedURL
 		} else if accessToken != "" && util.isTokenExpired(resp) {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = renewToken
 		} else {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 		}
 		return meta.lastError
 	}
@@ -254,10 +264,10 @@ func (util *snowflakeGcsClient) uploadFile(
 
 	meta.gcsFileHeaderDigest = gcsHeaders[gcsFileHeaderDigest]
 	meta.gcsFileHeaderContentLength = meta.uploadSize
-	if err = json.Unmarshal([]byte(gcsHeaders[gcsMetadataEncryptionDataProp]), &encryptMeta); err != nil {
+	if err = json.Unmarshal([]byte(gcsHeaders[gcsMetadataEncryptionDataProp]), &meta.encryptMeta); err != nil {
 		return err
 	}
-	meta.gcsFileHeaderEncryptionMeta = encryptMeta
+	meta.gcsFileHeaderEncryptionMeta = meta.encryptMeta
 	return nil
 }
 
@@ -272,7 +282,7 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 	gcsHeaders := make(map[string]string)
 
 	if downloadURL == nil || downloadURL.String() == "" {
-		downloadURL, err = util.generateFileURL(meta.stageInfo.Location, strings.TrimLeft(meta.srcFileName, "/"))
+		downloadURL, err = util.generateFileURL(meta.stageInfo, strings.TrimLeft(meta.srcFileName, "/"))
 		if err != nil {
 			return err
 		}
@@ -286,49 +296,62 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 		}
 	}
 
-	req, err := http.NewRequest("GET", downloadURL.String(), nil)
-	if err != nil {
-		return err
-	}
-	for k, v := range gcsHeaders {
-		req.Header.Add(k, v)
-	}
-	client := newGcsClient()
-	// for testing only
-	if meta.mockGcsClient != nil {
-		client = meta.mockGcsClient
-	}
-	resp, err := client.Do(req)
+	resp, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "GET", downloadURL.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range gcsHeaders {
+			req.Header.Add(k, v)
+		}
+		client := newGcsClient(util.cfg)
+		// for testing only
+		if meta.mockGcsClient != nil {
+			client = meta.mockGcsClient
+		}
+		return client.Do(req)
+	})
+
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == 403 || resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 503 {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = needRetry
 		} else if resp.StatusCode == 404 {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = notFoundFile
 		} else if accessToken == "" && resp.StatusCode == 400 && meta.lastError == nil {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = renewPresignedURL
 		} else if accessToken != "" && util.isTokenExpired(resp) {
-			meta.lastError = fmt.Errorf(resp.Status)
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 			meta.resStatus = renewToken
 		} else {
-			meta.lastError = fmt.Errorf(resp.Status)
-
+			meta.lastError = fmt.Errorf("%v", resp.Status)
 		}
 		return meta.lastError
 	}
 
-	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err = io.Copy(f, resp.Body); err != nil {
-		return err
+	if meta.options.GetFileToStream {
+		if _, err := io.Copy(meta.dstStream, resp.Body); err != nil {
+			return err
+		}
+	} else {
+		f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err = io.Copy(f, resp.Body); err != nil {
+			return err
+		}
+		fi, err := os.Stat(fullDstFileName)
+		if err != nil {
+			return err
+		}
+		meta.srcFileSize = fi.Size()
 	}
 
 	var encryptMeta encryptMetadata
@@ -348,12 +371,6 @@ func (util *snowflakeGcsClient) nativeDownloadFile(
 			}
 		}
 	}
-
-	fi, err := os.Stat(fullDstFileName)
-	if err != nil {
-		return err
-	}
-	meta.srcFileSize = fi.Size()
 	meta.resStatus = downloaded
 	meta.gcsFileHeaderDigest = resp.Header.Get(gcsMetadataSfcDigest)
 	meta.gcsFileHeaderContentLength = resp.ContentLength
@@ -374,10 +391,11 @@ func (util *snowflakeGcsClient) extractBucketNameAndPath(location string) *gcsLo
 	return &gcsLocation{containerName, path}
 }
 
-func (util *snowflakeGcsClient) generateFileURL(stageLocation string, filename string) (*url.URL, error) {
-	gcsLoc := util.extractBucketNameAndPath(stageLocation)
+func (util *snowflakeGcsClient) generateFileURL(stageInfo *execResponseStageInfo, filename string) (*url.URL, error) {
+	gcsLoc := util.extractBucketNameAndPath(stageInfo.Location)
 	fullFilePath := gcsLoc.path + filename
-	URL, err := url.Parse("https://storage.googleapis.com/" + gcsLoc.bucketName + "/" + url.QueryEscape(fullFilePath))
+	endPoint := getGcsCustomEndpoint(stageInfo)
+	URL, err := url.Parse(endPoint + "/" + gcsLoc.bucketName + "/" + url.QueryEscape(fullFilePath))
 	if err != nil {
 		return nil, err
 	}
@@ -388,8 +406,21 @@ func (util *snowflakeGcsClient) isTokenExpired(resp *http.Response) bool {
 	return resp.StatusCode == 401
 }
 
-func newGcsClient() gcsAPI {
+func newGcsClient(cfg *Config) gcsAPI {
 	return &http.Client{
-		Transport: SnowflakeTransport,
+		Transport: getTransport(cfg),
 	}
+}
+
+func getGcsCustomEndpoint(info *execResponseStageInfo) string {
+	endpoint := "https://storage.googleapis.com"
+
+	// TODO: SNOW-1789759 hardcoded region will be replaced in the future
+	isRegionalURLEnabled := (strings.ToLower(info.Region) == gcsRegionMeCentral2) || info.UseRegionalURL
+	if info.EndPoint != "" {
+		endpoint = fmt.Sprintf("https://%s", info.EndPoint)
+	} else if info.Region != "" && isRegionalURLEnabled {
+		endpoint = fmt.Sprintf("https://storage.%s.rep.googleapis.com", strings.ToLower(info.Region))
+	}
+	return endpoint
 }

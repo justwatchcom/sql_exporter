@@ -1,0 +1,10 @@
+run:
+  tests: true
+
+issues:
+  exclude-rules:
+    # we own this driver so we need to test this functions
+    - path: statement_test.go
+      text: "Drivers should implement StmtExecContext instead"
+    - path: statement_test.go
+      text: "Drivers should implement StmtQueryContext instead"

@@ -13,10 +13,10 @@ test_setup: test_teardown
 	python3 ci/scripts/hang_webserver.py 12345 &
 
 test_teardown:
-	kill -9 $$(ps -ewf | grep hang_webserver | grep -v grep | awk '{print $$2}') || true
+	kill -9 $$(ps -ef | grep hang_webserver | grep -v grep | awk '{print $$1}') || true
 
 test: deps test_setup
-	./ci/scripts/test_component.sh
+	./ci/scripts/execute_tests.sh
 
 ## Run Coverage tests
 cov:

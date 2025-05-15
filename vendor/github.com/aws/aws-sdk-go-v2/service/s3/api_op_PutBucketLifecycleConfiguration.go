@@ -22,21 +22,19 @@ import (
 // lifecycle configuration. For information about lifecycle configuration, see
 // Managing your storage lifecycle (https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html)
 // . Bucket lifecycle configuration now supports specifying a lifecycle rule using
-// an object key name prefix, one or more object tags, or a combination of both.
-// Accordingly, this section describes the latest API. The previous version of the
-// API supported filtering based only on an object key name prefix, which is
-// supported for backward compatibility. For the related API description, see
-// PutBucketLifecycle (https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycle.html)
+// an object key name prefix, one or more object tags, object size, or any
+// combination of these. Accordingly, this section describes the latest API. The
+// previous version of the API supported filtering based only on an object key name
+// prefix, which is supported for backward compatibility. For the related API
+// description, see PutBucketLifecycle (https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycle.html)
 // . Rules You specify the lifecycle configuration in your request body. The
 // lifecycle configuration is specified as XML consisting of one or more rules. An
 // Amazon S3 Lifecycle configuration can have up to 1,000 rules. This limit is not
 // adjustable. Each rule consists of the following:
-//
 //   - A filter identifying a subset of objects to which the rule applies. The
-//     filter can be based on a key name prefix, object tags, or a combination of both.
-//
+//     filter can be based on a key name prefix, object tags, object size, or any
+//     combination of these.
 //   - A status indicating whether the rule is in effect.
-//
 //   - One or more lifecycle transition and expiration actions that you want
 //     Amazon S3 to perform on the objects identified by the filter. If the state of
 //     your bucket is versioning-enabled or versioning-suspended, you can have many
@@ -143,25 +141,25 @@ func (c *Client) addOperationPutBucketLifecycleConfigurationMiddlewares(stack *m
 	if err = addSetLoggerMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddClientRequestIDMiddleware(stack); err != nil {
+	if err = addClientRequestID(stack); err != nil {
 		return err
 	}
-	if err = smithyhttp.AddComputeContentLengthMiddleware(stack); err != nil {
+	if err = addComputeContentLength(stack); err != nil {
 		return err
 	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = v4.AddComputePayloadSHA256Middleware(stack); err != nil {
+	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetryMiddlewares(stack, options); err != nil {
+	if err = addRetry(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRawResponseToMetadata(stack); err != nil {
+	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
+	if err = addRecordResponseTiming(stack); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -188,7 +186,7 @@ func (c *Client) addOperationPutBucketLifecycleConfigurationMiddlewares(stack *m
 	if err = addMetadataRetrieverMiddleware(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
+	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addPutBucketLifecycleConfigurationInputChecksumMiddlewares(stack, options); err != nil {

@@ -1,5 +1,3 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import "regexp"
@@ -8,10 +6,11 @@ const (
 	awsKeyPattern          = `(?i)(aws_key_id|aws_secret_key|access_key_id|secret_access_key)\s*=\s*'([^']+)'`
 	awsTokenPattern        = `(?i)(accessToken|tempToken|keySecret)"\s*:\s*"([a-z0-9/+]{32,}={0,2})"`
 	sasTokenPattern        = `(?i)(sig|signature|AWSAccessKeyId|password|passcode)=(?P<secret>[a-z0-9%/+]{16,})`
-	privateKeyPattern      = `(?im)-----BEGIN PRIVATE KEY-----\\n([a-z0-9/+=\\n]{32,})\\n-----END PRIVATE KEY-----`
+	privateKeyPattern      = `(?im)-----BEGIN PRIVATE KEY-----\\n([a-z0-9/+=\\n]{32,})\\n-----END PRIVATE KEY-----` // pragma: allowlist secret
 	privateKeyDataPattern  = `(?i)"privateKeyData": "([a-z0-9/+=\\n]{10,})"`
 	connectionTokenPattern = `(?i)(token|assertion content)([\'\"\s:=]+)([a-z0-9=/_\-\+]{8,})`
 	passwordPattern        = `(?i)(password|pwd)([\'\"\s:=]+)([a-z0-9!\"#\$%&\\\'\(\)\*\+\,-\./:;<=>\?\@\[\]\^_\{\|\}~]{8,})`
+	clientSecretPattern    = `(?i)(clientSecret)([\'\"\s:= ]+)([a-z0-9!\"#\$%&\\\'\(\)\*\+\,-\./:;<=>\?\@\[\]\^_\{\|\}~]+)`
 )
 
 var (
@@ -22,6 +21,7 @@ var (
 	privateKeyDataRegexp  = regexp.MustCompile(privateKeyDataPattern)
 	connectionTokenRegexp = regexp.MustCompile(connectionTokenPattern)
 	passwordRegexp        = regexp.MustCompile(passwordPattern)
+	clientSecretRegexp    = regexp.MustCompile(clientSecretPattern)
 )
 
 func maskConnectionToken(text string) string {
@@ -45,11 +45,15 @@ func maskSasToken(text string) string {
 }
 
 func maskPrivateKey(text string) string {
-	return privateKeyRegexp.ReplaceAllString(text, "-----BEGIN PRIVATE KEY-----\\\\\\\\nXXXX\\\\\\\\n-----END PRIVATE KEY-----")
+	return privateKeyRegexp.ReplaceAllString(text, "-----BEGIN PRIVATE KEY-----\\\\\\\\nXXXX\\\\\\\\n-----END PRIVATE KEY-----") // pragma: allowlist secret
 }
 
 func maskPrivateKeyData(text string) string {
 	return privateKeyDataRegexp.ReplaceAllString(text, `"privateKeyData": "XXXX"`)
+}
+
+func maskClientSecret(text string) string {
+	return clientSecretRegexp.ReplaceAllString(text, "$1${2}****")
 }
 
 func maskSecrets(text string) string {
@@ -59,5 +63,7 @@ func maskSecrets(text string) string {
 				maskPrivateKey(
 					maskAwsToken(
 						maskSasToken(
-							maskAwsKey(text)))))))
+							maskAwsKey(
+								maskClientSecret(
+									text))))))))
 }

@@ -1,9 +1,8 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"io"
 	"os"
@@ -15,17 +14,14 @@ import (
 type localUtil struct {
 }
 
-func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool) (cloudClient, error) {
+func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool, _ *Config) (cloudClient, error) {
 	return nil, nil
 }
 
 func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 	var frd *bufio.Reader
 	if meta.srcStream != nil {
-		b := meta.srcStream
-		if meta.realSrcStream != nil {
-			b = meta.realSrcStream
-		}
+		b := cmp.Or(meta.realSrcStream, meta.srcStream)
 		frd = bufio.NewReader(b)
 	} else {
 		f, err := os.Open(meta.realSrcFileName)

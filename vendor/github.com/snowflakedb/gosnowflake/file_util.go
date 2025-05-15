@@ -1,5 +1,3 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -31,33 +29,48 @@ func (util *snowflakeFileUtil) compressFileWithGzipFromStream(srcStream **bytes.
 	}
 	var c bytes.Buffer
 	w := gzip.NewWriter(&c)
-	w.Write(buf) // write buf to gzip writer
-	w.Close()
+	if _, err := w.Write(buf); err != nil { // write buf to gzip writer
+		return nil, -1, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, -1, err
+	}
 	return &c, c.Len(), nil
 }
 
-func (util *snowflakeFileUtil) compressFileWithGzip(fileName string, tmpDir string) (string, int64, error) {
+func (util *snowflakeFileUtil) compressFileWithGzip(fileName string, tmpDir string) (gzipFileName string, size int64, err error) {
 	basename := baseName(fileName)
-	gzipFileName := filepath.Join(tmpDir, basename+"_c.gz")
+	gzipFileName = filepath.Join(tmpDir, basename+"_c.gz")
 
 	fr, err := os.Open(fileName)
 	if err != nil {
 		return "", -1, err
 	}
-	defer fr.Close()
+	defer func() {
+		if tmpErr := fr.Close(); tmpErr != nil {
+			err = tmpErr
+		}
+	}()
 	fw, err := os.OpenFile(gzipFileName, os.O_WRONLY|os.O_CREATE, readWriteFileMode)
 	if err != nil {
 		return "", -1, err
 	}
 	gzw := gzip.NewWriter(fw)
-	defer gzw.Close()
-	io.Copy(gzw, fr)
+	defer func() {
+		if tmpErr := gzw.Close(); tmpErr != nil {
+			err = tmpErr
+		}
+	}()
+	_, err = io.Copy(gzw, fr)
+	if err != nil {
+		return "", -1, err
+	}
 
 	stat, err := os.Stat(gzipFileName)
 	if err != nil {
 		return "", -1, err
 	}
-	return gzipFileName, stat.Size(), nil
+	return gzipFileName, stat.Size(), err
 }
 
 func (util *snowflakeFileUtil) getDigestAndSizeForStream(stream **bytes.Buffer) (string, int64, error) {
@@ -77,12 +90,16 @@ func (util *snowflakeFileUtil) getDigestAndSizeForStream(stream **bytes.Buffer) 
 	return base64.StdEncoding.EncodeToString(m.Sum(nil)), int64((*stream).Len()), nil
 }
 
-func (util *snowflakeFileUtil) getDigestAndSizeForFile(fileName string) (string, int64, error) {
+func (util *snowflakeFileUtil) getDigestAndSizeForFile(fileName string) (digest string, size int64, err error) {
 	f, err := os.Open(fileName)
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	defer func() {
+		if tmpErr := f.Close(); tmpErr != nil {
+			err = tmpErr
+		}
+	}()
 
 	var total int64
 	m := sha256.New()
@@ -98,8 +115,10 @@ func (util *snowflakeFileUtil) getDigestAndSizeForFile(fileName string) (string,
 		total += int64(n)
 		m.Write(chunk[:n])
 	}
-	f.Seek(0, io.SeekStart)
-	return base64.StdEncoding.EncodeToString(m.Sum(nil)), total, nil
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return "", -1, err
+	}
+	return base64.StdEncoding.EncodeToString(m.Sum(nil)), total, err
 }
 
 // file metadata for PUT/GET
@@ -110,6 +129,7 @@ type fileMetadata struct {
 	resStatus          resultStatus
 	stageInfo          *execResponseStageInfo
 	encryptionMaterial *snowflakeFileEncryption
+	encryptMeta        *encryptMetadata
 
 	srcFileName        string
 	realSrcFileName    string
@@ -136,6 +156,9 @@ type fileMetadata struct {
 	/* streaming PUT */
 	srcStream     *bytes.Buffer
 	realSrcStream *bytes.Buffer
+
+	/* streaming GET */
+	dstStream *bytes.Buffer
 
 	/* GCS */
 	presignedURL                *url.URL

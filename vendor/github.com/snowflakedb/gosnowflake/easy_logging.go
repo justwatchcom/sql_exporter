@@ -2,22 +2,27 @@ package gosnowflake
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 type initTrials struct {
 	everTriedToInitialize bool
 	clientConfigFileInput string
 	configureCounter      int
+	mu                    sync.Mutex
 }
 
 var easyLoggingInitTrials = initTrials{
 	everTriedToInitialize: false,
 	clientConfigFileInput: "",
 	configureCounter:      0,
+	mu:                    sync.Mutex{},
 }
 
 func (i *initTrials) setInitTrial(clientConfigFileInput string) {
@@ -29,36 +34,42 @@ func (i *initTrials) increaseReconfigureCounter() {
 	i.configureCounter++
 }
 
-func (i *initTrials) reset() {
-	i.everTriedToInitialize = false
-	i.clientConfigFileInput = ""
-	i.configureCounter = 0
-}
-
-//lint:ignore U1000 Ignore unused function
 func initEasyLogging(clientConfigFileInput string) error {
+	easyLoggingInitTrials.mu.Lock()
+	defer easyLoggingInitTrials.mu.Unlock()
+
 	if !allowedToInitialize(clientConfigFileInput) {
+		logger.Info("Skipping Easy Logging initialization as it is not allowed to initialize")
 		return nil
 	}
-	config, err := getClientConfig(clientConfigFileInput)
+	logger.Infof("Trying to initialize Easy Logging")
+	config, configPath, err := getClientConfig(clientConfigFileInput)
 	if err != nil {
+		logger.Errorf("Failed to initialize Easy Logging, err: %s", err)
 		return easyLoggingInitError(err)
 	}
 	if config == nil {
+		logger.Info("Easy Logging is disabled as no config has been found")
 		easyLoggingInitTrials.setInitTrial(clientConfigFileInput)
 		return nil
 	}
 	var logLevel string
 	logLevel, err = getLogLevel(config.Common.LogLevel)
 	if err != nil {
+		logger.Errorf("Failed to initialize Easy Logging, err: %s", err)
 		return easyLoggingInitError(err)
 	}
 	var logPath string
 	logPath, err = getLogPath(config.Common.LogPath)
 	if err != nil {
+		logger.Errorf("Failed to initialize Easy Logging, err: %s", err)
 		return easyLoggingInitError(err)
 	}
+	logger.Infof("Initializing Easy Logging with logPath=%s and logLevel=%s from file: %s", logPath, logLevel, configPath)
 	err = reconfigureEasyLogging(logLevel, logPath)
+	if err != nil {
+		logger.Errorf("Failed to initialize Easy Logging, err: %s", err)
+	}
 	easyLoggingInitTrials.setInitTrial(clientConfigFileInput)
 	easyLoggingInitTrials.increaseReconfigureCounter()
 	return err
@@ -125,8 +136,12 @@ func getLogLevel(logLevel string) (string, error) {
 func getLogPath(logPath string) (string, error) {
 	logPathOrDefault := logPath
 	if logPath == "" {
-		logPathOrDefault = os.TempDir()
-		logger.Warnf("LogPath in client config not found. Using temporary directory as a default value: %s", logPathOrDefault)
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("user home directory is not accessible, err: %w", err)
+		}
+		logPathOrDefault = homeDir
+		logger.Warnf("LogPath in client config not found. Using user home directory as a default value: %s", logPathOrDefault)
 	}
 	pathWithGoSubdir := path.Join(logPathOrDefault, "go")
 	exists, err := dirExists(pathWithGoSubdir)
@@ -134,12 +149,34 @@ func getLogPath(logPath string) (string, error) {
 		return "", err
 	}
 	if !exists {
-		err = os.MkdirAll(pathWithGoSubdir, 0755)
+		err = os.MkdirAll(pathWithGoSubdir, 0700)
 		if err != nil {
 			return "", err
 		}
 	}
+	logDirPermValid, perm, err := isDirAccessCorrect(pathWithGoSubdir)
+	if err != nil {
+		return "", err
+	}
+	if !logDirPermValid {
+		logger.Warnf("Log directory: %s could potentially be accessed by others. Directory chmod: 0%o", pathWithGoSubdir, *perm)
+	}
 	return pathWithGoSubdir, nil
+}
+
+func isDirAccessCorrect(dirPath string) (bool, *os.FileMode, error) {
+	if runtime.GOOS == "windows" {
+		return true, nil, nil
+	}
+	dirStat, err := os.Stat(dirPath)
+	if err != nil {
+		return false, nil, err
+	}
+	perm := dirStat.Mode().Perm()
+	if perm != 0700 {
+		return false, &perm, nil
+	}
+	return true, &perm, nil
 }
 
 func dirExists(dirPath string) (bool, error) {

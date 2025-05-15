@@ -1,5 +1,3 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -132,7 +130,7 @@ func (sc *snowflakeConn) checkQueryStatus(
 	*retStatus, error) {
 	headers := make(map[string]string)
 	param := make(url.Values)
-	param.Add(requestGUIDKey, NewUUID().String())
+	param.Set(requestGUIDKey, NewUUID().String())
 	if tok, _, _ := sc.rest.TokenAccessor.GetTokens(); tok != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, tok)
 	}
@@ -206,23 +204,18 @@ func (sc *snowflakeConn) getQueryResultResp(
 	}
 	paramsMutex.Unlock()
 	param := make(url.Values)
-	param.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	param.Add("clientStartTime", strconv.FormatInt(sc.currentTimeProvider.currentTime(), 10))
-	param.Add(requestGUIDKey, NewUUID().String())
+	param.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	param.Set("clientStartTime", strconv.FormatInt(sc.currentTimeProvider.currentTime(), 10))
+	param.Set(requestGUIDKey, NewUUID().String())
 	token, _, _ := sc.rest.TokenAccessor.GetTokens()
 	if token != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 	}
 	url := sc.rest.getFullURL(resultPath, &param)
-	res, err := sc.rest.FuncGet(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
+
+	respd, err := getQueryResultWithRetriesForAsyncMode(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
 	if err != nil {
-		logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
-		return nil, err
-	}
-	defer res.Body.Close()
-	var respd *execResponse
-	if err = json.NewDecoder(res.Body).Decode(&respd); err != nil {
-		logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
+		logger.WithContext(ctx).Errorf("error: %v", err)
 		return nil, err
 	}
 	return respd, nil
@@ -238,6 +231,7 @@ func (sc *snowflakeConn) rowsForRunningQuery(
 		logger.WithContext(ctx).Errorf("error: %v", err)
 		return err
 	}
+
 	if !resp.Success {
 		code, err := strconv.Atoi(resp.Code)
 		if err != nil {
@@ -262,6 +256,7 @@ func (sc *snowflakeConn) buildRowsForRunningQuery(
 	rows := new(snowflakeRows)
 	rows.sc = sc
 	rows.queryID = qid
+	rows.ctx = ctx
 	if err := sc.rowsForRunningQuery(ctx, qid, rows); err != nil {
 		return nil, err
 	}

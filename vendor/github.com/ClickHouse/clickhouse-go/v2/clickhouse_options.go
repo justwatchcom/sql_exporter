@@ -20,15 +20,16 @@ package clickhouse
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ClickHouse/ch-go/compress"
-	"github.com/pkg/errors"
 )
 
 type CompressionMethod byte
@@ -41,6 +42,8 @@ func (c CompressionMethod) String() string {
 		return "zstd"
 	case CompressionLZ4:
 		return "lz4"
+	case CompressionLZ4HC:
+		return "lz4hc"
 	case CompressionGZIP:
 		return "gzip"
 	case CompressionDeflate:
@@ -55,6 +58,7 @@ func (c CompressionMethod) String() string {
 const (
 	CompressionNone    = CompressionMethod(compress.None)
 	CompressionLZ4     = CompressionMethod(compress.LZ4)
+	CompressionLZ4HC   = CompressionMethod(compress.LZ4HC)
 	CompressionZSTD    = CompressionMethod(compress.ZSTD)
 	CompressionGZIP    = CompressionMethod(0x95)
 	CompressionDeflate = CompressionMethod(0x96)
@@ -65,6 +69,7 @@ var compressionMap = map[string]CompressionMethod{
 	"none":    CompressionNone,
 	"zstd":    CompressionZSTD,
 	"lz4":     CompressionLZ4,
+	"lz4hc":   CompressionLZ4HC,
 	"gzip":    CompressionGZIP,
 	"deflate": CompressionDeflate,
 	"br":      CompressionBrotli,
@@ -78,7 +83,7 @@ type Auth struct { // has_control_character
 
 type Compression struct {
 	Method CompressionMethod
-	// this only applies to zlib and brotli compression algorithms
+	// this only applies to lz4, lz4hc, zlib, and brotli compression algorithms
 	Level int
 }
 
@@ -87,6 +92,7 @@ type ConnOpenStrategy uint8
 const (
 	ConnOpenInOrder ConnOpenStrategy = iota
 	ConnOpenRoundRobin
+	ConnOpenRandom
 )
 
 type Protocol int
@@ -120,6 +126,8 @@ type DialResult struct {
 	conn *connect
 }
 
+type HTTPProxy func(*http.Request) (*url.URL, error)
+
 type Options struct {
 	Protocol   Protocol
 	ClientInfo ClientInfo
@@ -141,8 +149,12 @@ type Options struct {
 	FreeBufOnConnRelease bool              // drop preserved memory buffer after each query
 	HttpHeaders          map[string]string // set additional headers on HTTP requests
 	HttpUrlPath          string            // set additional URL path for HTTP requests
+	HttpMaxConnsPerHost  int               // MaxConnsPerHost for http.Transport
 	BlockBufferSize      uint8             // default 2 - can be overwritten on query
-	MaxCompressionBuffer int               // default 10485760 - measured in bytes  i.e. 10MiB
+	MaxCompressionBuffer int               // default 10485760 - measured in bytes  i.e.
+
+	// HTTPProxy specifies an HTTP proxy URL to use for requests made by the client.
+	HTTPProxyURL *url.URL
 
 	scheme      string
 	ReadTimeout time.Duration
@@ -199,7 +211,7 @@ func (o *Options) fromDSN(in string) error {
 		case "compress_level":
 			level, err := strconv.ParseInt(params.Get(v), 10, 8)
 			if err != nil {
-				return errors.Wrap(err, "compress_level invalid value")
+				return fmt.Errorf("compress_level invalid value: %w", err)
 			}
 
 			if o.Compression == nil {
@@ -215,7 +227,7 @@ func (o *Options) fromDSN(in string) error {
 		case "max_compression_buffer":
 			max, err := strconv.Atoi(params.Get(v))
 			if err != nil {
-				return errors.Wrap(err, "max_compression_buffer invalid value")
+				return fmt.Errorf("max_compression_buffer invalid value: %w", err)
 			}
 			o.MaxCompressionBuffer = max
 		case "dial_timeout":
@@ -265,23 +277,25 @@ func (o *Options) fromDSN(in string) error {
 				o.ConnOpenStrategy = ConnOpenInOrder
 			case "round_robin":
 				o.ConnOpenStrategy = ConnOpenRoundRobin
+			case "random":
+				o.ConnOpenStrategy = ConnOpenRandom
 			}
 		case "max_open_conns":
 			maxOpenConns, err := strconv.Atoi(params.Get(v))
 			if err != nil {
-				return errors.Wrap(err, "max_open_conns invalid value")
+				return fmt.Errorf("max_open_conns invalid value: %w", err)
 			}
 			o.MaxOpenConns = maxOpenConns
 		case "max_idle_conns":
 			maxIdleConns, err := strconv.Atoi(params.Get(v))
 			if err != nil {
-				return errors.Wrap(err, "max_idle_conns invalid value")
+				return fmt.Errorf("max_idle_conns invalid value: %w", err)
 			}
 			o.MaxIdleConns = maxIdleConns
 		case "conn_max_lifetime":
 			connMaxLifetime, err := time.ParseDuration(params.Get(v))
 			if err != nil {
-				return errors.Wrap(err, "conn_max_lifetime invalid value")
+				return fmt.Errorf("conn_max_lifetime invalid value: %w", err)
 			}
 			o.ConnMaxLifetime = connMaxLifetime
 		case "username":
@@ -299,6 +313,12 @@ func (o *Options) fromDSN(in string) error {
 					version,
 				})
 			}
+		case "http_proxy":
+			proxyURL, err := url.Parse(params.Get(v))
+			if err != nil {
+				return fmt.Errorf("clickhouse [dsn parse]: http_proxy: %s", err)
+			}
+			o.HTTPProxyURL = proxyURL
 		default:
 			switch p := strings.ToLower(params.Get(v)); p {
 			case "true":

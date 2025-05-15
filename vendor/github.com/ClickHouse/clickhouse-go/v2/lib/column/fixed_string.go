@@ -22,8 +22,9 @@ import (
 	"database/sql/driver"
 	"encoding"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
+
+	"github.com/ClickHouse/ch-go/proto"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
@@ -77,7 +78,27 @@ func (col *FixedString) ScanRow(dest any, row int) error {
 		**d = col.row(row)
 	case encoding.BinaryUnmarshaler:
 		return d.UnmarshalBinary(col.rowBytes(row))
+	case *[]byte:
+		*d = col.rowBytes(row)
 	default:
+		// handle for *[n]byte
+		if t := reflect.TypeOf(dest); t.Kind() == reflect.Pointer &&
+			t.Elem().Kind() == reflect.Array &&
+			t.Elem().Elem() == reflect.TypeOf(byte(0)) {
+			size := t.Elem().Len()
+			if size != col.col.Size {
+				return &ColumnConverterError{
+					Op:   "ScanRow",
+					To:   fmt.Sprintf("%T", dest),
+					From: "FixedString",
+					Hint: fmt.Sprintf("invalid size %d, expect %d", size, col.col.Size),
+				}
+			}
+			rv := reflect.ValueOf(dest).Elem()
+			reflect.Copy(rv, reflect.ValueOf(col.row(row)))
+			return nil
+		}
+
 		if scan, ok := dest.(sql.Scanner); ok {
 			return scan.Scan(col.row(row))
 		}
@@ -90,32 +111,61 @@ func (col *FixedString) ScanRow(dest any, row int) error {
 	return nil
 }
 
+// safeAppendRow appends the value to the underlying column with a length check.
+// This re-implements the logic from ch-go but without the panic.
+// It also fills unused space with zeros.
+func (col *FixedString) safeAppendRow(v []byte) error {
+	if col.col.Size == 0 {
+		// If unset, use first value's length for the string size
+		col.col.Size = len(v)
+	}
+
+	if len(v) > col.col.Size {
+		return fmt.Errorf("input value with length %d exceeds FixedString(%d) capacity", len(v), col.col.Size)
+	}
+
+	col.col.Buf = append(col.col.Buf, v...)
+
+	// Fill the unused space of the fixed string with zeros
+	padding := col.col.Size - len(v)
+	for i := 0; i < padding; i++ {
+		col.col.Buf = append(col.col.Buf, 0)
+	}
+
+	return nil
+}
+
 func (col *FixedString) Append(v any) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []string:
 		nulls = make([]uint8, len(v))
 		for _, v := range v {
+			var err error
 			if v == "" {
-				col.col.Append(make([]byte, col.col.Size))
+				err = col.safeAppendRow(nil)
 			} else {
-				col.col.Append(binary.Str2Bytes(v, col.col.Size))
+				err = col.safeAppendRow(binary.Str2Bytes(v, col.col.Size))
+			}
+
+			if err != nil {
+				return nil, err
 			}
 		}
 	case []*string:
 		nulls = make([]uint8, len(v))
 		for i, v := range v {
+			var err error
 			if v == nil {
 				nulls[i] = 1
+				err = col.safeAppendRow(nil)
+			} else if *v == "" {
+				err = col.safeAppendRow(nil)
+			} else {
+				err = col.safeAppendRow(binary.Str2Bytes(*v, col.col.Size))
 			}
-			switch {
-			case v == nil:
-				col.col.Append(make([]byte, col.col.Size))
-			default:
-				if *v == "" {
-					col.col.Append(make([]byte, col.col.Size))
-				} else {
-					col.col.Append(binary.Str2Bytes(*v, col.col.Size))
-				}
+
+			if err != nil {
+				return nil, err
 			}
 		}
 	case encoding.BinaryMarshaler:
@@ -123,9 +173,51 @@ func (col *FixedString) Append(v any) (nulls []uint8, err error) {
 		if err != nil {
 			return nil, err
 		}
-		col.col.Append(data)
+		err = col.safeAppendRow(data)
+		if err != nil {
+			return nil, err
+		}
+
 		nulls = make([]uint8, len(data)/col.col.Size)
+	case [][]byte:
+		nulls = make([]uint8, len(v))
+		for i, v := range v {
+			if v == nil {
+				nulls[i] = 1
+			}
+			n := len(v)
+			var err error
+			if n == 0 {
+				err = col.safeAppendRow(nil)
+			} else if n >= col.col.Size {
+				err = col.safeAppendRow(v[0:col.col.Size])
+			} else {
+				err = col.safeAppendRow(v)
+			}
+
+			if err != nil {
+				return nil, err
+			}
+		}
 	default:
+		// handle for [][n]byte
+		if t := reflect.TypeOf(v); t.Kind() == reflect.Slice &&
+			t.Elem().Kind() == reflect.Array &&
+			t.Elem().Elem() == reflect.TypeOf(byte(0)) {
+			rv := reflect.ValueOf(v)
+			nulls = make([]uint8, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				e := rv.Index(i)
+				data := make([]byte, e.Len())
+				reflect.Copy(reflect.ValueOf(data), e)
+				err := col.safeAppendRow(data)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return
+		}
+
 		if s, ok := v.(driver.Valuer); ok {
 			val, err := s.Value()
 			if err != nil {
@@ -147,25 +239,64 @@ func (col *FixedString) Append(v any) (nulls []uint8, err error) {
 	return
 }
 
-func (col *FixedString) AppendRow(v any) (err error) {
-	data := make([]byte, col.col.Size)
+func (col *FixedString) AppendRow(v any) error {
 	switch v := v.(type) {
+	case []byte:
+		err := col.safeAppendRow(v)
+		if err != nil {
+			return err
+		}
 	case string:
-		if v != "" {
-			data = binary.Str2Bytes(v, col.col.Size)
+		err := col.safeAppendRow(binary.Str2Bytes(v, col.col.Size))
+		if err != nil {
+			return err
 		}
 	case *string:
+		var data []byte
 		if v != nil {
-			if *v != "" {
-				data = binary.Str2Bytes(*v, col.col.Size)
-			}
+			data = binary.Str2Bytes(*v, col.col.Size)
+		}
+
+		err := col.safeAppendRow(data)
+		if err != nil {
+			return err
 		}
 	case nil:
+		err := col.safeAppendRow(nil)
+		if err != nil {
+			return err
+		}
 	case encoding.BinaryMarshaler:
-		if data, err = v.MarshalBinary(); err != nil {
+		data, err := v.MarshalBinary()
+		if err != nil {
+			return err
+		}
+
+		err = col.safeAppendRow(data)
+		if err != nil {
 			return err
 		}
 	default:
+		if t := reflect.TypeOf(v); t.Kind() == reflect.Array && t.Elem() == reflect.TypeOf(byte(0)) {
+			if t.Len() != col.col.Size {
+				return &ColumnConverterError{
+					Op:   "AppendRow",
+					To:   "FixedString",
+					From: fmt.Sprintf("%T", v),
+					Hint: fmt.Sprintf("invalid size %d, expect %d", t.Len(), col.col.Size),
+				}
+			}
+
+			data := make([]byte, col.col.Size)
+			reflect.Copy(reflect.ValueOf(data), reflect.ValueOf(v))
+			err := col.safeAppendRow(data)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+
 		if s, ok := v.(driver.Valuer); ok {
 			val, err := s.Value()
 			if err != nil {
@@ -189,7 +320,7 @@ func (col *FixedString) AppendRow(v any) (err error) {
 			From: fmt.Sprintf("%T", v),
 		}
 	}
-	col.col.Append(data)
+
 	return nil
 }
 
