@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 RUN apk add git bash
 
@@ -9,7 +9,7 @@ COPY ./ /src
 
 # build
 WORKDIR /src
-RUN GOGC=off go build -mod=vendor -v -o /sql_exporter .
+RUN GOGC=off go build -mod=vendor -ldflags="-s -w" -v -o /sql_exporter .
 
 # multistage
 FROM alpine:3.21.3
