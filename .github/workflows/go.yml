@@ -23,6 +23,6 @@ jobs:
 
     - uses: dominikh/staticcheck-action@v1.3.0
       with:
-        version: "2023.1"
+        version: "2024.1"
         # go is already installed by actions/setup-go with the correct version from go.mod
         install-go: false
