@@ -59,8 +59,10 @@ func DateNamed(name string, value time.Time, scale TimeUnit) driver.NamedDateVal
 	}
 }
 
-var bindNumericRe = regexp.MustCompile(`\$[0-9]+`)
-var bindPositionalRe = regexp.MustCompile(`[^\\][?]`)
+var (
+	bindNumericRe    = regexp.MustCompile(`\$[0-9]+`)
+	bindPositionalRe = regexp.MustCompile(`[^\\][?]`)
+)
 
 func bind(tz *time.Location, query string, args ...any) (string, error) {
 	if len(args) == 0 {
@@ -245,6 +247,12 @@ func bindNamed(tz *time.Location, query string, args ...any) (_ string, err erro
 func formatTime(tz *time.Location, scale TimeUnit, value time.Time) (string, error) {
 	switch value.Location().String() {
 	case "Local", "":
+		// It's required to pass timestamp as string due to decimal overflow for higher precision,
+		// but zero-value string "toDateTime('0')" will be not parsed by ClickHouse.
+		if value.Unix() == 0 {
+			return "toDateTime(0)", nil
+		}
+
 		switch scale {
 		case Seconds:
 			return fmt.Sprintf("toDateTime('%d')", value.Unix()), nil
@@ -262,7 +270,7 @@ func formatTime(tz *time.Location, scale TimeUnit, value time.Time) (string, err
 		return fmt.Sprintf("toDateTime64('%s', %d)", value.Format(fmt.Sprintf("2006-01-02 15:04:05.%0*d", int(scale*3), 0)), int(scale*3)), nil
 	}
 	if scale == Seconds {
-		return value.Format(fmt.Sprintf("toDateTime('2006-01-02 15:04:05', '%s')", value.Location().String())), nil
+		return fmt.Sprintf("toDateTime('%s', '%s')", value.Format("2006-01-02 15:04:05"), value.Location().String()), nil
 	}
 	return fmt.Sprintf("toDateTime64('%s', %d, '%s')", value.Format(fmt.Sprintf("2006-01-02 15:04:05.%0*d", int(scale*3), 0)), int(scale*3), value.Location().String()), nil
 }
@@ -304,6 +312,11 @@ func format(tz *time.Location, scale TimeUnit, v any) (string, error) {
 		}
 		return fmt.Sprintf("[%s]", val), nil
 	case fmt.Stringer:
+		if v := reflect.ValueOf(v); v.Kind() == reflect.Pointer &&
+			v.IsNil() &&
+			v.Type().Elem().Implements(reflect.TypeOf((*fmt.Stringer)(nil)).Elem()) {
+			return "NULL", nil
+		}
 		return quote(v.String()), nil
 	case column.OrderedMap:
 		values := make([]string, 0)

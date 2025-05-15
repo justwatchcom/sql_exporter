@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -22,14 +20,6 @@ const (
 	headerAcceptTypeApplicationSnowflake = "application/snowflake"
 )
 
-// Snowflake Server Error code
-const (
-	queryInProgressCode      = "333333"
-	queryInProgressAsyncCode = "333334"
-	sessionExpiredCode       = "390112"
-	queryNotExecuting        = "000605"
-)
-
 // Snowflake Server Endpoints
 const (
 	loginRequestPath         = "/session/v1/login-request"
@@ -40,6 +30,7 @@ const (
 	monitoringQueriesPath    = "/monitoring/queries"
 	sessionRequestPath       = "/session"
 	heartBeatPath            = "/session/heartbeat"
+	consoleLoginRequestPath  = "/console/login"
 )
 
 type (
@@ -232,9 +223,9 @@ func postRestfulQueryHelper(
 	requestID UUID,
 	cfg *Config) (
 	data *execResponse, err error) {
-	logger.Infof("params: %v", params)
-	params.Add(requestIDKey, requestID.String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	logger.WithContext(ctx).Infof("params: %v", params)
+	params.Set(requestIDKey, requestID.String())
+	params.Set(requestGUIDKey, NewUUID().String())
 	token, _, _ := sr.TokenAccessor.GetTokens()
 	if token != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
@@ -280,7 +271,7 @@ func postRestfulQueryHelper(
 				fullURL = sr.getFullURL(respd.Data.GetResultURL, nil)
 			}
 
-			logger.Info("ping pong")
+			logger.WithContext(ctx).Info("ping pong")
 			token, _, _ = sr.TokenAccessor.GetTokens()
 			headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 
@@ -325,9 +316,9 @@ func postRestfulQueryHelper(
 func closeSession(ctx context.Context, sr *snowflakeRestful, timeout time.Duration) error {
 	logger.WithContext(ctx).Info("close session")
 	params := &url.Values{}
-	params.Add("delete", "true")
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	params.Set("delete", "true")
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestGUIDKey, NewUUID().String())
 	fullURL := sr.getFullURL(sessionRequestPath, params)
 
 	headers := getHeaders()
@@ -375,8 +366,8 @@ func closeSession(ctx context.Context, sr *snowflakeRestful, timeout time.Durati
 func renewRestfulSession(ctx context.Context, sr *snowflakeRestful, timeout time.Duration) error {
 	logger.WithContext(ctx).Info("start renew session")
 	params := &url.Values{}
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestGUIDKey, NewUUID().String())
 	fullURL := sr.getFullURL(tokenRequestPath, params)
 
 	token, masterToken, _ := sr.TokenAccessor.GetTokens()
@@ -448,8 +439,8 @@ func getCancelRetry(ctx context.Context) int {
 func cancelQuery(ctx context.Context, sr *snowflakeRestful, requestID UUID, timeout time.Duration) error {
 	logger.WithContext(ctx).Info("cancel query")
 	params := &url.Values{}
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	params.Add(requestGUIDKey, NewUUID().String())
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestGUIDKey, NewUUID().String())
 
 	fullURL := sr.getFullURL(abortRequestPath, params)
 
@@ -482,7 +473,7 @@ func cancelQuery(ctx context.Context, sr *snowflakeRestful, requestID UUID, time
 				return err
 			}
 			return sr.FuncCancelQuery(ctx, sr, requestID, timeout)
-		} else if !respd.Success && respd.Code == queryNotExecuting && ctxRetry != 0 {
+		} else if !respd.Success && respd.Code == queryNotExecutingCode && ctxRetry != 0 {
 			return sr.FuncCancelQuery(context.WithValue(ctx, cancelRetry, ctxRetry-1), sr, requestID, timeout)
 		} else if respd.Success {
 			return nil

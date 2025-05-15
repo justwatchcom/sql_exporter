@@ -1,8 +1,7 @@
-// Copyright (c) 2021-2023 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +22,7 @@ import (
 )
 
 type snowflakeAzureClient struct {
+	cfg *Config
 }
 
 type azureLocation struct {
@@ -34,6 +34,7 @@ type azureAPI interface {
 	UploadStream(ctx context.Context, body io.Reader, o *azblob.UploadStreamOptions) (azblob.UploadStreamResponse, error)
 	UploadFile(ctx context.Context, file *os.File, o *azblob.UploadFileOptions) (azblob.UploadFileResponse, error)
 	DownloadFile(ctx context.Context, file *os.File, o *blob.DownloadFileOptions) (int64, error)
+	DownloadStream(ctx context.Context, o *blob.DownloadStreamOptions) (azblob.DownloadStreamResponse, error)
 	GetProperties(ctx context.Context, o *blob.GetPropertiesOptions) (blob.GetPropertiesResponse, error)
 }
 
@@ -50,7 +51,7 @@ func (util *snowflakeAzureClient) createClient(info *execResponseStageInfo, _ bo
 				RetryDelay: 2 * time.Second,
 			},
 			Transport: &http.Client{
-				Transport: SnowflakeTransport,
+				Transport: getTransport(util.cfg),
 			},
 		},
 	})
@@ -72,7 +73,7 @@ func (util *snowflakeAzureClient) getFileHeader(meta *fileMetadata, filename str
 		return nil, err
 	}
 	path := azureLoc.path + strings.TrimLeft(filename, "/")
-	containerClient, err := container.NewClientWithNoCredential(client.URL(), &container.ClientOptions{})
+	containerClient, err := createContainerClient(client.URL(), util.cfg)
 	if err != nil {
 		return nil, &SnowflakeError{
 			Message: "failed to create container client",
@@ -84,9 +85,11 @@ func (util *snowflakeAzureClient) getFileHeader(meta *fileMetadata, filename str
 	if meta.mockAzureClient != nil {
 		blobClient = meta.mockAzureClient
 	}
-	resp, err := blobClient.GetProperties(context.Background(), &blob.GetPropertiesOptions{
-		AccessConditions: &blob.AccessConditions{},
-		CPKInfo:          &blob.CPKInfo{},
+	resp, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (blob.GetPropertiesResponse, error) {
+		return blobClient.GetProperties(ctx, &blob.GetPropertiesOptions{
+			AccessConditions: &blob.AccessConditions{},
+			CPKInfo:          &blob.CPKInfo{},
+		})
 	})
 	if err != nil {
 		var se *azcore.ResponseError
@@ -104,17 +107,17 @@ func (util *snowflakeAzureClient) getFileHeader(meta *fileMetadata, filename str
 	}
 
 	meta.resStatus = uploaded
-	metadata := resp.Metadata
+	metadata := withLowerKeys(resp.Metadata)
 	var encData encryptionData
 
-	_, ok = metadata["Encryptiondata"]
+	_, ok = metadata["encryptiondata"]
 	if ok {
-		if err = json.Unmarshal([]byte(*metadata["Encryptiondata"]), &encData); err != nil {
+		if err = json.Unmarshal([]byte(*metadata["encryptiondata"]), &encData); err != nil {
 			return nil, err
 		}
 	}
 
-	matdesc, ok := metadata["Matdesc"]
+	matdesc, ok := metadata["matdesc"]
 	if !ok {
 		// matdesc is not in response, use empty string
 		matdesc = new(string)
@@ -125,7 +128,7 @@ func (util *snowflakeAzureClient) getFileHeader(meta *fileMetadata, filename str
 		*matdesc,
 	}
 
-	digest, ok := metadata["Sfcdigest"]
+	digest, ok := metadata["sfcdigest"]
 	if !ok {
 		// sfcdigest is not in response, use empty string
 		digest = new(string)
@@ -141,25 +144,24 @@ func (util *snowflakeAzureClient) getFileHeader(meta *fileMetadata, filename str
 func (util *snowflakeAzureClient) uploadFile(
 	dataFile string,
 	meta *fileMetadata,
-	encryptMeta *encryptMetadata,
 	maxConcurrency int,
 	multiPartThreshold int64) error {
 	azureMeta := map[string]*string{
 		"sfcdigest": &meta.sha256Digest,
 	}
-	if encryptMeta != nil {
+	if meta.encryptMeta != nil {
 		ed := &encryptionData{
 			EncryptionMode: "FullBlob",
 			WrappedContentKey: contentKey{
 				"symmKey1",
-				encryptMeta.key,
+				meta.encryptMeta.key,
 				"AES_CBC_256",
 			},
 			EncryptionAgent: encryptionAgent{
 				"1.0",
 				"AES_CBC_128",
 			},
-			ContentEncryptionIV: encryptMeta.iv,
+			ContentEncryptionIV: meta.encryptMeta.iv,
 			KeyWrappingMetadata: keyMetadata{
 				"Java 5.3.0",
 			},
@@ -170,7 +172,7 @@ func (util *snowflakeAzureClient) uploadFile(
 		}
 		encryptionMetadata := string(metadata)
 		azureMeta["encryptiondata"] = &encryptionMetadata
-		azureMeta["matdesc"] = &encryptMeta.matdesc
+		azureMeta["matdesc"] = &meta.encryptMeta.matdesc
 	}
 
 	azureLoc, err := util.extractContainerNameAndPath(meta.stageInfo.Location)
@@ -184,7 +186,8 @@ func (util *snowflakeAzureClient) uploadFile(
 			Message: "failed to cast to azure client",
 		}
 	}
-	containerClient, err := container.NewClientWithNoCredential(client.URL(), &container.ClientOptions{})
+	containerClient, err := createContainerClient(client.URL(), util.cfg)
+
 	if err != nil {
 		return &SnowflakeError{
 			Message: "failed to create container client",
@@ -197,13 +200,12 @@ func (util *snowflakeAzureClient) uploadFile(
 		blobClient = meta.mockAzureClient
 	}
 	if meta.srcStream != nil {
-		uploadSrc := meta.srcStream
-		if meta.realSrcStream != nil {
-			uploadSrc = meta.realSrcStream
-		}
-		_, err = blobClient.UploadStream(context.Background(), uploadSrc, &azblob.UploadStreamOptions{
-			BlockSize: int64(uploadSrc.Len()),
-			Metadata:  azureMeta,
+		uploadSrc := cmp.Or(meta.realSrcStream, meta.srcStream)
+		_, err = withCloudStorageTimeout(util.cfg, func(ctx context.Context) (azblob.UploadStreamResponse, error) {
+			return blobClient.UploadStream(ctx, uploadSrc, &azblob.UploadStreamOptions{
+				BlockSize: int64(uploadSrc.Len()),
+				Metadata:  azureMeta,
+			})
 		})
 	} else {
 		var f *os.File
@@ -226,7 +228,9 @@ func (util *snowflakeAzureClient) uploadFile(
 		if meta.options.putAzureCallback != nil {
 			blobOptions.Progress = meta.options.putAzureCallback.call
 		}
-		_, err = blobClient.UploadFile(context.Background(), f, blobOptions)
+		_, err = withCloudStorageTimeout(util.cfg, func(ctx context.Context) (azblob.UploadFileResponse, error) {
+			return blobClient.UploadFile(ctx, f, blobOptions)
+		})
 	}
 	if err != nil {
 		var se *azcore.ResponseError
@@ -264,7 +268,7 @@ func (util *snowflakeAzureClient) nativeDownloadFile(
 			Message: "failed to cast to azure client",
 		}
 	}
-	containerClient, err := container.NewClientWithNoCredential(client.URL(), &container.ClientOptions{})
+	containerClient, err := createContainerClient(client.URL(), util.cfg)
 	if err != nil {
 		return &SnowflakeError{
 			Message: "failed to create container client",
@@ -276,16 +280,33 @@ func (util *snowflakeAzureClient) nativeDownloadFile(
 	if meta.mockAzureClient != nil {
 		blobClient = meta.mockAzureClient
 	}
-	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = blobClient.DownloadFile(
-		context.Background(), f, &azblob.DownloadFileOptions{
-			Concurrency: uint16(maxConcurrency)})
-	if err != nil {
-		return err
+	if meta.options.GetFileToStream {
+		blobDownloadResponse, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (azblob.DownloadStreamResponse, error) {
+			return blobClient.DownloadStream(ctx, &azblob.DownloadStreamOptions{})
+		})
+		if err != nil {
+			return err
+		}
+		retryReader := blobDownloadResponse.NewRetryReader(context.Background(), &azblob.RetryReaderOptions{})
+		defer retryReader.Close()
+		_, err = meta.dstStream.ReadFrom(retryReader)
+		if err != nil {
+			return err
+		}
+	} else {
+		f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = withCloudStorageTimeout(util.cfg, func(ctx context.Context) (any, error) {
+			return blobClient.DownloadFile(
+				ctx, f, &azblob.DownloadFileOptions{
+					Concurrency: uint16(maxConcurrency)})
+		})
+		if err != nil {
+			return err
+		}
 	}
 	meta.resStatus = downloaded
 	return nil
@@ -320,4 +341,12 @@ func (util *snowflakeAzureClient) detectAzureTokenExpireError(resp *http.Respons
 	errStr := string(azureErr)
 	return strings.Contains(errStr, "Signature not valid in the specified time frame") ||
 		strings.Contains(errStr, "Server failed to authenticate the request")
+}
+
+func createContainerClient(clientURL string, cfg *Config) (*container.Client, error) {
+	return container.NewClientWithNoCredential(clientURL, &container.ClientOptions{ClientOptions: azcore.ClientOptions{
+		Transport: &http.Client{
+			Transport: getTransport(cfg),
+		},
+	}})
 }
