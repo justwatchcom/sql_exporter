@@ -21,8 +21,8 @@ jobs:
     - name: Test
       run: go test -v ./...
 
-    - uses: dominikh/staticcheck-action@v1.3.0
+    - uses: dominikh/staticcheck-action@v1.3.1
       with:
-        version: "2024.1"
+        version: "2025.1"
         # go is already installed by actions/setup-go with the correct version from go.mod
         install-go: false
