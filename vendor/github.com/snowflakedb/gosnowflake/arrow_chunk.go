@@ -1,15 +1,14 @@
-// Copyright (c) 2020-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"time"
 
-	"github.com/apache/arrow/go/v14/arrow"
-	"github.com/apache/arrow/go/v14/arrow/ipc"
-	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 type arrowResultChunk struct {
@@ -19,7 +18,8 @@ type arrowResultChunk struct {
 	allocator memory.Allocator
 }
 
-func (arc *arrowResultChunk) decodeArrowChunk(rowType []execResponseRowType, highPrec bool) ([]chunkRowType, error) {
+func (arc *arrowResultChunk) decodeArrowChunk(ctx context.Context, rowType []execResponseRowType, highPrec bool, params map[string]*string) ([]chunkRowType, error) {
+	defer arc.reader.Release()
 	logger.Debug("Arrow Decoder")
 	var chunkRows []chunkRowType
 
@@ -28,6 +28,7 @@ func (arc *arrowResultChunk) decodeArrowChunk(rowType []execResponseRowType, hig
 
 		start := len(chunkRows)
 		numRows := int(record.NumRows())
+		logger.Debugf("rows in current record: %v", numRows)
 		columns := record.Columns()
 		chunkRows = append(chunkRows, make([]chunkRowType, numRows)...)
 		for i := start; i < start+numRows; i++ {
@@ -36,7 +37,7 @@ func (arc *arrowResultChunk) decodeArrowChunk(rowType []execResponseRowType, hig
 
 		for colIdx, col := range columns {
 			values := make([]snowflakeValue, numRows)
-			if err := arrowToValue(values, rowType[colIdx], col, arc.loc, highPrec); err != nil {
+			if err := arrowToValues(ctx, values, rowType[colIdx], col, arc.loc, highPrec, params); err != nil {
 				return nil, err
 			}
 

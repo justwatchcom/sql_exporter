@@ -1,5 +1,3 @@
-// Copyright (c) 2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -18,7 +16,10 @@ var nilUUID UUID
 // NewUUID creates a new snowflake UUID
 func NewUUID() UUID {
 	var u UUID
-	rand.Read(u[:])
+	_, err := rand.Read(u[:])
+	if err != nil {
+		logger.Warnf("error while reading random bytes to UUID. %v", err)
+	}
 	u[8] = (u[8] | rfc4122) & 0x7F
 
 	var version byte = 4

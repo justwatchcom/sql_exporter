@@ -1,9 +1,6 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
-	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -19,7 +16,7 @@ const (
 
 // implemented by localUtil and remoteStorageUtil
 type storageUtil interface {
-	createClient(*execResponseStageInfo, bool) (cloudClient, error)
+	createClient(*execResponseStageInfo, bool, *Config) (cloudClient, error)
 	uploadOneFileWithRetry(*fileMetadata) error
 	downloadOneFile(*fileMetadata) error
 }
@@ -28,60 +25,41 @@ type storageUtil interface {
 type cloudUtil interface {
 	createClient(*execResponseStageInfo, bool) (cloudClient, error)
 	getFileHeader(*fileMetadata, string) (*fileHeader, error)
-	uploadFile(string, *fileMetadata, *encryptMetadata, int, int64) error
+	uploadFile(string, *fileMetadata, int, int64) error
 	nativeDownloadFile(*fileMetadata, string, int64) error
 }
 
 type cloudClient interface{}
 
 type remoteStorageUtil struct {
+	cfg *Config
 }
 
-func (rsu *remoteStorageUtil) getNativeCloudType(cli string) cloudUtil {
+func (rsu *remoteStorageUtil) getNativeCloudType(cli string, cfg *Config) cloudUtil {
 	if cloudType(cli) == s3Client {
-		return &snowflakeS3Client{}
+		return &snowflakeS3Client{
+			cfg,
+		}
 	} else if cloudType(cli) == azureClient {
-		return &snowflakeAzureClient{}
+		return &snowflakeAzureClient{
+			cfg,
+		}
 	} else if cloudType(cli) == gcsClient {
-		return &snowflakeGcsClient{}
+		return &snowflakeGcsClient{
+			cfg,
+		}
 	}
 	return nil
 }
 
 // call cloud utils' native create client methods
-func (rsu *remoteStorageUtil) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool) (cloudClient, error) {
-	utilClass := rsu.getNativeCloudType(info.LocationType)
+func (rsu *remoteStorageUtil) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool, cfg *Config) (cloudClient, error) {
+	utilClass := rsu.getNativeCloudType(info.LocationType, cfg)
 	return utilClass.createClient(info, useAccelerateEndpoint)
 }
 
 func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
-	var encryptMeta *encryptMetadata
-	var dataFile string
-	var err error
-	if meta.encryptionMaterial != nil {
-		if meta.srcStream != nil {
-			var encryptedStream bytes.Buffer
-			srcStream := meta.srcStream
-			if meta.realSrcStream != nil {
-				srcStream = meta.realSrcStream
-			}
-			encryptMeta, err = encryptStream(meta.encryptionMaterial, srcStream, &encryptedStream, 0)
-			if err != nil {
-				return err
-			}
-			meta.realSrcStream = &encryptedStream
-			dataFile = meta.realSrcFileName
-		} else {
-			encryptMeta, dataFile, err = encryptFile(meta.encryptionMaterial, meta.realSrcFileName, 0, meta.tmpDir)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		dataFile = meta.realSrcFileName
-	}
-
-	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType)
+	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType, meta.sfa.sc.cfg)
 	maxConcurrency := int(meta.parallel)
 	var lastErr error
 	maxRetry := defaultMaxRetry
@@ -89,9 +67,9 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 		if !meta.overwrite {
 			header, err := utilClass.getFileHeader(meta, meta.dstFileName)
 			if meta.resStatus == notFoundFile {
-				err := utilClass.uploadFile(dataFile, meta, encryptMeta, maxConcurrency, meta.options.MultiPartThreshold)
+				err := utilClass.uploadFile(meta.realSrcFileName, meta, maxConcurrency, meta.options.MultiPartThreshold)
 				if err != nil {
-					logger.Warnf("Error uploading %v. err: %v", dataFile, err)
+					logger.Warnf("Error uploading %v. err: %v", meta.realSrcFileName, err)
 				}
 			} else if err != nil {
 				return err
@@ -103,9 +81,9 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 			}
 		}
 		if meta.overwrite || meta.resStatus == notFoundFile {
-			err := utilClass.uploadFile(dataFile, meta, encryptMeta, maxConcurrency, meta.options.MultiPartThreshold)
+			err := utilClass.uploadFile(meta.realSrcFileName, meta, maxConcurrency, meta.options.MultiPartThreshold)
 			if err != nil {
-				logger.Debugf("Error uploading %v. err: %v", dataFile, err)
+				logger.Debugf("Error uploading %v. err: %v", meta.realSrcFileName, err)
 			}
 		}
 		if meta.resStatus == uploaded || meta.resStatus == renewToken || meta.resStatus == renewPresignedURL {
@@ -130,11 +108,11 @@ func (rsu *remoteStorageUtil) uploadOneFile(meta *fileMetadata) error {
 	if lastErr != nil {
 		return lastErr
 	}
-	return fmt.Errorf("unkown error uploading %v", dataFile)
+	return fmt.Errorf("unkown error uploading %v", meta.realSrcFileName)
 }
 
 func (rsu *remoteStorageUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
-	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType)
+	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType, rsu.cfg)
 	retryOuter := true
 	for i := 0; i < 10; i++ {
 		// retry
@@ -145,7 +123,9 @@ func (rsu *remoteStorageUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 		if meta.resStatus == uploaded || meta.resStatus == skipped {
 			for j := 0; j < 10; j++ {
 				status := meta.resStatus
-				utilClass.getFileHeader(meta, meta.dstFileName)
+				if _, err := utilClass.getFileHeader(meta, meta.dstFileName); err != nil {
+					logger.Infof("error while getting file %v header. %v", meta.dstFileSize, err)
+				}
 				// check file header status and verify upload/skip
 				if meta.resStatus == notFoundFile {
 					time.Sleep(time.Second) // wait 1 second
@@ -194,7 +174,7 @@ func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 		}
 	}
 
-	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType)
+	utilClass := rsu.getNativeCloudType(meta.stageInfo.LocationType, meta.sfa.sc.cfg)
 	header, err := utilClass.getFileHeader(meta, meta.srcFileName)
 	if err != nil {
 		return err
@@ -218,17 +198,30 @@ func (rsu *remoteStorageUtil) downloadOneFile(meta *fileMetadata) error {
 						return err
 					}
 				}
-				tmpDstFileName, err := decryptFile(header.encryptionMetadata,
-					meta.encryptionMaterial, fullDstFileName, 0, meta.tmpDir)
-				if err != nil {
-					return err
+				if meta.options.GetFileToStream {
+					totalFileSize, err := decryptStreamCBC(header.encryptionMetadata,
+						meta.encryptionMaterial, 0, meta.dstStream, meta.sfa.streamBuffer)
+					if err != nil {
+						return err
+					}
+					meta.sfa.streamBuffer.Truncate(totalFileSize)
+					meta.dstFileSize = int64(totalFileSize)
+				} else {
+					tmpDstFileName, err := decryptFileCBC(header.encryptionMetadata,
+						meta.encryptionMaterial, fullDstFileName, 0, meta.tmpDir)
+					if err != nil {
+						return err
+					}
+					if err = os.Rename(tmpDstFileName, fullDstFileName); err != nil {
+						return err
+					}
 				}
-				if err = os.Rename(tmpDstFileName, fullDstFileName); err != nil {
-					return err
-				}
+
 			}
-			if fi, err := os.Stat(fullDstFileName); err == nil {
-				meta.dstFileSize = fi.Size()
+			if !meta.options.GetFileToStream {
+				if fi, err := os.Stat(fullDstFileName); err == nil {
+					meta.dstFileSize = fi.Size()
+				}
 			}
 			return nil
 		}
