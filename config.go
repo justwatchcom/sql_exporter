@@ -165,8 +165,8 @@ type connection struct {
 	user                string
 	tokenExpirationTime time.Time
 	iteratorValues      []string
-    snowflakeConfig *gosnowflake.Config
-    snowflakeDSN    string
+    	snowflakeConfig *gosnowflake.Config
+    	snowflakeDSN    string
 }
 
 // Query is an SQL query that is executed on a connection
