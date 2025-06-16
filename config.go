@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/robfig/cron/v3"
+	"github.com/snowflakedb/gosnowflake"
 	"gopkg.in/yaml.v2"
 )
 
@@ -164,6 +165,8 @@ type connection struct {
 	user                string
 	tokenExpirationTime time.Time
 	iteratorValues      []string
+    	snowflakeConfig *gosnowflake.Config
+    	snowflakeDSN    string
 }
 
 // Query is an SQL query that is executed on a connection
