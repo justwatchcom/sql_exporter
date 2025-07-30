@@ -150,10 +150,31 @@ type MTLSIdentity struct {
 	KeyPath  string `yaml:"key_path"`
 }
 
+// MTLSSetup interface for dependency injection of mTLS setup logic
+type MTLSSetup interface {
+	SetupMTLS(job *Job, tlsConfig *tls.Config) error
+}
+
+// FilesystemMTLSSetup implements MTLSSetup using filesystem-based certificates
+type FilesystemMTLSSetup struct{}
+
+// NewFilesystemMTLSSetup creates a new filesystem-based mTLS setup
+func NewFilesystemMTLSSetup() MTLSSetup {
+	return &FilesystemMTLSSetup{}
+}
+
+// TLSConfigResult holds the result of TLS configuration
+type TLSConfigResult struct {
+	TLSConfig   *tls.Config
+	ModifiedURL string
+	Error       error
+}
+
 // Job is a collection of connections and queries
 type Job struct {
 	log          log.Logger
 	conns        []*connection
+	mtlsSetup    MTLSSetup     // Injectable dependency for mTLS setup
 	Name         string        `yaml:"name"`          // name of this job
 	KeepAlive    bool          `yaml:"keepalive"`     // keep connection between runs?
 	Interval     time.Duration `yaml:"interval"`      // interval at which this job is run

@@ -291,6 +291,9 @@ github.com/cloudflare/certinel/fswatcher
 # github.com/danieljoos/wincred v1.2.2
 ## explicit; go 1.18
 github.com/danieljoos/wincred
+# github.com/davecgh/go-spew v1.1.1
+## explicit
+github.com/davecgh/go-spew/spew
 # github.com/dvsekhvalnov/jose2go v1.6.0
 ## explicit; go 1.15
 github.com/dvsekhvalnov/jose2go
@@ -576,6 +579,9 @@ github.com/pkg/browser
 # github.com/pkg/errors v0.9.1
 ## explicit
 github.com/pkg/errors
+# github.com/pmezard/go-difflib v1.0.0
+## explicit
+github.com/pmezard/go-difflib/difflib
 # github.com/prometheus/client_golang v1.20.5
 ## explicit; go 1.20
 github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil
@@ -621,6 +627,11 @@ github.com/sirupsen/logrus
 # github.com/snowflakedb/gosnowflake v1.13.3
 ## explicit; go 1.22.0
 github.com/snowflakedb/gosnowflake
+# github.com/stretchr/testify v1.10.0
+## explicit; go 1.17
+github.com/stretchr/testify/assert
+github.com/stretchr/testify/assert/yaml
+github.com/stretchr/testify/require
 # github.com/vertica/vertica-sql-go v1.3.3
 ## explicit; go 1.13
 github.com/vertica/vertica-sql-go

@@ -70,6 +70,10 @@ func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
+	// Initialize mTLS setup with default filesystem implementation
+	if j.mtlsSetup == nil {
+		j.mtlsSetup = NewFilesystemMTLSSetup()
+	}
 	// register each query as an metric
 	for _, q := range j.Queries {
 		if q == nil {
@@ -117,6 +121,32 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	}
 	j.updateConnections()
 	return nil
+}
+
+// configureClickHouseTLS configures TLS for ClickHouse connections
+func (j *Job) configureClickHouseTLS(conn string, originalURL string) TLSConfigResult {
+	if !strings.Contains(conn, "tls_config=spiffe") {
+		return TLSConfigResult{ModifiedURL: originalURL}
+	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	if err := j.mtlsSetup.SetupMTLS(j, tlsConfig); err != nil {
+		return TLSConfigResult{Error: err}
+	}
+
+	parsedDSN, err := url.Parse(originalURL)
+	if err != nil {
+		return TLSConfigResult{Error: err}
+	}
+	q := parsedDSN.Query()
+	q.Del("tls_config")
+	parsedDSN.RawQuery = q.Encode()
+
+	return TLSConfigResult{
+		TLSConfig:   tlsConfig,
+		ModifiedURL: parsedDSN.String(),
+	}
 }
 
 func (j *Job) updateConnections() {
@@ -381,16 +411,15 @@ func (j *Job) updateConnections() {
 					continue
 				}
 			}
-			if newConn.driver == "clickhouse" && strings.Contains(conn, "tls_config=spiffe") {
-				tlsConfig := &tls.Config{
-					MinVersion: tls.VersionTLS12,
-				}
-				if err = setupMTLS(j, tlsConfig); err != nil {
-					level.Error(j.log).Log("msg", "Failed to establish mtls for ClickHouse", "connection", conn, "err", err)
+			// Configure ClickHouse TLS if needed
+			if newConn.driver == "clickhouse" {
+				tlsResult := j.configureClickHouseTLS(conn, newConn.url)
+				if tlsResult.Error != nil {
+					level.Error(j.log).Log("msg", "Failed to configure ClickHouse TLS", "connection", conn, "err", tlsResult.Error)
 					continue
 				}
-				// Store the TLS config in the connection for later use
-				newConn.tlsConfig = tlsConfig
+				newConn.tlsConfig = tlsResult.TLSConfig
+				newConn.url = tlsResult.ModifiedURL
 			}
 			if newConn.driver == "snowflake" {
 				u, err := url.Parse(conn)
@@ -688,7 +717,7 @@ func (c *connection) connect(job *Job) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Configure connection and execute startup SQL
 	c.conn = c.configureConnection(conn, job)
 	return nil
@@ -754,6 +783,7 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 }
 
 func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB, error) {
+
 	// Parse the DSN to extract connection details
 	options, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
@@ -796,7 +826,8 @@ func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB
 	return conn, nil
 }
 
-func setupMTLS(job *Job, tlsConfig *tls.Config) error {
+// SetupMTLS implements the MTLSSetup interface for filesystem-based certificates
+func (f *FilesystemMTLSSetup) SetupMTLS(job *Job, tlsConfig *tls.Config) error {
 	if _, err := os.Stat(job.MTLSIdentity.CertPath); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("certificate file %s doesn't exist: %w", job.MTLSIdentity.CertPath, err)
 	}
