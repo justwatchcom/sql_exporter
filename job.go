@@ -412,7 +412,7 @@ func (j *Job) updateConnections() {
 				}
 			}
 			// Configure ClickHouse TLS if needed
-			if newConn.driver == "clickhouse" {
+			if strings.Contains(newConn.driver, "clickhouse") {
 				tlsResult := j.configureClickHouseTLS(conn, newConn.url)
 				if tlsResult.Error != nil {
 					level.Error(j.log).Log("msg", "Failed to configure ClickHouse TLS", "connection", conn, "err", tlsResult.Error)
@@ -698,7 +698,7 @@ func (c *connection) connect(job *Job) error {
 	}
 
 	// Handle all ClickHouse connections (both TLS and non-TLS)
-	if c.driver == "clickhouse" || c.driver == "clickhouse+tcp" || c.driver == "clickhouse+http" {
+	if strings.Contains(c.driver, "clickhouse") {
 		conn, err := c.connectClickHouse(job)
 		if err != nil {
 			return err
@@ -748,7 +748,7 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 	dsn := c.url
 
 	switch originalDriver {
-	case "clickhouse+tcp", "clickhouse+http":
+	case "clickhouse+tcp", "clickhouse+http", "clickhouse+https":
 		dsn = strings.TrimPrefix(dsn, "clickhouse+")
 		c.driver = "clickhouse"
 	case "clickhouse":
@@ -783,7 +783,6 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 }
 
 func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB, error) {
-
 	// Parse the DSN to extract connection details
 	options, err := clickhouse.ParseDSN(dsn)
 	if err != nil {

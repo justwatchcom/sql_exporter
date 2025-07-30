@@ -23,9 +23,9 @@ func TestClickHouseTLSConfigurationIntegration(t *testing.T) {
 		{
 			name:           "clickhouse with tls_config=spiffe should setup TLS",
 			driver:         "clickhouse",
-			connectionURL:  "clickhouse://localhost:9000/default?tls_config=spiffe&other_param=value",
+			connectionURL:  "clickhouse+https://localhost:9000/default?tls_config=spiffe&other_param=value",
 			shouldSetupTLS: true,
-			expectedURL:    "clickhouse://localhost:9000/default?other_param=value",
+			expectedURL:    "clickhouse+https://localhost:9000/default?other_param=value",
 		},
 		{
 			name:           "clickhouse without tls_config should not setup TLS",
