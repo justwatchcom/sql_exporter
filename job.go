@@ -667,12 +667,17 @@ func (c *connection) connect(job *Job) error {
 			return nil
 		}
 	}
-	
+
 	// Handle all ClickHouse connections (both TLS and non-TLS)
 	if c.driver == "clickhouse" || c.driver == "clickhouse+tcp" || c.driver == "clickhouse+http" {
-		return c.connectClickHouse(job)
+		conn, err := c.connectClickHouse(job)
+		if err != nil {
+			return err
+		}
+		c.conn = conn
+		return nil
 	}
-	
+
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
@@ -683,6 +688,14 @@ func (c *connection) connect(job *Job) error {
 	if err != nil {
 		return err
 	}
+	
+	// Configure connection and execute startup SQL
+	c.conn = c.configureConnection(conn, job)
+	return nil
+}
+
+// configureConnection sets up connection pool settings and executes StartupSQL
+func (c *connection) configureConnection(conn *sqlx.DB, job *Job) *sqlx.DB {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
@@ -697,15 +710,14 @@ func (c *connection) connect(job *Job) error {
 		conn.MustExec(query)
 	}
 
-	c.conn = conn
-	return nil
+	return conn
 }
 
-func (c *connection) connectClickHouse(job *Job) error {
+func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 	// Normalize driver and URL based on the original driver type
 	originalDriver := c.driver
 	dsn := c.url
-	
+
 	switch originalDriver {
 	case "clickhouse+tcp", "clickhouse+http":
 		dsn = strings.TrimPrefix(dsn, "clickhouse+")
@@ -725,61 +737,30 @@ func (c *connection) connectClickHouse(job *Job) error {
 	// For simple connections without custom TLS, use the standard sqlx.Connect approach
 	conn, err := sqlx.Connect(c.driver, dsn)
 	if err != nil {
-		return fmt.Errorf("failed to connect to ClickHouse: %w", err)
+		return nil, fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
-
-	// Configure connection pool settings
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(job.Interval * 2)
 
 	// Test the connection
 	if err := conn.Ping(); err != nil {
 		conn.Close()
-		return fmt.Errorf("failed to ping ClickHouse: %w", err)
+		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
 
-	// Execute StartupSQL
-	for _, query := range job.StartupSQL {
-		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
-		conn.MustExec(query)
-	}
+	// Configure connection pool settings and execute StartupSQL
+	conn = c.configureConnection(conn, job)
 
-	c.conn = conn
 	level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse", "host", c.host)
-	return nil
+	return conn, nil
 }
 
-func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) error {
+func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB, error) {
 	// Parse the DSN to extract connection details
-	u, err := url.Parse(dsn)
+	options, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
-		return fmt.Errorf("failed to parse ClickHouse URL: %w", err)
+		return nil, fmt.Errorf("failed to parse ClickHouse DSN: %w", err)
 	}
 
-	// Extract auth information
-	auth := clickhouse.Auth{
-		Database: strings.TrimPrefix(u.Path, "/"),
-	}
-	if u.User != nil {
-		auth.Username = u.User.Username()
-		if password, ok := u.User.Password(); ok {
-			auth.Password = password
-		}
-	}
-	if auth.Database == "" {
-		auth.Database = "default"
-	}
-	if auth.Username == "" {
-		auth.Username = "default"
-	}
-
-	// Create ClickHouse options
-	options := &clickhouse.Options{
-		Addr: []string{u.Host},
-		Auth: auth,
-		TLS:  c.tlsConfig, // Will be nil for non-TLS connections
-	}
+	options.TLS = c.tlsConfig
 
 	// Handle protocol (tcp/http)
 	switch {
@@ -789,49 +770,30 @@ func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) error {
 		options.Protocol = clickhouse.Native
 	}
 
-	// Parse query parameters for additional settings
-	queryParams := u.Query()
-	if len(queryParams) > 0 {
-		options.Settings = make(clickhouse.Settings)
-		for key, values := range queryParams {
-			if len(values) > 0 && key != "tls_config" {
-				options.Settings[key] = values[0]
-			}
-		}
-	}
-
 	// Create connection using ClickHouse OpenDB
 	db := clickhouse.OpenDB(options)
 	if db == nil {
-		return fmt.Errorf("failed to create ClickHouse connection")
+		return nil, fmt.Errorf("failed to create ClickHouse connection")
 	}
 
 	// Wrap with sqlx
-	c.conn = sqlx.NewDb(db, "clickhouse")
-
-	// Configure connection pool settings
-	c.conn.SetMaxOpenConns(1)
-	c.conn.SetMaxIdleConns(1)
-	c.conn.SetConnMaxLifetime(job.Interval * 2)
+	conn := sqlx.NewDb(db, "clickhouse")
 
 	// Test the connection
-	if err := c.conn.Ping(); err != nil {
-		c.conn.Close()
-		return fmt.Errorf("failed to ping ClickHouse: %w", err)
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
 
-	// Execute StartupSQL
-	for _, query := range job.StartupSQL {
-		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
-		c.conn.MustExec(query)
-	}
+	// Configure connection pool settings and execute StartupSQL
+	conn = c.configureConnection(conn, job)
 
 	if c.tlsConfig != nil {
 		level.Info(job.log).Log("msg", "Successfully connected to ClickHouse with custom TLS", "host", c.host)
 	} else {
 		level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse with OpenDB", "host", c.host)
 	}
-	return nil
+	return conn, nil
 }
 
 func setupMTLS(job *Job, tlsConfig *tls.Config) error {
