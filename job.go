@@ -1,14 +1,13 @@
 package main
 
 import (
-	"github.com/cloudflare/certinel/fswatcher"
-
 	"context"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"github.com/cloudflare/certinel/fswatcher"
 	"fmt"
 	"net/url"
 	"os"
@@ -430,7 +429,6 @@ func (j *Job) updateConnections() {
 
 				queryParams := u.Query()
 				privateKeyPath := os.ExpandEnv(queryParams.Get("private_key_file"))
-
 				cfg := &gosnowflake.Config{
 					Account:  u.Host,
 					User:     u.User.Username(),
@@ -712,9 +710,8 @@ func (c *connection) connect(ctx context.Context, job *Job) error {
 			return err
 		}
 		c.conn = conn
-		return nil
+	return nil
 	}
-
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
