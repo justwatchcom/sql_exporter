@@ -31,22 +31,46 @@ func TestClickHouseHTTPSURLBug(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	// Try to ping the database - this should fail but we want to check the error message
-	err := conn.connect(ctx, job)
-	if err != nil {
-		// Check if the error contains the incorrect "tcp://" prefix
-		// This is the bug we're trying to reproduce
-		if strings.Contains(err.Error(), "tcp://clickhouse+https") {
-			t.Errorf("Bug reproduced: URL incorrectly prefixed with tcp://. Error: %v", err)
-			// The error should contain the hostname, not the malformed URL
-			if !strings.Contains(err.Error(), "127.0.0.1:19999") {
-				t.Errorf("Error message should contain the correct hostname '127.0.0.1:19999', but got: %v", err)
-			}
-		} else {
-			// If we don't see the tcp:// prefix bug, the connection attempt might fail for other reasons
-			// which is fine - we just want to ensure the URL is processed correctly
-			t.Logf("Connection failed as expected (no tcp:// prefix bug detected): %v", err)
+	// Helper function to check for the bug
+	checkConnectionError := func(attemptNum int, err error) bool {
+		if err == nil {
+			t.Logf("Attempt %d: Connection unexpectedly succeeded", attemptNum)
+			return false
 		}
+
+		// Check for different manifestations of the URL corruption bug
+		if strings.Contains(err.Error(), "tcp://clickhouse+https") {
+			t.Errorf("Attempt %d: Bug reproduced: URL incorrectly prefixed with tcp://. Error: %v", attemptNum, err)
+			return true // Bug found
+		} else if strings.Contains(err.Error(), "lookup clickhouse+https") {
+			t.Errorf("Attempt %d: Bug reproduced: URL corruption causing DNS lookup of 'clickhouse+https'. Error: %v", attemptNum, err)
+			return true // Bug found
+		} else if strings.Contains(err.Error(), "clickhouse+https") && !strings.Contains(err.Error(), "127.0.0.1:19999") {
+			t.Errorf("Attempt %d: Bug reproduced: URL contains malformed 'clickhouse+https' without proper hostname. Error: %v", attemptNum, err)
+			return true // Bug found
+		} else {
+			// If we don't see any URL corruption bug, the connection attempt might fail for other reasons
+			// which is fine - we just want to ensure the URL is processed correctly
+			t.Logf("Attempt %d: Connection failed as expected (no URL corruption bug detected): %v", attemptNum, err)
+			return false
+		}
+	}
+
+	// Try to ping the database twice - the bug seems to occur on the retry mechanism
+	// First attempt
+	err1 := conn.connect(ctx, job)
+	bugFound := checkConnectionError(1, err1)
+	if bugFound {
 		return
 	}
+
+	// Second attempt - this is where the bug typically manifests
+	err2 := conn.connect(ctx, job)
+	bugFound = checkConnectionError(2, err2)
+	if bugFound {
+		return
+	}
+
+	// If neither attempt reproduced the bug, log that both attempts completed
+	t.Logf("Both connection attempts completed without reproducing the tcp:// prefix bug")
 }

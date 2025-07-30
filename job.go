@@ -752,13 +752,14 @@ func (c *connection) configureConnection(conn *sqlx.DB, job *Job) *sqlx.DB {
 
 func (c *connection) connectClickHouse(ctx context.Context, job *Job) (*sqlx.DB, error) {
 	// Normalize driver and URL based on the original driver type
-	originalDriver := c.driver
+	// Use local variables to avoid mutating the connection struct
 	dsn := c.url
+	driver := c.driver // Local copy to avoid mutation
 
-	switch originalDriver {
+	switch c.driver {
 	case "clickhouse+tcp", "clickhouse+http", "clickhouse+https":
 		dsn = strings.TrimPrefix(dsn, "clickhouse+")
-		c.driver = "clickhouse"
+		driver = "clickhouse" // Use local variable instead of mutating c.driver
 	case "clickhouse":
 		// Backward compatible alias - add tcp:// prefix if not present
 		if !strings.HasPrefix(dsn, "tcp://") && !strings.HasPrefix(dsn, "http://") && !strings.HasPrefix(dsn, "https://") {
@@ -772,7 +773,7 @@ func (c *connection) connectClickHouse(ctx context.Context, job *Job) (*sqlx.DB,
 	}
 
 	// For simple connections without custom TLS, use the standard sqlx.Connect approach
-	conn, err := sqlx.Connect(c.driver, dsn)
+	conn, err := sqlx.Connect(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
