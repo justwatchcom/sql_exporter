@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -175,6 +176,7 @@ type connection struct {
 	iteratorValues      []string
 	snowflakeConfig     *gosnowflake.Config
 	snowflakeDSN        string
+	tlsConfig           *tls.Config // Custom TLS config for ClickHouse connections
 }
 
 // Query is an SQL query that is executed on a connection

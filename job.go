@@ -389,7 +389,8 @@ func (j *Job) updateConnections() {
 					level.Error(j.log).Log("msg", "Failed to establish mtls for ClickHouse", "connection", conn, "err", err)
 					continue
 				}
-				clickhouse.RegisterTLSConfig("spiffe", tlsConfig)
+				// Store the TLS config in the connection for later use
+				newConn.tlsConfig = tlsConfig
 			}
 			if newConn.driver == "snowflake" {
 				u, err := url.Parse(conn)
@@ -666,16 +667,17 @@ func (c *connection) connect(job *Job) error {
 			return nil
 		}
 	}
+	
+	// Handle all ClickHouse connections (both TLS and non-TLS)
+	if c.driver == "clickhouse" || c.driver == "clickhouse+tcp" || c.driver == "clickhouse+http" {
+		return c.connectClickHouse(job)
+	}
+	
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
 		dsn = strings.TrimPrefix(dsn, "rds-mysql://")
-	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
-		dsn = strings.TrimPrefix(dsn, "clickhouse+")
-		c.driver = "clickhouse"
-	case "clickhouse": // Backward compatible alias
-		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.driver, dsn)
 	if err != nil {
@@ -699,6 +701,139 @@ func (c *connection) connect(job *Job) error {
 	return nil
 }
 
+func (c *connection) connectClickHouse(job *Job) error {
+	// Normalize driver and URL based on the original driver type
+	originalDriver := c.driver
+	dsn := c.url
+	
+	switch originalDriver {
+	case "clickhouse+tcp", "clickhouse+http":
+		dsn = strings.TrimPrefix(dsn, "clickhouse+")
+		c.driver = "clickhouse"
+	case "clickhouse":
+		// Backward compatible alias - add tcp:// prefix if not present
+		if !strings.HasPrefix(dsn, "tcp://") && !strings.HasPrefix(dsn, "http://") && !strings.HasPrefix(dsn, "https://") {
+			dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
+		}
+	}
+
+	// If we have a custom TLS config or need to use ClickHouse-specific features, use OpenDB
+	if c.tlsConfig != nil || strings.Contains(dsn, "tls_config=") {
+		return c.connectClickHouseWithOpenDB(job, dsn)
+	}
+
+	// For simple connections without custom TLS, use the standard sqlx.Connect approach
+	conn, err := sqlx.Connect(c.driver, dsn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to ClickHouse: %w", err)
+	}
+
+	// Configure connection pool settings
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	conn.SetConnMaxLifetime(job.Interval * 2)
+
+	// Test the connection
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return fmt.Errorf("failed to ping ClickHouse: %w", err)
+	}
+
+	// Execute StartupSQL
+	for _, query := range job.StartupSQL {
+		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
+		conn.MustExec(query)
+	}
+
+	c.conn = conn
+	level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse", "host", c.host)
+	return nil
+}
+
+func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) error {
+	// Parse the DSN to extract connection details
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to parse ClickHouse URL: %w", err)
+	}
+
+	// Extract auth information
+	auth := clickhouse.Auth{
+		Database: strings.TrimPrefix(u.Path, "/"),
+	}
+	if u.User != nil {
+		auth.Username = u.User.Username()
+		if password, ok := u.User.Password(); ok {
+			auth.Password = password
+		}
+	}
+	if auth.Database == "" {
+		auth.Database = "default"
+	}
+	if auth.Username == "" {
+		auth.Username = "default"
+	}
+
+	// Create ClickHouse options
+	options := &clickhouse.Options{
+		Addr: []string{u.Host},
+		Auth: auth,
+		TLS:  c.tlsConfig, // Will be nil for non-TLS connections
+	}
+
+	// Handle protocol (tcp/http)
+	switch {
+	case strings.HasPrefix(dsn, "https://") || strings.Contains(c.url, "clickhouse+http"):
+		options.Protocol = clickhouse.HTTP
+	default:
+		options.Protocol = clickhouse.Native
+	}
+
+	// Parse query parameters for additional settings
+	queryParams := u.Query()
+	if len(queryParams) > 0 {
+		options.Settings = make(clickhouse.Settings)
+		for key, values := range queryParams {
+			if len(values) > 0 && key != "tls_config" {
+				options.Settings[key] = values[0]
+			}
+		}
+	}
+
+	// Create connection using ClickHouse OpenDB
+	db := clickhouse.OpenDB(options)
+	if db == nil {
+		return fmt.Errorf("failed to create ClickHouse connection")
+	}
+
+	// Wrap with sqlx
+	c.conn = sqlx.NewDb(db, "clickhouse")
+
+	// Configure connection pool settings
+	c.conn.SetMaxOpenConns(1)
+	c.conn.SetMaxIdleConns(1)
+	c.conn.SetConnMaxLifetime(job.Interval * 2)
+
+	// Test the connection
+	if err := c.conn.Ping(); err != nil {
+		c.conn.Close()
+		return fmt.Errorf("failed to ping ClickHouse: %w", err)
+	}
+
+	// Execute StartupSQL
+	for _, query := range job.StartupSQL {
+		level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
+		c.conn.MustExec(query)
+	}
+
+	if c.tlsConfig != nil {
+		level.Info(job.log).Log("msg", "Successfully connected to ClickHouse with custom TLS", "host", c.host)
+	} else {
+		level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse with OpenDB", "host", c.host)
+	}
+	return nil
+}
+
 func setupMTLS(job *Job, tlsConfig *tls.Config) error {
 	if _, err := os.Stat(job.MTLSIdentity.CertPath); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("certificate file %s doesn't exist: %w", job.MTLSIdentity.CertPath, err)
@@ -714,7 +849,8 @@ func setupMTLS(job *Job, tlsConfig *tls.Config) error {
 		level.Info(job.log).Log("msg", "watching ClickHouse TLS client certificate", "certfile", job.MTLSIdentity.CertPath, "keyfile", job.MTLSIdentity.KeyPath)
 		err := certWatcher.Start(context.Background())
 		if err != nil {
-			glog.Fatalf("cert watcher error: %s", err.Error())
+			level.Error(job.log).Log("msg", "cert watcher error", "err", err)
+			os.Exit(1)
 		}
 	}()
 	tlsConfig.GetClientCertificate = certWatcher.GetClientCertificate
