@@ -184,6 +184,7 @@ type Job struct {
 	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
 	Iterator     Iterator      `yaml:"iterator"`    // Iterator configuration
 	MTLSIdentity MTLSIdentity  `yaml:"mtls_identity"`
+	Timeout      time.Duration `yaml:"timeout"` // timeout for database operations (default: 30s)
 }
 
 type connection struct {

@@ -518,14 +518,14 @@ func (j *Job) ExecutePeriodically() {
 	}
 }
 
-func (j *Job) runOnceConnection(conn *connection, done chan int) {
+func (j *Job) runOnceConnection(ctx context.Context, conn *connection, done chan int) {
 	updated := 0
 	defer func() {
 		done <- updated
 	}()
 
 	// connect to DB if not connected already
-	if err := conn.connect(j); err != nil {
+	if err := conn.connect(ctx, j); err != nil {
 		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
 		// we don't have the query name yet.
@@ -614,9 +614,17 @@ func (j *Job) Run() {
 func (j *Job) runOnce() error {
 	doneChan := make(chan int, len(j.conns))
 
+	// Create context with timeout for database operations
+	timeout := j.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second // default timeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	// execute queries for each connection in parallel
 	for _, conn := range j.conns {
-		go j.runOnceConnection(conn, doneChan)
+		go j.runOnceConnection(ctx, conn, doneChan)
 	}
 
 	// connections now run in parallel, wait for and collect results
@@ -631,7 +639,7 @@ func (j *Job) runOnce() error {
 	return nil
 }
 
-func (c *connection) connect(job *Job) error {
+func (c *connection) connect(ctx context.Context, job *Job) error {
 	// already connected
 	if c.conn != nil {
 		if strings.HasPrefix(c.url, "rds-mysql://") && time.Now().After(c.tokenExpirationTime) {
@@ -687,7 +695,7 @@ func (c *connection) connect(job *Job) error {
 			db.SetMaxIdleConns(0)
 			db.SetConnMaxLifetime(30 * time.Minute)
 
-			if err := db.Ping(); err != nil {
+			if err := db.PingContext(ctx); err != nil {
 				db.Close()
 				return fmt.Errorf("failed to ping Snowflake: %w (host: %s)", err, c.host)
 			}
@@ -699,7 +707,7 @@ func (c *connection) connect(job *Job) error {
 
 	// Handle all ClickHouse connections (both TLS and non-TLS)
 	if strings.Contains(c.driver, "clickhouse") {
-		conn, err := c.connectClickHouse(job)
+		conn, err := c.connectClickHouse(ctx, job)
 		if err != nil {
 			return err
 		}
@@ -742,7 +750,7 @@ func (c *connection) configureConnection(conn *sqlx.DB, job *Job) *sqlx.DB {
 	return conn
 }
 
-func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
+func (c *connection) connectClickHouse(ctx context.Context, job *Job) (*sqlx.DB, error) {
 	// Normalize driver and URL based on the original driver type
 	originalDriver := c.driver
 	dsn := c.url
@@ -760,7 +768,7 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 
 	// If we have a custom TLS config or need to use ClickHouse-specific features, use OpenDB
 	if c.tlsConfig != nil || strings.Contains(dsn, "tls_config=") {
-		return c.connectClickHouseWithOpenDB(job, dsn)
+		return c.connectClickHouseWithOpenDB(ctx, job, dsn)
 	}
 
 	// For simple connections without custom TLS, use the standard sqlx.Connect approach
@@ -770,7 +778,7 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 	}
 
 	// Test the connection
-	if err := conn.Ping(); err != nil {
+	if err := conn.PingContext(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
@@ -782,7 +790,9 @@ func (c *connection) connectClickHouse(job *Job) (*sqlx.DB, error) {
 	return conn, nil
 }
 
-func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB, error) {
+func (c *connection) connectClickHouseWithOpenDB(ctx context.Context, job *Job, dsn string) (*sqlx.DB, error) {
+	level.Debug(job.log).Log("msg", "Connecting to ClickHouse with OpenDB", "dsn", dsn)
+
 	// Parse the DSN to extract connection details
 	options, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
@@ -790,14 +800,6 @@ func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB
 	}
 
 	options.TLS = c.tlsConfig
-
-	// Handle protocol (tcp/http)
-	switch {
-	case strings.HasPrefix(dsn, "https://") || strings.Contains(c.url, "clickhouse+http"):
-		options.Protocol = clickhouse.HTTP
-	default:
-		options.Protocol = clickhouse.Native
-	}
 
 	// Create connection using ClickHouse OpenDB
 	db := clickhouse.OpenDB(options)
@@ -809,7 +811,7 @@ func (c *connection) connectClickHouseWithOpenDB(job *Job, dsn string) (*sqlx.DB
 	conn := sqlx.NewDb(db, "clickhouse")
 
 	// Test the connection
-	if err := conn.Ping(); err != nil {
+	if err := conn.PingContext(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
