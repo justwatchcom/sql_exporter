@@ -1,5 +1,3 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -9,9 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"time"
-
-	"github.com/google/uuid"
 )
 
 const urlQueriesResultFmt = "/queries/%s/result"
@@ -81,7 +76,7 @@ type retStatus struct {
 	SQLText      string   `json:"sqlText"`
 	StartTime    int64    `json:"startTime"`
 	EndTime      int64    `json:"endTime"`
-	ErrorCode    int      `json:"errorCode"`
+	ErrorCode    string   `json:"errorCode"`
 	ErrorMessage string   `json:"errorMessage"`
 	Stats        retStats `json:"stats"`
 }
@@ -109,7 +104,7 @@ type SnowflakeQueryStatus struct {
 	SQLText      string
 	StartTime    int64
 	EndTime      int64
-	ErrorCode    int
+	ErrorCode    string
 	ErrorMessage string
 	ScanBytes    int64
 	ProducedRows int64
@@ -135,11 +130,11 @@ func (sc *snowflakeConn) checkQueryStatus(
 	*retStatus, error) {
 	headers := make(map[string]string)
 	param := make(url.Values)
-	param.Add(requestGUIDKey, uuid.New().String())
+	param.Set(requestGUIDKey, NewUUID().String())
 	if tok, _, _ := sc.rest.TokenAccessor.GetTokens(); tok != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, tok)
 	}
-	resultPath := fmt.Sprintf("/monitoring/queries/%s", qid)
+	resultPath := fmt.Sprintf("%s/%s", monitoringQueriesPath, qid)
 	url := sc.rest.getFullURL(resultPath, &param)
 
 	res, err := sc.rest.FuncGet(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
@@ -147,6 +142,7 @@ func (sc *snowflakeConn) checkQueryStatus(
 		logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
 		return nil, err
 	}
+	defer res.Body.Close()
 	var statusResp = statusResponse{}
 	if err = json.NewDecoder(res.Body).Decode(&statusResp); err != nil {
 		logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
@@ -162,11 +158,11 @@ func (sc *snowflakeConn) checkQueryStatus(
 	}
 
 	queryRet := statusResp.Data.Queries[0]
-	if queryRet.ErrorCode != 0 {
+	if queryRet.ErrorCode != "" {
 		return &queryRet, (&SnowflakeError{
-			Number: ErrQueryStatus,
-			Message: fmt.Sprintf("server ErrorCode=%d, ErrorMessage=%s",
-				queryRet.ErrorCode, queryRet.ErrorMessage),
+			Number:         ErrQueryStatus,
+			Message:        errMsgQueryStatus,
+			MessageArgs:    []interface{}{queryRet.ErrorCode, queryRet.ErrorMessage},
 			IncludeQueryID: true,
 			QueryID:        qid,
 		}).exceptionTelemetry(sc)
@@ -202,26 +198,24 @@ func (sc *snowflakeConn) getQueryResultResp(
 	resultPath string) (
 	*execResponse, error) {
 	headers := getHeaders()
+	paramsMutex.Lock()
 	if serviceName, ok := sc.cfg.Params[serviceName]; ok {
 		headers[httpHeaderServiceName] = *serviceName
 	}
+	paramsMutex.Unlock()
 	param := make(url.Values)
-	param.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
-	param.Add("clientStartTime", strconv.FormatInt(time.Now().Unix(), 10))
-	param.Add(requestGUIDKey, uuid.New().String())
+	param.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	param.Set("clientStartTime", strconv.FormatInt(sc.currentTimeProvider.currentTime(), 10))
+	param.Set(requestGUIDKey, NewUUID().String())
 	token, _, _ := sc.rest.TokenAccessor.GetTokens()
 	if token != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 	}
 	url := sc.rest.getFullURL(resultPath, &param)
-	res, err := sc.rest.FuncGet(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
+
+	respd, err := getQueryResultWithRetriesForAsyncMode(ctx, sc.rest, url, headers, sc.rest.RequestTimeout)
 	if err != nil {
-		logger.WithContext(ctx).Errorf("failed to get response. err: %v", err)
-		return nil, err
-	}
-	var respd *execResponse
-	if err = json.NewDecoder(res.Body).Decode(&respd); err != nil {
-		logger.WithContext(ctx).Errorf("failed to decode JSON. err: %v", err)
+		logger.WithContext(ctx).Errorf("error: %v", err)
 		return nil, err
 	}
 	return respd, nil
@@ -235,19 +229,20 @@ func (sc *snowflakeConn) rowsForRunningQuery(
 	resp, err := sc.getQueryResultResp(ctx, resultPath)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("error: %v", err)
-		if resp != nil {
-			code, err := strconv.Atoi(resp.Code)
-			if err != nil {
-				return err
-			}
-			return (&SnowflakeError{
-				Number:   code,
-				SQLState: resp.Data.SQLState,
-				Message:  err.Error(),
-				QueryID:  resp.Data.QueryID,
-			}).exceptionTelemetry(sc)
-		}
 		return err
+	}
+
+	if !resp.Success {
+		code, err := strconv.Atoi(resp.Code)
+		if err != nil {
+			return err
+		}
+		return (&SnowflakeError{
+			Number:   code,
+			SQLState: resp.Data.SQLState,
+			Message:  resp.Message,
+			QueryID:  resp.Data.QueryID,
+		}).exceptionTelemetry(sc)
 	}
 	rows.addDownloader(populateChunkDownloader(ctx, sc, resp.Data))
 	return nil
@@ -261,9 +256,10 @@ func (sc *snowflakeConn) buildRowsForRunningQuery(
 	rows := new(snowflakeRows)
 	rows.sc = sc
 	rows.queryID = qid
+	rows.ctx = ctx
 	if err := sc.rowsForRunningQuery(ctx, qid, rows); err != nil {
 		return nil, err
 	}
-	rows.ChunkDownloader.start()
-	return rows, nil
+	err := rows.ChunkDownloader.start()
+	return rows, err
 }

@@ -11,22 +11,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
+    - uses: actions/setup-go@v5
       with:
-        fetch-depth: 1
-
-    - name: Set up Go
-      uses: actions/setup-go@v2
-      with:
-        go-version: 1.17
-
+        go-version-file: 'go.mod'
     - name: Build
       run: go build -v ./...
 
     - name: Test
       run: go test -v ./...
 
-    - name: Staticcheck
-      uses: dominikh/staticcheck-action@v1.1.0
+    - uses: dominikh/staticcheck-action@v1.3.1
       with:
-        version: "2021.1.1"
+        version: "2025.1"
+        # go is already installed by actions/setup-go with the correct version from go.mod
+        install-go: false

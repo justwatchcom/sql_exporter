@@ -4,10 +4,12 @@ import (
 	"github.com/cloudflare/certinel/fswatcher"
 
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
-	glog "log"
 	"net/url"
 	"os"
 	"regexp"
@@ -15,27 +17,55 @@ import (
 	"strings"
 	"time"
 
-	"github.com/snowflakedb/gosnowflake"
-
-	"github.com/ClickHouse/clickhouse-go"
-	_ "github.com/ClickHouse/clickhouse-go" // register the ClickHouse driver
+	"github.com/ClickHouse/clickhouse-go/v2"
+	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
-	_ "github.com/denisenkom/go-mssqldb" // register the MS-SQL driver
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
+	"github.com/gobwas/glob"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // register the PostgreSQL driver
+	_ "github.com/lib/pq"                                   // register the PostgreSQL driver
+	_ "github.com/microsoft/go-mssqldb"                     // register the MS-SQL driver
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/segmentio/go-athena"    // register the AWS Athena driver
+	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
+	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
+	sqladmin "google.golang.org/api/sqladmin/v1beta4"
+
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
 )
 
 var (
 	// MetricNameRE matches any invalid metric name
 	// characters, see github.com/prometheus/common/model.MetricNameRE
 	MetricNameRE = regexp.MustCompile("[^a-zA-Z0-9_:]+")
+	// CloudSQLPrefix is the prefix which trigger the connection to be done via the cloudsql connection client
+	CloudSQLPrefix = "cloudsql+"
 )
+
+func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
+	dsn := strings.TrimPrefix(conn, "rds-mysql://")
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
+	}
+
+	expirationTime := time.Now().Add(14 * time.Minute)
+
+	return token, expirationTime, nil
+}
 
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
@@ -66,6 +96,12 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		// try to satisfy prometheus naming restrictions
 		name := MetricNameRE.ReplaceAllString("sql_"+q.Name, "")
 		help := q.Help
+
+		// append the iterator label if it is set
+		if j.Iterator.Label != "" {
+			q.Labels = append(q.Labels, j.Iterator.Label)
+		}
+
 		// prepare a new metrics descriptor
 		//
 		// the tricky part here is that the *order* of labels has to match the
@@ -79,43 +115,243 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 			},
 		)
 	}
+	j.updateConnections()
 	return nil
 }
 
-// Run prepares and runs the job
-func (j *Job) Run() {
-	if j.log == nil {
-		j.log = log.NewNopLogger()
-	}
+func (j *Job) updateConnections() {
 	// if there are no connection URLs for this job it can't be run
 	if j.Connections == nil {
-		level.Error(j.log).Log("msg", "No connections for job", "job", j.Name)
-		return
+		level.Error(j.log).Log("msg", "no connections for job", "job_name", j.Name)
 	}
 	// make space for the connection objects
 	if j.conns == nil {
 		j.conns = make([]*connection, 0, len(j.Connections))
 	}
-	// parse the connection URLs and create an connection object for each
+	// parse the connection URLs and create a connection object for each
 	if len(j.conns) < len(j.Connections) {
 		for _, conn := range j.Connections {
-			// MySQL DSNs do not parse cleanly as URLs as of Go 1.12.8+
-			if strings.HasPrefix(conn, "mysql://") {
-				config, err := mysql.ParseDSN(strings.TrimPrefix(conn, "mysql://"))
+			// Check if we need to use cloudsql driver
+			if useCloudSQL, cloudsqlDriver := isValidCloudSQLDriver(conn); useCloudSQL {
+				// Do CloudSQL stuff
+				parsedU, err := ParseCloudSQLUrl(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "could not parse cloudsql conn", "conn", conn)
+					continue
+				}
+
+				user := ""
+				if parsedU.User != nil {
+					user = parsedU.User.Username()
+				}
+
+				database := strings.TrimPrefix(parsedU.Path, "/")
+
+				if strings.ContainsRune(parsedU.Instance, '*') {
+					// We have a glob for the instance.
+					//	List all CloudSQL instance and figure out which ones match
+					ctx := context.Background()
+					instanceGlob := glob.MustCompile(parsedU.Instance)
+					databaseGlob := glob.MustCompile(database)
+
+					// Create the Google Cloud SQL service.
+					service, err := sqladmin.NewService(ctx)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not create sqladmin client", "conn", conn, "err", err)
+						continue
+					}
+
+					// List instances for the project ID.
+					instances, err := service.Instances.List(parsedU.Project).Do()
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not list cloudsql instances", "conn", conn, "err", err)
+						continue
+					}
+
+					for _, instance := range instances.Items {
+
+						if !instanceGlob.Match(instance.Name) || parsedU.Region != instance.Region {
+							continue
+						}
+
+						if strings.ContainsRune(database, '*') {
+							// We have a glob for the database.
+							//	List all databases in instance and figure out which ones match
+
+							// List databases for the instance.
+							databases, err := service.Databases.List(parsedU.Project, instance.Name).Do()
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not list cloudsql databases", "instance", instance.Name, "err", err)
+								continue
+							}
+
+							for _, db := range databases.Items {
+								if databaseGlob.Match(db.Name) {
+									connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, db.Name)
+									if err != nil {
+										level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+										continue
+									}
+									newConn := &connection{
+										conn:     nil,
+										url:      connectionURL,
+										driver:   cloudsqlDriver,
+										host:     instance.Name,
+										database: db.Name,
+										user:     user,
+									}
+									j.conns = append(j.conns, newConn)
+								}
+							}
+						} else {
+							connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, instance.ConnectionName, database)
+							if err != nil {
+								level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+								continue
+							}
+
+							newConn := &connection{
+								conn:     nil,
+								url:      connectionURL,
+								driver:   cloudsqlDriver,
+								host:     instance.Name,
+								database: database,
+								user:     user,
+							}
+							j.conns = append(j.conns, newConn)
+						}
+					}
+
+				} else {
+					connectionName := fmt.Sprintf("%s:%s:%s", parsedU.Project, parsedU.Region, parsedU.Instance)
+					connectionURL, err := parsedU.GetConnectionURL(cloudsqlDriver, connectionName, database)
+					if err != nil {
+						level.Error(j.log).Log("msg", "could not generate connection url", "err", err)
+						continue
+					}
+					newConn := &connection{
+						conn:     nil,
+						url:      connectionURL,
+						driver:   cloudsqlDriver,
+						host:     parsedU.Host,
+						database: database,
+						user:     user,
+					}
+					j.conns = append(j.conns, newConn)
+				}
+
+				continue
+			}
+
+			// Handle both RDS MySQL and regular MySQL connections
+			if strings.HasPrefix(conn, "rds-mysql://") || strings.HasPrefix(conn, "mysql://") {
+				isRDS := strings.HasPrefix(conn, "rds-mysql://")
+				var dsn string
+				var expirationTime time.Time
+
+				trimmedConn := conn
+				if isRDS {
+					trimmedConn = strings.TrimPrefix(conn, "rds-mysql://")
+				} else {
+					trimmedConn = strings.TrimPrefix(conn, "mysql://")
+				}
+
+				config, err := mysql.ParseDSN(trimmedConn)
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to parse MySQL DSN", "url", conn, "err", err)
+					continue
+				}
+
+				if isRDS {
+					authToken, tokenExpiration, err := handleRDSMySQLIAMAuth(conn)
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to build RDS auth token", "url", conn, "err", err)
+						continue
+					}
+					config.Passwd = authToken
+					config.AllowCleartextPasswords = true
+					expirationTime = tokenExpiration
+				}
+
+				dsn = config.FormatDSN()
+				if isRDS {
+					dsn = "rds-mysql://" + dsn
 				}
 
 				j.conns = append(j.conns, &connection{
-					conn:     nil,
-					url:      conn,
-					driver:   "mysql",
-					host:     config.Addr,
-					database: config.DBName,
-					user:     config.User,
+					conn:                nil,
+					url:                 dsn,
+					driver:              "mysql",
+					host:                config.Addr,
+					database:            config.DBName,
+					user:                config.User,
+					tokenExpirationTime: expirationTime,
 				})
 				continue
 			}
+
+			if strings.HasPrefix(conn, "rds-postgres://") {
+				// Reuse Postgres driver by stripping "rds-" from connection URL after building the RDS authentication token
+				conn = strings.TrimPrefix(conn, "rds-")
+				u, err := url.Parse(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
+					continue
+				}
+				sess := session.Must(session.NewSessionWithOptions(session.Options{
+					SharedConfigState: session.SharedConfigEnable,
+				}))
+				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
+				if err != nil {
+					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
+					continue
+				}
+				conn = strings.Replace(conn, "AUTHTOKEN", url.QueryEscape(token), 1)
+			}
+
+			if strings.HasPrefix(conn, "postgres://") || strings.HasPrefix(conn, "pg://") {
+				u, err := url.Parse(conn)
+				var filteredDBs []string
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
+					continue
+				}
+				if strings.Contains(u.Path, "include") || strings.Contains(u.Path, "exclude") {
+					if strings.Contains(u.Path, "include") && strings.Contains(u.Path, "exclude") {
+						level.Error(j.log).Log("msg", "You cannot use exclude and include:", "url", conn, "err", err)
+						return
+					} else {
+						extractedPath := u.Path //save pattern
+						u.Path = "/postgres"
+						dsn := u.String()
+						databases, err := listDatabases(dsn)
+						if err != nil {
+							level.Error(j.log).Log("msg", "Error listing databases", "url", conn, "err", err)
+							continue
+						}
+						filteredDBs, err = filterDatabases(databases, extractedPath)
+						if err != nil {
+							level.Error(j.log).Log("msg", "Error filtering databases", "url", conn, "err", err)
+							continue
+						}
+
+						for _, db := range filteredDBs {
+							u.Path = "/" + db // Set the path to the filtered database name
+							newUserDSN := u.String()
+							j.conns = append(j.conns, &connection{
+								conn:     nil,
+								url:      newUserDSN,
+								driver:   u.Scheme,
+								host:     u.Host,
+								database: db,
+								user:     u.User.Username(),
+							})
+						}
+						continue
+					}
+				}
+			}
+
 			u, err := url.Parse(conn)
 			if err != nil {
 				level.Error(j.log).Log("msg", "Failed to parse URL", "url", conn, "err", err)
@@ -150,55 +386,103 @@ func (j *Job) Run() {
 					MinVersion: tls.VersionTLS12,
 				}
 				if err = setupMTLS(j, tlsConfig); err != nil {
-					glog.Fatalf("could not set up mTLS: %s", err.Error())
+					level.Error(j.log).Log("msg", "Failed to establish mtls for ClickHouse", "connection", conn, "err", err)
+					continue
 				}
 				clickhouse.RegisterTLSConfig("spiffe", tlsConfig)
 			}
 			if newConn.driver == "snowflake" {
+				u, err := url.Parse(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse Snowflake URL", "url", conn, "err", err)
+					continue
+				}
+
+				queryParams := u.Query()
+				privateKeyPath := os.ExpandEnv(queryParams.Get("private_key_file"))
+
 				cfg := &gosnowflake.Config{
-					Account: u.Host,
-					User:    u.User.Username(),
+					Account:  u.Host,
+					User:     u.User.Username(),
+					Role:     queryParams.Get("role"),
+					Database: queryParams.Get("database"),
+					Schema:   queryParams.Get("schema"),
 				}
 
-				pw, set := u.User.Password()
-				if set {
-					cfg.Password = pw
-				}
-
-				if u.Port() != "" {
-					portStr, err := strconv.Atoi(u.Port())
+				if privateKeyPath != "" {
+					// RSA key auth
+					keyBytes, err := os.ReadFile(privateKeyPath)
 					if err != nil {
-						level.Error(j.log).Log("msg", "Failed to parse Snowflake port", "connection", conn, "err", err)
+						level.Error(j.log).Log("msg", "Failed to read private key file", "path", privateKeyPath, "err", err)
 						continue
 					}
-					cfg.Port = portStr
+
+					keyBlock, _ := pem.Decode(keyBytes)
+					if keyBlock == nil {
+						level.Error(j.log).Log("msg", "Failed to decode PEM block", "path", privateKeyPath)
+						continue
+					}
+
+					var privateKey *rsa.PrivateKey
+					if parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); err == nil {
+						privateKey, _ = parsedKey.(*rsa.PrivateKey)
+					} else if parsedKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes); err == nil {
+						privateKey = parsedKey
+					} else {
+						level.Error(j.log).Log("msg", "Failed to parse private key", "err", err)
+						continue
+					}
+
+					cfg.Authenticator = gosnowflake.AuthTypeJwt
+					cfg.PrivateKey = privateKey
+
+					dsn, err := gosnowflake.DSN(cfg)
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with RSA", "err", err)
+						continue
+					}
+
+					newConn.snowflakeConfig = cfg
+					newConn.snowflakeDSN = dsn
+					newConn.host = u.Host
+					newConn.tokenExpirationTime = time.Now().Add(time.Hour)
+				} else {
+					// Password auth
+					if pw, set := u.User.Password(); set {
+						cfg.Password = pw
+					}
+					if u.Port() != "" {
+						if port, err := strconv.Atoi(u.Port()); err == nil {
+							cfg.Port = port
+						}
+					}
+
+					dsn, err := gosnowflake.DSN(cfg)
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with password", "err", err)
+						continue
+					}
+
+					newConn.conn, err = sqlx.Open("snowflake", dsn)
+					if err != nil {
+						level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "err", err)
+						continue
+					}
 				}
 
-				dsn, err := gosnowflake.DSN(cfg)
-				if err != nil {
-					level.Error(j.log).Log("msg", "Failed to create Snowflake DSN", "connection", conn, "err", err)
-					continue
-				}
-
-				newConn.conn, err = sqlx.Open("snowflake", dsn)
-				if err != nil {
-					level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "connection", conn, "err", err)
-					continue
-				}
+				j.conns = append(j.conns, newConn)
+				continue
 			}
+
 			j.conns = append(j.conns, newConn)
 		}
 	}
-	level.Debug(j.log).Log("msg", "Starting")
+}
 
-	// enter the run loop
-	// tries to run each query on each connection at approx the interval
+func (j *Job) ExecutePeriodically() {
+	level.Debug(j.log).Log("msg", "Starting")
 	for {
-		bo := backoff.NewExponentialBackOff()
-		bo.MaxElapsedTime = j.Interval
-		if err := backoff.Retry(j.runOnce, bo); err != nil {
-			level.Error(j.log).Log("msg", "Failed to run", "err", err)
-		}
+		j.Run()
 		level.Debug(j.log).Log("msg", "Sleeping until next run", "sleep", j.Interval.String())
 		time.Sleep(j.Interval)
 	}
@@ -212,9 +496,41 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 	// connect to DB if not connected already
 	if err := conn.connect(j); err != nil {
-		level.Warn(j.log).Log("msg", "Failed to connect", "err", err)
+		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
+		// we don't have the query name yet.
+		failedQueryCounter.WithLabelValues(j.Name, "").Inc()
 		return
+	}
+
+	// execute iterator SQL
+	if j.Iterator.SQL != "" {
+		level.Debug(j.log).Log("msg", "IteratorSQL", "Query:", j.Iterator.SQL)
+		rows, err := conn.conn.Queryx(j.Iterator.SQL)
+		if err != nil {
+			level.Warn(j.log).Log("msg", "Failed to run iterator query", "err", err, "host", conn.host)
+			j.markFailed(conn)
+			// we don't have the query name yet.
+			failedQueryCounter.WithLabelValues(j.Name, "").Inc()
+			return
+		}
+
+		defer rows.Close()
+
+		var ivs []string
+		for rows.Next() {
+			var value string
+			err := rows.Scan(&value)
+			if err != nil {
+				level.Warn(j.log).Log("msg", "Failed to read iterator values", "err", err, "host", conn.host)
+				j.markFailed(conn)
+				// we don't have the query name yet.
+				failedQueryCounter.WithLabelValues(j.Name, "").Inc()
+				return
+			}
+			ivs = append(ivs, value)
+		}
+		conn.iteratorValues = ivs
 	}
 
 	for _, q := range j.Queries {
@@ -226,11 +542,21 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 			level.Warn(q.log).Log("msg", "Skipping query. Collector is nil")
 			continue
 		}
-		level.Debug(q.log).Log("msg", "Running Query")
-		// execute the query on the connection
-		if err := q.Run(conn); err != nil {
-			level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
-			continue
+		// repeat query with iterator values if set and the query has the iterator placeholder
+		if conn.iteratorValues != nil && q.HasIterator(j.Iterator.Placeholder) {
+			level.Debug(q.log).Log("msg", "Running Iterator Query")
+			// execute the query with iterator on the connection
+			if err := q.RunIterator(conn, j.Iterator.Placeholder, conn.iteratorValues, j.Iterator.Label); err != nil {
+				level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
+				continue
+			}
+		} else {
+			level.Debug(q.log).Log("msg", "Running Query")
+			// execute the query on the connection
+			if err := q.Run(conn); err != nil {
+				level.Warn(q.log).Log("msg", "Failed to run query", "err", err)
+				continue
+			}
 		}
 		level.Debug(q.log).Log("msg", "Query finished")
 		updated++
@@ -240,6 +566,18 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 func (j *Job) markFailed(conn *connection) {
 	for _, q := range j.Queries {
 		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+	}
+}
+
+// Run the job queries with exponential backoff, implements the cron.Job interface
+func (j *Job) Run() {
+	bo := backoff.NewExponentialBackOff()
+	bo.MaxElapsedTime = j.Interval
+	if bo.MaxElapsedTime == 0 {
+		bo.MaxElapsedTime = time.Minute
+	}
+	if err := backoff.Retry(j.runOnce, bo); err != nil {
+		level.Error(j.log).Log("msg", "Failed to run", "err", err)
 	}
 }
 
@@ -266,13 +604,77 @@ func (j *Job) runOnce() error {
 func (c *connection) connect(job *Job) error {
 	// already connected
 	if c.conn != nil {
+		if strings.HasPrefix(c.url, "rds-mysql://") && time.Now().After(c.tokenExpirationTime) {
+			level.Warn(job.log).Log("msg", "Connection token expired, reconnecting")
+
+			authToken, expirationTime, err := handleRDSMySQLIAMAuth(c.url)
+			if err != nil {
+				return fmt.Errorf("failed to refresh RDS MySQL IAM Auth token: %w", err)
+			}
+
+			config, err := mysql.ParseDSN(strings.TrimPrefix(c.url, "rds-mysql://"))
+			if err != nil {
+				return fmt.Errorf("failed to parse MySQL DSN: %w", err)
+			}
+
+			config.Passwd = authToken
+			dsn := "rds-mysql://" + config.FormatDSN()
+
+			// Close the existing connection
+			c.conn.Close()
+			c.conn = nil
+
+			// Update the connection details
+			c.tokenExpirationTime = expirationTime
+			c.url = dsn
+
+			// Connect to the database with the new token
+			conn, err := sqlx.Connect(c.driver, strings.TrimPrefix(dsn, "rds-mysql://"))
+			if err != nil {
+				return fmt.Errorf("failed to connect to the database: %w", err)
+			}
+			c.conn = conn
+			return nil
+		}
 		return nil
+	}
+	if c.driver == "snowflake" {
+		if c.snowflakeDSN != "" {
+			if time.Now().After(c.tokenExpirationTime) {
+				if c.conn != nil {
+					c.conn.Close()
+					c.conn = nil
+				}
+				c.tokenExpirationTime = time.Now().Add(time.Hour)
+			}
+
+			db, err := sqlx.Open("snowflake", c.snowflakeDSN)
+			if err != nil {
+				return fmt.Errorf("failed to open Snowflake connection: %w (host: %s)", err, c.host)
+			}
+
+			db.SetMaxOpenConns(1)
+			db.SetMaxIdleConns(0)
+			db.SetConnMaxLifetime(30 * time.Minute)
+
+			if err := db.Ping(); err != nil {
+				db.Close()
+				return fmt.Errorf("failed to ping Snowflake: %w (host: %s)", err, c.host)
+			}
+
+			c.conn = db
+			return nil
+		}
 	}
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
-	case "clickhouse":
+		dsn = strings.TrimPrefix(dsn, "rds-mysql://")
+	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
+		dsn = strings.TrimPrefix(dsn, "clickhouse+")
+		c.driver = "clickhouse"
+	case "clickhouse": // Backward compatible alias
 		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.driver, dsn)
@@ -282,7 +684,10 @@ func (c *connection) connect(job *Job) error {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
-	conn.SetConnMaxLifetime(job.Interval * 2)
+	// Disable SetConnMaxLifetime if MSSQL as it is causing issues with the MSSQL driver we are using. See #60
+	if c.driver != "sqlserver" {
+		conn.SetConnMaxLifetime(job.Interval * 2)
+	}
 
 	// execute StartupSQL
 	for _, query := range job.StartupSQL {

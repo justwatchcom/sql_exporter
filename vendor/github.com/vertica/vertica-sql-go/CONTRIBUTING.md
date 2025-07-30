@@ -10,7 +10,7 @@ This document will guide you through the contribution process. There are a numbe
 
 If you find a bug, submit an [issue](https://github.com/vertica/vertica-sql-go/issues) with a complete and reproducible bug report. If the issue can't be reproduced, it will be closed. If you opened an issue, but figured out the answer later on your own, comment on the issue to let people know, then close the issue.
 
-For issues (e.g. security related issues) that are **not suitable** to be reported publicly on the GitHub issue system, report your issues to [Vertica team](mailto:vertica-opensrc@microfocus.com) directly or file a case with Vertica support if you have a support account.
+For issues (e.g. security related issues) that are **not suitable** to be reported publicly on the GitHub issue system, report your issues to [Vertica team](mailto:vertica-opensrc@opentext.com) directly or file a case with Vertica support if you have a support account.
 
 # Feature Requests
 
@@ -75,17 +75,14 @@ were args are one of the following:
 
 | Query Argument | Description | Values |
 |----------------|-------------|--------|
-| use_prepared_statements    | whether to use client-side query interpolation or server-side argument binding | true = (default) use server-side bindings |
-|                |             | false = user client side interpolation |
-| tlsmode            | the ssl policy for this connection | 'none' (default) = don't use SSL for this connection |
-|                |                                    | 'server' = server must support SSL, but skip verification (INSECURE!) |
-|                |                                    | 'server-strict' = server must support SSL |
-| locator        | host and port of the Vertica connection | (default) localhost:5433
-| user           | Vertica user ID | (default) the userid of the running user |
-| password       | Vertica password for the connecting user | (default) (empty)
-|
+| use_prepared_statements    | whether to use client-side query interpolation or server-side argument binding | <li>true = (default) use server-side bindings </li><li>false = user client side interpolation</li> |
+| tlsmode            | the ssl policy for this connection | <li>none (default) = don't use SSL for this connection</li><li>server = server must support SSL, but skip verification (INSECURE!)</li><li>server-strict = server must support SSL</li><li>custom = use custom TLS config (Need to generate certs with `resources/tests/genCerts.sh` in advance) </li> |
+| locator        | host and port of the Vertica connection | (default) localhost:5433 |
+| user           | Vertica user name | (default) dbadmin |
+| password       | Vertica password for the connecting user | (default) (empty) |
+| oauth_access_token | the OAuth Access Token to connect to Vertica, only used for OAuth Authentication tests | (default) (empty) |
 
-**NOTE:** Since it's often a bad idea to put your password on the command line, you can set the VERTICA_TEST_PASSWORD environment variable. Even if environment variable is set, the "--password" flag will supercede it.
+**NOTE:** Since it's often a bad idea to put your password on the command line, you can set the VERTICA_TEST_PASSWORD environment variable. Even if environment variable is set, the "--password" flag will supercede it. Similarly, you can set the VERTICA_TEST_OAUTH_ACCESS_TOKEN environment variable instead of "--oauth_access_token" flag.
 
 For example:
 
@@ -121,7 +118,7 @@ At this point, you're ready to make your changes! Feel free to ask for help; eve
 Every file in this project must use the following Apache 2.0 header (with the appropriate year or years in the "[yyyy]" box; if a copyright statement from another party is already present in the code, you may add the statement on top of the existing copyright statement):
 
 ```
-Copyright (c) [yyyy] Micro Focus or one of its affiliates.
+Copyright (c) [yyyy] Open Text.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

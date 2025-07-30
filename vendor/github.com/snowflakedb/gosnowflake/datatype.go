@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -7,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"strings"
 )
 
 type snowflakeType int
@@ -22,6 +21,7 @@ const (
 	timestampTzType
 	objectType
 	arrayType
+	mapType
 	binaryType
 	timeType
 	booleanType
@@ -30,29 +30,54 @@ const (
 	sliceType
 	changeType
 	unSupportedType
+	nilObjectType
+	nilArrayType
+	nilMapType
 )
 
-var snowflakeTypes = [...]string{"FIXED", "REAL", "TEXT", "DATE", "VARIANT",
-	"TIMESTAMP_LTZ", "TIMESTAMP_NTZ", "TIMESTAMP_TZ", "OBJECT", "ARRAY",
-	"BINARY", "TIME", "BOOLEAN", "NULL", "SLICE", "CHANGE_TYPE", "NOT_SUPPORTED"}
+var snowflakeToDriverType = map[string]snowflakeType{
+	"FIXED":         fixedType,
+	"REAL":          realType,
+	"TEXT":          textType,
+	"DATE":          dateType,
+	"VARIANT":       variantType,
+	"TIMESTAMP_LTZ": timestampLtzType,
+	"TIMESTAMP_NTZ": timestampNtzType,
+	"TIMESTAMP_TZ":  timestampTzType,
+	"OBJECT":        objectType,
+	"ARRAY":         arrayType,
+	"MAP":           mapType,
+	"BINARY":        binaryType,
+	"TIME":          timeType,
+	"BOOLEAN":       booleanType,
+	"NULL":          nullType,
+	"SLICE":         sliceType,
+	"CHANGE_TYPE":   changeType,
+	"NOT_SUPPORTED": unSupportedType}
 
-func (st snowflakeType) String() string {
-	return snowflakeTypes[st]
+var driverTypeToSnowflake = invertMap(snowflakeToDriverType)
+
+func invertMap(m map[string]snowflakeType) map[snowflakeType]string {
+	inv := make(map[snowflakeType]string)
+	for k, v := range m {
+		if _, ok := inv[v]; ok {
+			panic("failed to create driverTypeToSnowflake map due to duplicated values")
+		}
+		inv[v] = k
+	}
+	return inv
 }
 
 func (st snowflakeType) Byte() byte {
 	return byte(st)
 }
 
+func (st snowflakeType) String() string {
+	return driverTypeToSnowflake[st]
+}
+
 func getSnowflakeType(typ string) snowflakeType {
-	for i, sft := range snowflakeTypes {
-		if sft == typ {
-			return snowflakeType(i)
-		} else if snowflakeType(i) == nullType {
-			break
-		}
-	}
-	return nullType
+	return snowflakeToDriverType[strings.ToUpper(typ)]
 }
 
 var (
@@ -82,6 +107,12 @@ var (
 	DataTypeTime = []byte{timeType.Byte()}
 	// DataTypeBoolean is a BOOLEAN datatype.
 	DataTypeBoolean = []byte{booleanType.Byte()}
+	// DataTypeNilObject represents a nil structured object.
+	DataTypeNilObject = []byte{nilObjectType.Byte()}
+	// DataTypeNilArray represents a nil structured array.
+	DataTypeNilArray = []byte{nilArrayType.Byte()}
+	// DataTypeNilMap represents a nil structured map.
+	DataTypeNilMap = []byte{nilMapType.Byte()}
 )
 
 // dataTypeMode returns the subsequent data type in a string representation.
@@ -100,6 +131,18 @@ func dataTypeMode(v driver.Value) (tsmode snowflakeType, err error) {
 			tsmode = timestampTzType
 		case bytes.Equal(bd, DataTypeBinary):
 			tsmode = binaryType
+		case bytes.Equal(bd, DataTypeObject):
+			tsmode = objectType
+		case bytes.Equal(bd, DataTypeArray):
+			tsmode = arrayType
+		case bytes.Equal(bd, DataTypeVariant):
+			tsmode = variantType
+		case bytes.Equal(bd, DataTypeNilObject):
+			tsmode = nilObjectType
+		case bytes.Equal(bd, DataTypeNilArray):
+			tsmode = nilArrayType
+		case bytes.Equal(bd, DataTypeNilMap):
+			tsmode = nilMapType
 		default:
 			return nullType, fmt.Errorf(errMsgInvalidByteArray, v)
 		}

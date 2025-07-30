@@ -1,6 +1,6 @@
 package msgs
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ package msgs
 // THE SOFTWARE.
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"fmt"
 	"time"
@@ -83,6 +84,12 @@ func (m *FEBindMsg) Flatten() ([]byte, byte) {
 			continue
 		case time.Time:
 			strVal = v.Format("2006-01-02T15:04:05.999999Z07:00")
+		case []uint8:
+			// Escape the byte value "\" with "\134"(octal for backslash)
+			v = bytes.ReplaceAll(v, []byte("\\"), []byte("\\134"))
+			buf.appendUint32(uint32(len(v)))
+			buf.appendBytes(v)
+			continue
 		default:
 			strVal = "??HELP??"
 		}

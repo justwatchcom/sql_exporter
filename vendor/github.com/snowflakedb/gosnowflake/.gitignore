@@ -1,4 +1,5 @@
 .idea/
+.vscode/
 parameters*.json
 parameters*.bat
 *.p8
@@ -11,3 +12,8 @@ wss-golang-agent.config
 wss-unified-agent.jar
 whitesource/
 *.swp
+cp.out
+__debug_bin*
+
+# exclude vendor
+vendor

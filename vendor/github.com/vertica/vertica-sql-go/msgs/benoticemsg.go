@@ -1,6 +1,6 @@
 package msgs
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,58 +38,68 @@ import (
 
 // BENoticeMsg docs
 type BENoticeMsg struct {
-	NoticeCodes  []byte
-	NoticeValues []string
-}
-
-func (b *BENoticeMsg) addNoticeMsg(writeIndex int, code byte, value string) {
-
-	if writeIndex == cap(b.NoticeCodes) {
-		newNoticeCodes := make([]byte, 2*writeIndex)
-		copy(newNoticeCodes, b.NoticeCodes)
-		b.NoticeCodes = newNoticeCodes
-
-		newNoticeValues := make([]string, 2*writeIndex)
-		copy(newNoticeValues, b.NoticeValues)
-		b.NoticeValues = newNoticeValues
-	} else {
-		b.NoticeCodes = b.NoticeCodes[0 : writeIndex+1]
-		b.NoticeValues = b.NoticeValues[0 : writeIndex+1]
-	}
-
-	b.NoticeCodes[writeIndex] = code
-	b.NoticeValues[writeIndex] = value
+	InternalQuery    string
+	Severity         string
+	Message          string
+	SQLState         string
+	Detail           string
+	Hint             string
+	Position         string
+	Where            string
+	InternalPosition string
+	Routine          string
+	File             string
+	Line             string
+	ErrorCode        string
 }
 
 // CreateFromMsgBody docs
 func (b *BENoticeMsg) CreateFromMsgBody(buf *msgBuffer) (BackEndMsg, error) {
 
-	const defaultArray int = 8
-
 	res := &BENoticeMsg{}
-	res.NoticeCodes = make([]byte, defaultArray)
-	res.NoticeValues = make([]string, defaultArray)
-
-	writeIndex := 0
 
 	for {
-		noticeCode := buf.readByte()
+		fieldType, fieldStr := buf.readTaggedString()
 
-		if noticeCode == 0 {
+		if fieldType == 0 {
+			buf.readByte() // There's an empty null terminator here we have to read.
 			break
 		}
-
-		noticeValue := buf.readString()
-
-		res.addNoticeMsg(writeIndex, noticeCode, noticeValue)
-		writeIndex++
+		switch fieldType {
+		case 'q':
+			res.InternalQuery = fieldStr
+		case 'S':
+			res.Severity = fieldStr
+		case 'M':
+			res.Message = fieldStr
+		case 'C':
+			res.SQLState = fieldStr
+		case 'D':
+			res.Detail = fieldStr
+		case 'H':
+			res.Hint = fieldStr
+		case 'P':
+			res.Position = fieldStr
+		case 'W':
+			res.Where = fieldStr
+		case 'p':
+			res.InternalPosition = fieldStr
+		case 'R':
+			res.Routine = fieldStr
+		case 'F':
+			res.File = fieldStr
+		case 'L':
+			res.Line = fieldStr
+		case 'V':
+			res.ErrorCode = fieldStr
+		}
 	}
 
 	return res, nil
 }
 
 func (b *BENoticeMsg) String() string {
-	return fmt.Sprintf("Notice: (%d) notice(s)", len(b.NoticeValues))
+	return fmt.Sprintf("Notice: %s %s: [%s] %s", b.Severity, b.ErrorCode, b.SQLState, b.Message)
 }
 
 func init() {

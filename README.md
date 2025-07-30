@@ -19,6 +19,8 @@ Currently supported:
 - MySQL
 - Snowflake
 - Vertica
+- Materialize
+- CloudSQL
 
 
 What does it look like?
@@ -46,7 +48,7 @@ docker run \
   -d \
   -p 9237:9237 \
   --name sql_exporter \
-  justwatch/sql_exporter
+  ghcr.io/justwatchcom/sql_exporter
 ```
 
 Manual `scrape_configs` snippet:
@@ -103,7 +105,7 @@ model assigns exactly one `float` to a metric, possibly further identified by a
 set of zero or more labels. These labels need to be of type `string` or `text`.
 
 If your SQL dialect supports explicit type casts, you should always cast your
-label columns to `text` and the metric colums to `float`. The SQL exporter will
+label columns to `text` and the metric columns to `float`. The SQL exporter will
 try hard to support other types or drivers w/o support for explicit cast as well,
 but the results may not be what you expect.
 
@@ -114,10 +116,13 @@ For a more realistic example please have a look at [examples/kubernetes/configma
 ---
 # jobs is a map of jobs, define any number but please keep the connection usage on the DBs in mind
 jobs:
-  # each job needs a unique name, it's used for logging and as an default label
+  # each job needs a unique name, it's used for logging and as a default label
 - name: "example"
   # interval defined the pause between the runs of this job
   interval: '5m'
+  # cron_schedule when to execute the job in the standard CRON syntax
+  # if specified, the interval is ignored
+  cron_schedule: "0 0 * * *"
   # connections is an array of connection URLs
   # each query will be executed on each connection
   connections:
@@ -127,14 +132,27 @@ jobs:
   startup_sql:
   - 'SET lock_timeout = 1000'
   - 'SET idle_in_transaction_session_timeout = 100'
+  # iterator is an optional mechanism to iterate over a series of values, e.g. multiple databases
+  iterator:
+    # sql is the SQL to execute to retrieve the list of values to iterate over -
+    # query result must be a single column
+    sql: 'SELECT database_name FROM databases'
+    # placeholder should be present in the original query and not also used as an environment variable
+    # e.g. {{PLACEHOLDER}} - it will be replaced by the values retrieved by the query
+    placeholder: PLACEHOLDER
+    # label is the label name to which the iterator value gets assigned
+    label: database
   # queries is a map of Metric/Query mappings
   queries:
-    # name is prefied with sql_ and used as the metric name
+    # name is prefixed with sql_ and used as the metric name
   - name: "running_queries"
     # help is a requirement of the Prometheus default registry, currently not
     # used by the Prometheus server. Important: Must be the same for all metrics
     # with the same name!
     help: "Number of running queries"
+    # Optional: Column to use as a metric timestamp source.
+    # Leave unset if it's not needed
+    timestamp: "created_at"
     # Labels is an array of columns which will be used as additional labels.
     # Must be the same for all metrics with the same name!
     # All labels columns should be of type text, varchar or string
@@ -145,11 +163,11 @@ jobs:
     # of type float
     values:
       - "count"
-    # Query is the SQL query that is run unalterted on the each of the connections
+    # Query is the SQL query that is run unalterted on each of the connections
     # for this job
     query:  |
-            SELECT datname::text, usename::text, COUNT(*)::float AS count
-            FROM pg_stat_activity GROUP BY datname, usename;
+            SELECT now() as created_at, datname::text, usename::text, COUNT(*)::float AS count
+            FROM pg_stat_activity GROUP BY created_at, datname, usename;
     # Consider the query failed if it returns zero rows
     allow_zero_rows: false
 ```
@@ -203,6 +221,23 @@ environment.
 ```
 LOGLEVEL=info ./sql_exporter
 ```
+
+Database specific configurations
+--------------------------------
+
+For some database backends some special functionality is available:
+
+* cloudsql-postgres: A special `*` character can be used to query all databases accessible by the account
+* cloudsql-mysql: Same as above
+* rds-postgres: This type of URL expects a working AWS configuration
+  which will use the equivalent of `rds generate-db-auth-token`
+  for the password. For this driver, the `AWS_REGION` environment variable
+  must be set.
+* rds-mysql: This type of URL expects a working AWS configuration
+  which will use the equivalent of `rds generate-db-auth-token`
+  for the password. For this driver, the `AWS_REGION` environment variable
+  must be set.
+
 
 Why this exporter exists
 ========================

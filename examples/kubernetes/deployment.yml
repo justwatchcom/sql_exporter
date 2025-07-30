@@ -1,4 +1,4 @@
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prom-sql-exporter
@@ -9,6 +9,9 @@ spec:
       maxSurge: 0
       maxUnavailable: 1
     type: RollingUpdate
+  selector:
+    matchLabels:
+      app: prom-sql-exporter
   template:
     metadata:
       annotations:
@@ -23,7 +26,13 @@ spec:
           value: /config/config.yml
         - name: PGPASSFILE
           value: /pgpass/pgpass
-        image: justwatchcom/prom-sql-exporter:latest
+        - name: TEMPLATE_START
+          value: '[['
+        - name: TEMPLATE_END
+          value: ']]'
+        - name: POSTGRES_CONNECTION_DB4
+          value: postgres://postgres_exporter@postgres/db4?sslmode=disable
+        image: ghcr.io/justwatchcom/sql_exporter:latest
         livenessProbe:
           httpGet:
             path: /healthz

@@ -10,12 +10,14 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
+	prom_collectors_version "github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
+	_ "go.uber.org/automaxprocs"
 )
 
 func init() {
-	prometheus.MustRegister(version.NewCollector("sql_exporter"))
+	prometheus.MustRegister(prom_collectors_version.NewCollector("sql_exporter"))
 }
 
 func main() {

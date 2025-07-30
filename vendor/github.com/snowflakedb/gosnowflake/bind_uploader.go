@@ -1,17 +1,14 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -29,6 +26,18 @@ type bindUploader struct {
 	stagePath      string
 	fileCount      int
 	arrayBindStage string
+}
+
+type bindingSchema struct {
+	Typ      string          `json:"type"`
+	Nullable bool            `json:"nullable"`
+	Fields   []fieldMetadata `json:"fields"`
+}
+
+type bindingValue struct {
+	value  *string
+	format string
+	schema *bindingSchema
 }
 
 func (bu *bindUploader) upload(bindings []driver.NamedValue) (*execResponse, error) {
@@ -107,7 +116,7 @@ func (bu *bindUploader) createStageIfNeeded() error {
 		return (&SnowflakeError{
 			Number:   code,
 			SQLState: data.Data.SQLState,
-			Message:  err.Error(),
+			Message:  data.Message,
 			QueryID:  data.Data.QueryID,
 		}).exceptionTelemetry(bu.sc)
 	}
@@ -125,19 +134,29 @@ func (bu *bindUploader) buildRowsAsBytes(columns []driver.NamedValue) ([][]byte,
 		}).exceptionTelemetry(bu.sc)
 	}
 
-	_, column := snowflakeArrayToString(&columns[0], true)
+	_, column, err := snowflakeArrayToString(&columns[0], true)
+	if err != nil {
+		return nil, err
+	}
 	numRows := len(column)
 	csvRows := make([][]byte, 0)
-	rows := make([][]string, 0)
+	rows := make([][]interface{}, 0)
 	for rowIdx := 0; rowIdx < numRows; rowIdx++ {
-		rows = append(rows, make([]string, numColumns))
+		rows = append(rows, make([]interface{}, numColumns))
 	}
 
 	for rowIdx := 0; rowIdx < numRows; rowIdx++ {
-		rows[rowIdx][0] = *column[rowIdx]
+		if column[rowIdx] == nil {
+			rows[rowIdx][0] = column[rowIdx]
+		} else {
+			rows[rowIdx][0] = *column[rowIdx]
+		}
 	}
 	for colIdx := 1; colIdx < numColumns; colIdx++ {
-		_, column = snowflakeArrayToString(&columns[colIdx], true)
+		_, column, err = snowflakeArrayToString(&columns[colIdx], true)
+		if err != nil {
+			return nil, err
+		}
 		iNumRows := len(column)
 		if iNumRows != numRows {
 			return nil, (&SnowflakeError{
@@ -147,7 +166,12 @@ func (bu *bindUploader) buildRowsAsBytes(columns []driver.NamedValue) ([][]byte,
 			}).exceptionTelemetry(bu.sc)
 		}
 		for rowIdx := 0; rowIdx < numRows; rowIdx++ {
-			rows[rowIdx][colIdx] = *column[rowIdx] // length of column = number of rows
+			// length of column = number of rows
+			if column[rowIdx] == nil {
+				rows[rowIdx][colIdx] = column[rowIdx]
+			} else {
+				rows[rowIdx][colIdx] = *column[rowIdx]
+			}
 		}
 	}
 	for _, row := range rows {
@@ -156,14 +180,19 @@ func (bu *bindUploader) buildRowsAsBytes(columns []driver.NamedValue) ([][]byte,
 	return csvRows, nil
 }
 
-func (bu *bindUploader) createCSVRecord(data []string) []byte {
+func (bu *bindUploader) createCSVRecord(data []interface{}) []byte {
 	var b strings.Builder
 	b.Grow(1024)
 	for i := 0; i < len(data); i++ {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(escapeForCSV(data[i]))
+		value, ok := data[i].(string)
+		if ok {
+			b.WriteString(escapeForCSV(value))
+		} else if !reflect.ValueOf(data[i]).IsNil() {
+			logger.WithContext(bu.ctx).Debugf("Cannot convert value to string in createCSVRecord. value: %v", data[i])
+		}
 	}
 	b.WriteString("\n")
 	return []byte(b.String())
@@ -173,22 +202,27 @@ func (sc *snowflakeConn) processBindings(
 	ctx context.Context,
 	bindings []driver.NamedValue,
 	describeOnly bool,
-	requestID uuid.UUID,
+	requestID UUID,
 	req *execRequest) error {
 	arrayBindThreshold := sc.getArrayBindStageThreshold()
-	numBinds := arrayBindValueCount(bindings)
+	numBinds, err := arrayBindValueCount(bindings)
+	if err != nil {
+		return err
+	}
 	if 0 < arrayBindThreshold && arrayBindThreshold <= numBinds && !describeOnly && isArrayBind(bindings) {
 		uploader := bindUploader{
 			sc:        sc,
 			ctx:       ctx,
 			stagePath: "@" + bindStageName + "/" + requestID.String(),
 		}
-		uploader.upload(bindings)
+		_, err := uploader.upload(bindings)
+		if err != nil {
+			return err
+		}
 		req.Bindings = nil
 		req.BindStage = uploader.stagePath
 	} else {
-		var err error
-		req.Bindings, err = getBindValues(bindings)
+		req.Bindings, err = getBindValues(bindings, sc.cfg.Params)
 		if err != nil {
 			return err
 		}
@@ -197,12 +231,16 @@ func (sc *snowflakeConn) processBindings(
 	return nil
 }
 
-func getBindValues(bindings []driver.NamedValue) (map[string]execBindParameter, error) {
+func getBindValues(bindings []driver.NamedValue, params map[string]*string) (map[string]execBindParameter, error) {
 	tsmode := timestampNtzType
 	idx := 1
 	var err error
 	bindValues := make(map[string]execBindParameter, len(bindings))
 	for _, binding := range bindings {
+		if tnt, ok := binding.Value.(TypedNullTime); ok {
+			tsmode = convertTzTypeToSnowflakeType(tnt.TzType)
+			binding.Value = tnt.Time
+		}
 		t := goTypeToSnowflake(binding.Value, tsmode)
 		if t == changeType {
 			tsmode, err = dataTypeMode(binding.Value)
@@ -211,21 +249,32 @@ func getBindValues(bindings []driver.NamedValue) (map[string]execBindParameter, 
 			}
 		} else {
 			var val interface{}
+			var bv bindingValue
 			if t == sliceType {
 				// retrieve array binding data
-				t, val = snowflakeArrayToString(&binding, false)
+				t, val, err = snowflakeArrayToString(&binding, false)
+				if err != nil {
+					return nil, err
+				}
 			} else {
-				val, err = valueToString(binding.Value, tsmode)
+				bv, err = valueToString(binding.Value, tsmode, params)
+				val = bv.value
 				if err != nil {
 					return nil, err
 				}
 			}
 			if t == nullType || t == unSupportedType {
 				t = textType // if null or not supported, pass to GS as text
+			} else if t == nilObjectType || t == mapType || t == nilMapType {
+				t = objectType
+			} else if t == nilArrayType {
+				t = arrayType
 			}
-			bindValues[strconv.Itoa(idx)] = execBindParameter{
-				Type:  t.String(),
-				Value: val,
+			bindValues[bindingName(binding, idx)] = execBindParameter{
+				Type:   t.String(),
+				Value:  val,
+				Format: bv.format,
+				Schema: bv.schema,
 			}
 			idx++
 		}
@@ -233,12 +282,23 @@ func getBindValues(bindings []driver.NamedValue) (map[string]execBindParameter, 
 	return bindValues, nil
 }
 
-func arrayBindValueCount(bindValues []driver.NamedValue) int {
-	if !isArrayBind(bindValues) {
-		return 0
+func bindingName(nv driver.NamedValue, idx int) string {
+	if nv.Name != "" {
+		return nv.Name
 	}
-	_, arr := snowflakeArrayToString(&bindValues[0], false)
-	return len(bindValues) * len(arr)
+	return strconv.Itoa(idx)
+}
+
+func arrayBindValueCount(bindValues []driver.NamedValue) (int, error) {
+	if !isArrayBind(bindValues) {
+		return 0, nil
+	}
+	_, arr, err := snowflakeArrayToString(&bindValues[0], false)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(bindValues) * len(arr), nil
 }
 
 func isArrayBind(bindings []driver.NamedValue) bool {
@@ -278,6 +338,38 @@ func supportedArrayBind(nv *driver.NamedValue) bool {
 		return false
 	default:
 		// TODO SNOW-176486 variant, object, array
+
+		// Support for bulk array binding insertion using []interface{}
+		if isInterfaceArrayBinding(nv.Value) {
+			return true
+		}
 		return false
 	}
+}
+
+func supportedNullBind(nv *driver.NamedValue) bool {
+	switch reflect.TypeOf(nv.Value) {
+	case reflect.TypeOf(sql.NullString{}), reflect.TypeOf(sql.NullInt64{}),
+		reflect.TypeOf(sql.NullBool{}), reflect.TypeOf(sql.NullFloat64{}), reflect.TypeOf(TypedNullTime{}):
+		return true
+	}
+	return false
+}
+
+func supportedStructuredObjectWriterBind(nv *driver.NamedValue) bool {
+	if _, ok := nv.Value.(StructuredObjectWriter); ok {
+		return true
+	}
+	_, ok := nv.Value.(reflect.Type)
+	return ok
+}
+
+func supportedStructuredArrayBind(nv *driver.NamedValue) bool {
+	typ := reflect.TypeOf(nv.Value)
+	return typ != nil && (typ.Kind() == reflect.Array || typ.Kind() == reflect.Slice)
+}
+
+func supportedStructuredMapBind(nv *driver.NamedValue) bool {
+	typ := reflect.TypeOf(nv.Value)
+	return typ != nil && (typ.Kind() == reflect.Map || typ == reflect.TypeOf(NilMapTypes{}))
 }

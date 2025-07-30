@@ -1,17 +1,13 @@
-// Copyright (c) 2019-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -56,15 +52,15 @@ func (hc *heartbeat) stop() {
 func (hc *heartbeat) heartbeatMain() error {
 	logger.Info("Heartbeating!")
 	params := &url.Values{}
-	params.Add(requestIDKey, uuid.New().String())
-	params.Add(requestGUIDKey, uuid.New().String())
+	params.Set(requestIDKey, NewUUID().String())
+	params.Set(requestGUIDKey, NewUUID().String())
 	headers := getHeaders()
 	token, _, _ := hc.restful.TokenAccessor.GetTokens()
 	headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 
 	fullURL := hc.restful.getFullURL(heartBeatPath, params)
 	timeout := hc.restful.RequestTimeout
-	resp, err := hc.restful.FuncPost(context.Background(), hc.restful, fullURL, headers, nil, timeout, false)
+	resp, err := hc.restful.FuncPost(context.Background(), hc.restful, fullURL, headers, nil, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return err
 	}
@@ -85,7 +81,7 @@ func (hc *heartbeat) heartbeatMain() error {
 		}
 		return nil
 	}
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("failed to extract HTTP response body. err: %v", err)
 		return err

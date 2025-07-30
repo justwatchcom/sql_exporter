@@ -1,12 +1,10 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,17 +14,14 @@ import (
 type localUtil struct {
 }
 
-func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool) (cloudClient, error) {
+func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool, _ *Config) (cloudClient, error) {
 	return nil, nil
 }
 
 func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 	var frd *bufio.Reader
 	if meta.srcStream != nil {
-		b := meta.srcStream
-		if meta.realSrcStream != nil {
-			b = meta.realSrcStream
-		}
+		b := cmp.Or(meta.realSrcStream, meta.srcStream)
 		frd = bufio.NewReader(b)
 	} else {
 		f, err := os.Open(meta.realSrcFileName)
@@ -48,7 +43,7 @@ func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 			return nil
 		}
 	}
-	output, err := os.OpenFile(filepath.Join(user, meta.dstFileName), os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	output, err := os.OpenFile(filepath.Join(user, meta.dstFileName), os.O_CREATE|os.O_WRONLY, readWriteFileMode)
 	if err != nil {
 		return err
 	}
@@ -97,11 +92,11 @@ func (util *localUtil) downloadOneFile(meta *fileMetadata) error {
 		}
 	}
 
-	data, err := ioutil.ReadFile(fullSrcFileName)
+	data, err := os.ReadFile(fullSrcFileName)
 	if err != nil {
 		return err
 	}
-	if err = ioutil.WriteFile(fullDstFileName, data, os.ModePerm); err != nil {
+	if err = os.WriteFile(fullDstFileName, data, readWriteFileMode); err != nil {
 		return err
 	}
 	fi, err := os.Stat(fullDstFileName)

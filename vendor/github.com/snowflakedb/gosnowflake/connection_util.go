@@ -1,20 +1,22 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func (sc *snowflakeConn) isClientSessionKeepAliveEnabled() bool {
+	paramsMutex.Lock()
 	v, ok := sc.cfg.Params[sessionClientSessionKeepAlive]
+	paramsMutex.Unlock()
 	if !ok {
 		return false
 	}
@@ -22,24 +24,30 @@ func (sc *snowflakeConn) isClientSessionKeepAliveEnabled() bool {
 }
 
 func (sc *snowflakeConn) startHeartBeat() {
-	if !sc.isClientSessionKeepAliveEnabled() {
+	if sc.cfg != nil && !sc.isClientSessionKeepAliveEnabled() {
 		return
 	}
-	sc.rest.HeartBeat = &heartbeat{
-		restful: sc.rest,
+	if sc.rest != nil {
+		sc.rest.HeartBeat = &heartbeat{
+			restful: sc.rest,
+		}
+		sc.rest.HeartBeat.start()
 	}
-	sc.rest.HeartBeat.start()
 }
 
 func (sc *snowflakeConn) stopHeartBeat() {
-	if !sc.isClientSessionKeepAliveEnabled() {
+	if sc.cfg != nil && !sc.isClientSessionKeepAliveEnabled() {
 		return
 	}
-	sc.rest.HeartBeat.stop()
+	if sc.rest != nil && sc.rest.HeartBeat != nil {
+		sc.rest.HeartBeat.stop()
+	}
 }
 
 func (sc *snowflakeConn) getArrayBindStageThreshold() int {
+	paramsMutex.Lock()
 	v, ok := sc.cfg.Params[sessionArrayBindStageThreshold]
+	paramsMutex.Unlock()
 	if !ok {
 		return 0
 	}
@@ -57,14 +65,21 @@ func (sc *snowflakeConn) connectionTelemetry(cfg *Config) {
 			sourceKey:        telemetrySource,
 			driverTypeKey:    "Go",
 			driverVersionKey: SnowflakeGoDriverVersion,
+			golangVersionKey: runtime.Version(),
 		},
 		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
 	}
+	paramsMutex.Lock()
 	for k, v := range cfg.Params {
 		data.Message[k] = *v
 	}
-	sc.telemetry.addLog(data)
-	sc.telemetry.sendBatch()
+	paramsMutex.Unlock()
+	if err := sc.telemetry.addLog(data); err != nil {
+		logger.WithContext(sc.ctx).Warn(err)
+	}
+	if err := sc.telemetry.sendBatch(); err != nil {
+		logger.WithContext(sc.ctx).Warn(err)
+	}
 }
 
 // processFileTransfer creates a snowflakeFileTransferAgent object to process
@@ -75,13 +90,22 @@ func (sc *snowflakeConn) processFileTransfer(
 	query string,
 	isInternal bool) (
 	*execResponse, error) {
-	sfa := snowflakeFileTransferAgent{
-		sc:      sc,
-		data:    &data.Data,
-		command: query,
-		options: new(SnowflakeFileTransferOptions),
+	options := &SnowflakeFileTransferOptions{
+		RaisePutGetError: true,
 	}
-	if fs := getFileStream(ctx); fs != nil {
+	sfa := snowflakeFileTransferAgent{
+		ctx:          ctx,
+		sc:           sc,
+		data:         &data.Data,
+		command:      query,
+		options:      options,
+		streamBuffer: new(bytes.Buffer),
+	}
+	fs, err := getFileStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if fs != nil {
 		sfa.sourceStream = fs
 		if isInternal {
 			sfa.data.AutoCompress = false
@@ -96,22 +120,30 @@ func (sc *snowflakeConn) processFileTransfer(
 	if err := sfa.execute(); err != nil {
 		return nil, err
 	}
-	data, err := sfa.result()
+	data, err = sfa.result()
 	if err != nil {
 		return nil, err
+	}
+	if sfa.options.GetFileToStream {
+		if err := writeFileStream(ctx, sfa.streamBuffer); err != nil {
+			return nil, err
+		}
 	}
 	return data, nil
 }
 
-func getFileStream(ctx context.Context) *bytes.Buffer {
+func getFileStream(ctx context.Context) (*bytes.Buffer, error) {
 	s := ctx.Value(fileStreamFile)
+	if s == nil {
+		return nil, nil
+	}
 	r, ok := s.(io.Reader)
 	if !ok {
-		return nil
+		return nil, errors.New("incorrect io.Reader")
 	}
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(r)
-	return buf
+	_, err := buf.ReadFrom(r)
+	return buf, err
 }
 
 func getFileTransferOptions(ctx context.Context) *SnowflakeFileTransferOptions {
@@ -126,9 +158,22 @@ func getFileTransferOptions(ctx context.Context) *SnowflakeFileTransferOptions {
 	return o
 }
 
+func writeFileStream(ctx context.Context, streamBuf *bytes.Buffer) error {
+	s := ctx.Value(fileGetStream)
+	w, ok := s.(io.Writer)
+	if !ok {
+		return errors.New("expected an io.Writer")
+	}
+	_, err := streamBuf.WriteTo(w)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (sc *snowflakeConn) populateSessionParameters(parameters []nameValueParameter) {
 	// other session parameters (not all)
-	logger.WithContext(sc.ctx).Infof("params: %#v", parameters)
+	logger.WithContext(sc.ctx).Tracef("params: %#v", parameters)
 	for _, param := range parameters {
 		v := ""
 		switch param.Value.(type) {
@@ -149,8 +194,10 @@ func (sc *snowflakeConn) populateSessionParameters(parameters []nameValueParamet
 				v = vv
 			}
 		}
-		logger.Debugf("parameter. name: %v, value: %v", param.Name, v)
+		logger.WithContext(sc.ctx).Debugf("parameter. name: %v, value: %v", param.Name, v)
+		paramsMutex.Lock()
 		sc.cfg.Params[strings.ToLower(param.Name)] = &v
+		paramsMutex.Unlock()
 	}
 }
 
@@ -172,6 +219,15 @@ func isDescribeOnly(ctx context.Context) bool {
 	return ok && d
 }
 
+func isInternal(ctx context.Context) bool {
+	v := ctx.Value(internalQuery)
+	if v == nil {
+		return false
+	}
+	d, ok := v.(bool)
+	return ok && d
+}
+
 func setResultType(ctx context.Context, resType resultType) context.Context {
 	return context.WithValue(ctx, snowflakeResultType, resType)
 }
@@ -185,7 +241,14 @@ func isDml(v int64) bool {
 	return statementTypeIDDml <= v && v <= statementTypeIDMultiTableInsert
 }
 
+func isDql(data *execResponseData) bool {
+	return data.StatementTypeID == statementTypeIDSelect && !isMultiStmt(data)
+}
+
 func updateRows(data execResponseData) (int64, error) {
+	if data.RowSet == nil {
+		return 0, nil
+	}
 	var count int64
 	for i, n := 0, len(data.RowType); i < n; i++ {
 		v, err := strconv.ParseInt(*data.RowSet[0][i], 10, 64)
@@ -201,8 +264,8 @@ func updateRows(data execResponseData) (int64, error) {
 // Note that the statement type code is also equivalent to type INSERT, so an
 // additional check of the name is required
 func isMultiStmt(data *execResponseData) bool {
-	return data.StatementTypeID == statementTypeIDMulti &&
-		data.RowType[0].Name == "multiple statement execution"
+	var isMultistatementByReturningSelect = data.StatementTypeID == statementTypeIDSelect && data.RowType[0].Name == "multiple statement execution"
+	return isMultistatementByReturningSelect || data.StatementTypeID == statementTypeIDMultistatement
 }
 
 func getResumeQueryID(ctx context.Context) (string, error) {
@@ -219,7 +282,8 @@ func getResumeQueryID(ctx context.Context) (string, error) {
 		return strVal, &SnowflakeError{
 			Number:  ErrQueryIDFormat,
 			Message: "Invalid QID",
-			QueryID: strVal}
+			QueryID: strVal,
+		}
 	}
 	return strVal, nil
 }
@@ -230,7 +294,7 @@ func populateChunkDownloader(
 	ctx context.Context,
 	sc *snowflakeConn,
 	data execResponseData) chunkDownloader {
-	if useStreamDownloader(ctx) && data.QueryResultFormat == "json" {
+	if useStreamDownloader(ctx) && resultFormat(data.QueryResultFormat) == jsonFormat {
 		// stream chunk downloading only works for row based data formats, i.e. json
 		fetcher := &httpStreamChunkFetcher{
 			ctx:      ctx,
@@ -246,6 +310,7 @@ func populateChunkDownloader(
 	return &snowflakeChunkDownloader{
 		sc:                 sc,
 		ctx:                ctx,
+		pool:               getAllocator(ctx),
 		CurrentChunk:       make([]chunkRowType, len(data.RowSet)),
 		ChunkMetas:         data.Chunks,
 		Total:              data.Total,
@@ -265,14 +330,56 @@ func populateChunkDownloader(
 	}
 }
 
-func (sc *snowflakeConn) setupOCSPPrivatelink(app string, host string) error {
-	ocspCacheServer := fmt.Sprintf("http://ocsp.%v/ocsp_response_cache.json", host)
+func setupOCSPEnvVars(ctx context.Context, host string) error {
+	host = strings.ToLower(host)
+
+	// only set OCSP envs if not already set
+	if val, set := os.LookupEnv(cacheServerURLEnv); set {
+		logger.WithContext(ctx).Debugf("OCSP Cache Server already set by user for %v: %v\n", host, val)
+		return nil
+	}
+	if isPrivateLink(host) {
+		if err := setupOCSPPrivatelink(ctx, host); err != nil {
+			return err
+		}
+	} else if !strings.HasSuffix(host, defaultDomain) {
+		ocspCacheServer := fmt.Sprintf("http://ocsp.%v/%v", host, cacheFileBaseName)
+		logger.WithContext(ctx).Debugf("OCSP Cache Server for %v: %v\n", host, ocspCacheServer)
+		if err := os.Setenv(cacheServerURLEnv, ocspCacheServer); err != nil {
+			return err
+		}
+	} else {
+		if _, set := os.LookupEnv(cacheServerURLEnv); set {
+			os.Unsetenv(cacheServerURLEnv)
+		}
+	}
+	return nil
+}
+
+func setupOCSPPrivatelink(ctx context.Context, host string) error {
+	ocspCacheServer := fmt.Sprintf("http://ocsp.%v/%v", host, cacheFileBaseName)
+	logger.WithContext(ctx).Debugf("OCSP Cache Server for Privatelink: %v\n", ocspCacheServer)
 	if err := os.Setenv(cacheServerURLEnv, ocspCacheServer); err != nil {
 		return err
 	}
-	ocspRetryHost := fmt.Sprintf("http://ocsp.%v/retry/", host) + "%v/%v"
-	if err := os.Setenv(ocspRetryURLEnv, ocspRetryHost); err != nil {
+	ocspRetryHostTemplate := fmt.Sprintf("http://ocsp.%v/retry/", host) + "%v/%v"
+	logger.WithContext(ctx).Debugf("OCSP Retry URL for Privatelink: %v\n", ocspRetryHostTemplate)
+	if err := os.Setenv(ocspRetryURLEnv, ocspRetryHostTemplate); err != nil {
 		return err
 	}
 	return nil
+}
+
+/**
+ * We can only tell if private link is enabled for certain hosts when the hostname contains the subdomain
+ * 'privatelink.snowflakecomputing.' but we don't have a good way of telling if a private link connection is
+ * expected for internal stages for example.
+ */
+func isPrivateLink(host string) bool {
+	return strings.Contains(strings.ToLower(host), ".privatelink.snowflakecomputing.")
+}
+
+func isStatementContext(ctx context.Context) bool {
+	v := ctx.Value(executionType)
+	return v == executionTypeStatement
 }

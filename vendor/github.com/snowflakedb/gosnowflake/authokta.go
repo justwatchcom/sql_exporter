@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -8,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,27 +19,30 @@ type authOKTARequest struct {
 }
 
 type authOKTAResponse struct {
-	CookieToken string `json:"cookieToken"`
+	CookieToken  string `json:"cookieToken"`
+	SessionToken string `json:"sessionToken"`
 }
 
 /*
 authenticateBySAML authenticates a user by SAML
 SAML Authentication
-1.  query GS to obtain IDP token and SSO url
-2.  IMPORTANT Client side validation:
-	validate both token url and sso url contains same prefix
-	(protocol + host + port) as the given authenticator url.
-	Explanation:
-	This provides a way for the user to 'authenticate' the IDP it is
-	sending his/her credentials to.  Without such a check, the user could
-	be coerced to provide credentials to an IDP impersonator.
-3.  query IDP token url to authenticate and retrieve access token
-4.  given access token, query IDP URL snowflake app to get SAML response
-5.  IMPORTANT Client side validation:
-	validate the post back url come back with the SAML response
-	contains the same prefix as the Snowflake's server url, which is the
-	intended destination url to Snowflake.
+ 1. query GS to obtain IDP token and SSO url
+ 2. IMPORTANT Client side validation:
+    validate both token url and sso url contains same prefix
+    (protocol + host + port) as the given authenticator url.
+    Explanation:
+    This provides a way for the user to 'authenticate' the IDP it is
+    sending his/her credentials to.  Without such a check, the user could
+    be coerced to provide credentials to an IDP impersonator.
+ 3. query IDP token url to authenticate and retrieve access token
+ 4. given access token, query IDP URL snowflake app to get SAML response
+ 5. IMPORTANT Client side validation:
+    validate the post back url come back with the SAML response
+    contains the same prefix as the Snowflake's server url, which is the
+    intended destination url to Snowflake.
+
 Explanation:
+
 	This emulates the behavior of IDP initiated login flow in the user
 	browser where the IDP instructs the browser to POST the SAML
 	assertion to the specific SP endpoint.  This is critical in
@@ -56,6 +57,7 @@ func authenticateBySAML(
 	account string,
 	user string,
 	password string,
+	disableSamlURLCheck ConfigBool,
 ) (samlResponse []byte, err error) {
 	logger.WithContext(ctx).Info("step 1: query GS to obtain IDP token and SSO url")
 	headers := make(map[string]string)
@@ -89,11 +91,10 @@ func authenticateBySAML(
 		return nil, err
 	}
 	if !respd.Success {
-		logger.Errorln("Authentication FAILED")
+		logger.WithContext(ctx).Errorln("Authentication FAILED")
 		sr.TokenAccessor.SetTokens("", "", -1)
 		code, err := strconv.Atoi(respd.Code)
 		if err != nil {
-			code = -1
 			return nil, err
 		}
 		return nil, &SnowflakeError{
@@ -108,8 +109,8 @@ func authenticateBySAML(
 	if tokenURL, err = url.Parse(respd.Data.TokenURL); err != nil {
 		return nil, fmt.Errorf("failed to parse token URL. %v", respd.Data.TokenURL)
 	}
-	if ssoURL, err = url.Parse(respd.Data.TokenURL); err != nil {
-		return nil, fmt.Errorf("failed to parse ssoURL URL. %v", respd.Data.SSOURL)
+	if ssoURL, err = url.Parse(respd.Data.SSOURL); err != nil {
+		return nil, fmt.Errorf("failed to parse SSO URL. %v", respd.Data.SSOURL)
 	}
 	if !isPrefixEqual(oktaURL, ssoURL) || !isPrefixEqual(oktaURL, tokenURL) {
 		return nil, &SnowflakeError{
@@ -135,7 +136,13 @@ func authenticateBySAML(
 	logger.WithContext(ctx).Info("step 4: query IDP URL snowflake app to get SAML response")
 	params = &url.Values{}
 	params.Add("RelayState", "/some/deep/link")
-	params.Add("onetimetoken", respa.CookieToken)
+	var oneTimeToken string
+	if respa.SessionToken != "" {
+		oneTimeToken = respa.SessionToken
+	} else {
+		oneTimeToken = respa.CookieToken
+	}
+	params.Add("onetimetoken", oneTimeToken)
 
 	headers = make(map[string]string)
 	headers[httpHeaderAccept] = "*/*"
@@ -143,20 +150,22 @@ func authenticateBySAML(
 	if err != nil {
 		return nil, err
 	}
-	logger.WithContext(ctx).Info("step 5: validate post_back_url matches Snowflake URL")
-	tgtURL, err := postBackURL(bd)
-	if err != nil {
-		return nil, err
-	}
+	if disableSamlURLCheck == ConfigBoolFalse {
+		logger.WithContext(ctx).Info("step 5: validate post_back_url matches Snowflake URL")
+		tgtURL, err := postBackURL(bd)
+		if err != nil {
+			return nil, err
+		}
 
-	fullURL := sr.getURL()
-	logger.WithContext(ctx).Infof("tgtURL: %v, origURL: %v", tgtURL, fullURL)
-	if !isPrefixEqual(tgtURL, fullURL) {
-		return nil, &SnowflakeError{
-			Number:      ErrCodeSSOURLNotMatch,
-			SQLState:    SQLStateConnectionRejected,
-			Message:     errMsgSSOURLNotMatch,
-			MessageArgs: []interface{}{tgtURL, fullURL},
+		fullURL := sr.getURL()
+		logger.WithContext(ctx).Infof("tgtURL: %v, origURL: %v", tgtURL, fullURL)
+		if !isPrefixEqual(tgtURL, fullURL) {
+			return nil, &SnowflakeError{
+				Number:      ErrCodeSSOURLNotMatch,
+				SQLState:    SQLStateConnectionRejected,
+				Message:     errMsgSSOURLNotMatch,
+				MessageArgs: []interface{}{tgtURL, fullURL},
+			}
 		}
 	}
 	return bd, nil
@@ -203,11 +212,11 @@ func postAuthSAML(
 	data *authResponse, err error) {
 
 	params := &url.Values{}
-	params.Add(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
+	params.Set(requestIDKey, getOrGenerateRequestIDFromContext(ctx).String())
 	fullURL := sr.getFullURL(authenticatorRequestPath, params)
 
-	logger.Infof("fullURL: %v", fullURL)
-	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, true)
+	logger.WithContext(ctx).Infof("fullURL: %v", fullURL)
+	resp, err := sr.FuncPost(ctx, sr, fullURL, headers, body, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +248,7 @@ func postAuthSAML(
 			MessageArgs: []interface{}{resp.StatusCode, fullURL},
 		}
 	}
-	_, err = ioutil.ReadAll(resp.Body)
+	_, err = io.ReadAll(resp.Body)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
@@ -260,12 +269,12 @@ func postAuthOKTA(
 	fullURL string,
 	timeout time.Duration) (
 	data *authOKTAResponse, err error) {
-	logger.Infof("fullURL: %v", fullURL)
+	logger.WithContext(ctx).Infof("fullURL: %v", fullURL)
 	targetURL, err := url.Parse(fullURL)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := sr.FuncPost(ctx, sr, targetURL, headers, body, timeout, false)
+	resp, err := sr.FuncPost(ctx, sr, targetURL, headers, body, timeout, defaultTimeProvider, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -279,9 +288,9 @@ func postAuthOKTA(
 		}
 		return &respd, nil
 	}
-	_, err = ioutil.ReadAll(resp.Body)
+	_, err = io.ReadAll(resp.Body)
 	if err != nil {
-		logger.Errorf("failed to extract HTTP response body. err: %v", err)
+		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err
 	}
 	logger.WithContext(ctx).Infof("HTTP: %v, URL: %v", resp.StatusCode, fullURL)
@@ -313,7 +322,7 @@ func getSSO(
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.WithContext(ctx).Errorf("failed to extract HTTP response body. err: %v", err)
 		return nil, err

@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -9,8 +7,10 @@ import (
 	"time"
 )
 
-var timezones map[int]*time.Location
-var updateTimezoneMutex *sync.Mutex
+var (
+	timezones           map[int]*time.Location
+	updateTimezoneMutex *sync.Mutex
+)
 
 // Location returns an offset (minutes) based Location object for Snowflake database.
 func Location(offset int) *time.Location {
@@ -86,4 +86,19 @@ func init() {
 		logger.Debugf("offset: %v", i)
 		timezones[i] = genTimezone(i)
 	}
+}
+
+// retrieve current location based on connection
+func getCurrentLocation(params map[string]*string) *time.Location {
+	loc := time.Now().Location()
+	var err error
+	paramsMutex.Lock()
+	if tz, ok := params["timezone"]; ok && tz != nil {
+		loc, err = time.LoadLocation(*tz)
+		if err != nil {
+			loc = time.Now().Location()
+		}
+	}
+	paramsMutex.Unlock()
+	return loc
 }

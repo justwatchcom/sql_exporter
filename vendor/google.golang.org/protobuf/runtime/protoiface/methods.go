@@ -39,6 +39,9 @@ type Methods = struct {
 
 	// CheckInitialized returns an error if any required fields in the message are not set.
 	CheckInitialized func(CheckInitializedInput) (CheckInitializedOutput, error)
+
+	// Equal compares two messages and returns EqualOutput.Equal == true if they are equal.
+	Equal func(EqualInput) EqualOutput
 }
 
 // SupportFlags indicate support for optional features.
@@ -103,6 +106,7 @@ type UnmarshalInput = struct {
 		FindExtensionByName(field protoreflect.FullName) (protoreflect.ExtensionType, error)
 		FindExtensionByNumber(message protoreflect.FullName, field protoreflect.FieldNumber) (protoreflect.ExtensionType, error)
 	}
+	Depth int
 }
 
 // UnmarshalOutput is output from the Unmarshal method.
@@ -164,4 +168,19 @@ type CheckInitializedInput = struct {
 // CheckInitializedOutput is output from the CheckInitialized method.
 type CheckInitializedOutput = struct {
 	pragma.NoUnkeyedLiterals
+}
+
+// EqualInput is input to the Equal method.
+type EqualInput = struct {
+	pragma.NoUnkeyedLiterals
+
+	MessageA protoreflect.Message
+	MessageB protoreflect.Message
+}
+
+// EqualOutput is output from the Equal method.
+type EqualOutput = struct {
+	pragma.NoUnkeyedLiterals
+
+	Equal bool
 }

@@ -1,4 +1,5 @@
 config.yaml
 config.yml
 sql_exporter
+sql-exporter
 *.tar.gz

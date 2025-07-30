@@ -1,6 +1,6 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
+
+import "errors"
 
 type queryStatus string
 
@@ -13,10 +13,11 @@ const (
 	QueryFailed queryStatus = "queryFailed"
 )
 
-// SnowflakeResult provides the associated query ID
+// SnowflakeResult provides an API for methods exposed to the clients
 type SnowflakeResult interface {
 	GetQueryID() string
 	GetStatus() queryStatus
+	GetArrowBatches() ([]*ArrowBatch, error)
 }
 
 type snowflakeResult struct {
@@ -50,6 +51,13 @@ func (res *snowflakeResult) GetStatus() queryStatus {
 	return res.status
 }
 
+func (res *snowflakeResult) GetArrowBatches() ([]*ArrowBatch, error) {
+	return nil, &SnowflakeError{
+		Number:  ErrNotImplemented,
+		Message: errMsgNotImplemented,
+	}
+}
+
 func (res *snowflakeResult) waitForAsyncExecStatus() error {
 	// if async exec, block until execution is finished
 	if res.status == QueryStatusInProgress {
@@ -64,4 +72,20 @@ func (res *snowflakeResult) waitForAsyncExecStatus() error {
 		return res.err
 	}
 	return nil
+}
+
+type snowflakeResultNoRows struct {
+	queryID string
+}
+
+func (*snowflakeResultNoRows) LastInsertId() (int64, error) {
+	return 0, errors.New("no LastInsertId available")
+}
+
+func (*snowflakeResultNoRows) RowsAffected() (int64, error) {
+	return 0, errors.New("no RowsAffected available")
+}
+
+func (rnr *snowflakeResultNoRows) GetQueryID() string {
+	return rnr.queryID
 }

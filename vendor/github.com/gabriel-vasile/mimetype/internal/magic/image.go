@@ -4,7 +4,11 @@ import "bytes"
 
 var (
 	// Png matches a Portable Network Graphics file.
+	// https://www.w3.org/TR/PNG/
 	Png = prefix([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	// Apng matches an Animated Portable Network Graphics file.
+	// https://wiki.mozilla.org/APNG_Specification
+	Apng = offset([]byte("acTL"), 37)
 	// Jpg matches a Joint Photographic Experts Group file.
 	Jpg = prefix([]byte{0xFF, 0xD8, 0xFF})
 	// Jp2 matches a JPEG 2000 Image file (ISO 15444-1).
@@ -40,6 +44,10 @@ var (
 	Hdr = prefix([]byte("#?RADIANCE\n"))
 	// Xpm matches X PixMap image data.
 	Xpm = prefix([]byte{0x2F, 0x2A, 0x20, 0x58, 0x50, 0x4D, 0x20, 0x2A, 0x2F})
+	// Jxs matches a JPEG XS coded image file (ISO/IEC 21122-3).
+	Jxs = prefix([]byte{0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x53, 0x20, 0x0D, 0x0A, 0x87, 0x0A})
+	// Jxr matches Microsoft HD JXR photo file.
+	Jxr = prefix([]byte{0x49, 0x49, 0xBC, 0x01})
 )
 
 func jpeg2k(sig []byte) Detector {

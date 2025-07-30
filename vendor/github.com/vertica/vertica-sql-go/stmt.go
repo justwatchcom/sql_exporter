@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -304,7 +304,10 @@ func (s *stmt) QueryContextRaw(ctx context.Context, baseArgs []driver.NamedValue
 
 		switch msg := bMsg.(type) {
 		case *msgs.BEDataRowMsg:
-			rows.addRow(msg)
+			err = rows.addRow(msg)
+			if err != nil {
+				return rows, err
+			}
 		case *msgs.BERowDescMsg:
 			rows = newRows(ctx, msg, s.conn.serverTZOffset)
 		case *msgs.BECmdCompleteMsg:
@@ -314,7 +317,10 @@ func (s *stmt) QueryContextRaw(ctx context.Context, baseArgs []driver.NamedValue
 		case *msgs.BEEmptyQueryResponseMsg:
 			return newEmptyRows(), nil
 		case *msgs.BEReadyForQueryMsg, *msgs.BEPortalSuspendedMsg:
-			rows.finalize()
+			err = rows.finalize()
+			if err != nil {
+				return rows, err
+			}
 			return rows, ctx.Err()
 		case *msgs.BEInitSTDINLoadMsg:
 			s.copySTDIN(ctx)
@@ -528,7 +534,10 @@ func (s *stmt) collectResults(ctx context.Context) (*rows, error) {
 
 		switch msg := bMsg.(type) {
 		case *msgs.BEDataRowMsg:
-			rows.addRow(msg)
+			err = rows.addRow(msg)
+			if err != nil {
+				return rows, err
+			}
 		case *msgs.BERowDescMsg:
 			s.lastRowDesc = msg
 			rows = newRows(ctx, s.lastRowDesc, s.conn.serverTZOffset)
@@ -540,7 +549,10 @@ func (s *stmt) collectResults(ctx context.Context) (*rows, error) {
 		case *msgs.BEBindCompleteMsg, *msgs.BECmdDescriptionMsg:
 			continue
 		case *msgs.BEReadyForQueryMsg, *msgs.BEPortalSuspendedMsg, *msgs.BECmdCompleteMsg:
-			rows.finalize()
+			err = rows.finalize()
+			if err != nil {
+				return rows, err
+			}
 			return rows, ctx.Err()
 		case *msgs.BEInitSTDINLoadMsg:
 			s.copySTDIN(ctx)

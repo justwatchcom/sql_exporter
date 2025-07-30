@@ -3,20 +3,22 @@
 // Provides request signing for request that need to be signed with
 // AWS V4 Signatures.
 //
-// Standalone Signer
+// # Standalone Signer
 //
 // Generally using the signer outside of the SDK should not require any additional
-//  The signer does this by taking advantage of the URL.EscapedPath method. If your request URI requires
+//
+//	The signer does this by taking advantage of the URL.EscapedPath method. If your request URI requires
+//
 // additional escaping you many need to use the URL.Opaque to define what the raw URI should be sent
 // to the service as.
 //
 // The signer will first check the URL.Opaque field, and use its value if set.
 // The signer does require the URL.Opaque field to be set in the form of:
 //
-//     "//<hostname>/<path>"
+//	"//<hostname>/<path>"
 //
-//     // e.g.
-//     "//example.com/some/path"
+//	// e.g.
+//	"//example.com/some/path"
 //
 // The leading "//" and hostname are required or the URL.Opaque escaping will
 // not work correctly.
@@ -66,6 +68,9 @@ import (
 const (
 	signingAlgorithm    = "AWS4-HMAC-SHA256"
 	authorizationHeader = "Authorization"
+
+	// Version of signing v4
+	Version = "SigV4"
 )
 
 // HTTPSigner is an interface to a SigV4 signer that can sign HTTP requests
@@ -101,6 +106,11 @@ type SignerOptions struct {
 	// This will enable logging of the canonical request, the string to sign, and for presigning the subsequent
 	// presigned URL.
 	LogSigning bool
+
+	// Disables setting the session token on the request as part of signing
+	// through X-Amz-Security-Token. This is needed for variations of v4 that
+	// present the token elsewhere.
+	DisableSessionToken bool
 }
 
 // Signer applies AWS v4 signing to given request. Use this to sign requests
@@ -134,6 +144,7 @@ type httpSigner struct {
 
 	DisableHeaderHoisting  bool
 	DisableURIPathEscaping bool
+	DisableSessionToken    bool
 }
 
 func (s *httpSigner) Build() (signedRequest, error) {
@@ -252,7 +263,7 @@ func buildAuthorizationHeader(credentialStr, signedHeadersStr, signingSignature 
 // request has no payload you should use the hex encoded SHA-256 of an empty
 // string as the payloadHash value.
 //
-//   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+//	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 //
 // Some services such as Amazon S3 accept alternative values for the payload
 // hash, such as "UNSIGNED-PAYLOAD" for requests where the body will not be
@@ -282,6 +293,7 @@ func (s Signer) SignHTTP(ctx context.Context, credentials aws.Credentials, r *ht
 		Time:                   v4Internal.NewSigningTime(signingTime.UTC()),
 		DisableHeaderHoisting:  options.DisableHeaderHoisting,
 		DisableURIPathEscaping: options.DisableURIPathEscaping,
+		DisableSessionToken:    options.DisableSessionToken,
 		KeyDerivator:           s.keyDerivator,
 	}
 
@@ -311,7 +323,7 @@ func (s Signer) SignHTTP(ctx context.Context, credentials aws.Credentials, r *ht
 // request has no payload you should use the hex encoded SHA-256 of an empty
 // string as the payloadHash value.
 //
-//   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+//	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 //
 // Some services such as Amazon S3 accept alternative values for the payload
 // hash, such as "UNSIGNED-PAYLOAD" for requests where the body will not be
@@ -331,10 +343,10 @@ func (s Signer) SignHTTP(ctx context.Context, credentials aws.Credentials, r *ht
 // parameter is not used by all AWS services, and is most notable used by
 // Amazon S3 APIs.
 //
-//   expires := 20 * time.Minute
-//   query := req.URL.Query()
-//   query.Set("X-Amz-Expires", strconv.FormatInt(int64(expires/time.Second), 10)
-//   req.URL.RawQuery = query.Encode()
+//	expires := 20 * time.Minute
+//	query := req.URL.Query()
+//	query.Set("X-Amz-Expires", strconv.FormatInt(int64(expires/time.Second), 10))
+//	req.URL.RawQuery = query.Encode()
 //
 // This method does not modify the provided request.
 func (s *Signer) PresignHTTP(
@@ -358,6 +370,7 @@ func (s *Signer) PresignHTTP(
 		IsPreSign:              true,
 		DisableHeaderHoisting:  options.DisableHeaderHoisting,
 		DisableURIPathEscaping: options.DisableURIPathEscaping,
+		DisableSessionToken:    options.DisableSessionToken,
 		KeyDerivator:           s.keyDerivator,
 	}
 
@@ -407,8 +420,8 @@ func (s *httpSigner) buildCanonicalHeaders(host string, rule v4Internal.Rule, he
 	headers = append(headers, hostHeader)
 	signed[hostHeader] = append(signed[hostHeader], host)
 
+	const contentLengthHeader = "content-length"
 	if length > 0 {
-		const contentLengthHeader = "content-length"
 		headers = append(headers, contentLengthHeader)
 		signed[contentLengthHeader] = append(signed[contentLengthHeader], strconv.FormatInt(length, 10))
 	}
@@ -416,6 +429,10 @@ func (s *httpSigner) buildCanonicalHeaders(host string, rule v4Internal.Rule, he
 	for k, v := range header {
 		if !rule.IsValid(k) {
 			continue // ignored header
+		}
+		if strings.EqualFold(k, contentLengthHeader) {
+			// prevent signing already handled content-length header.
+			continue
 		}
 
 		lowerCaseKey := strings.ToLower(k)
@@ -443,7 +460,15 @@ func (s *httpSigner) buildCanonicalHeaders(host string, rule v4Internal.Rule, he
 		} else {
 			canonicalHeaders.WriteString(headers[i])
 			canonicalHeaders.WriteRune(colon)
-			canonicalHeaders.WriteString(strings.Join(signed[headers[i]], ","))
+			// Trim out leading, trailing, and dedup inner spaces from signed header values.
+			values := signed[headers[i]]
+			for j, v := range values {
+				cleanedValue := strings.TrimSpace(v4Internal.StripExcessSpaces(v))
+				canonicalHeaders.WriteString(cleanedValue)
+				if j < len(values)-1 {
+					canonicalHeaders.WriteRune(',')
+				}
+			}
 		}
 		canonicalHeaders.WriteRune('\n')
 	}
@@ -488,7 +513,8 @@ func (s *httpSigner) setRequiredSigningFields(headers http.Header, query url.Val
 
 	if s.IsPreSign {
 		query.Set(v4Internal.AmzAlgorithmKey, signingAlgorithm)
-		if sessionToken := s.Credentials.SessionToken; len(sessionToken) > 0 {
+		sessionToken := s.Credentials.SessionToken
+		if !s.DisableSessionToken && len(sessionToken) > 0 {
 			query.Set("X-Amz-Security-Token", sessionToken)
 		}
 
@@ -498,7 +524,7 @@ func (s *httpSigner) setRequiredSigningFields(headers http.Header, query url.Val
 
 	headers[v4Internal.AmzDateKey] = append(headers[v4Internal.AmzDateKey][:0], amzDate)
 
-	if len(s.Credentials.SessionToken) > 0 {
+	if !s.DisableSessionToken && len(s.Credentials.SessionToken) > 0 {
 		headers[v4Internal.AmzSecurityTokenKey] = append(headers[v4Internal.AmzSecurityTokenKey][:0], s.Credentials.SessionToken)
 	}
 }

@@ -70,7 +70,6 @@ func newMIME(
 	mime, extension string,
 	detector magic.Detector,
 	children ...*MIME) *MIME {
-
 	m := &MIME{
 		mime:      mime,
 		extension: extension,
@@ -140,7 +139,7 @@ func (m *MIME) clone(ps map[string]string) *MIME {
 }
 
 // cloneHierarchy creates a clone of m and all its ancestors. The optional MIME
-// parametes are set on the last child of the hierarchy.
+// parameters are set on the last child of the hierarchy.
 func (m *MIME) cloneHierarchy(ps map[string]string) *MIME {
 	ret := m.clone(ps)
 	lastChild := ret

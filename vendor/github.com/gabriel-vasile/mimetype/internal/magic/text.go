@@ -1,16 +1,17 @@
 package magic
 
 import (
-	"bufio"
 	"bytes"
+	"strings"
+	"time"
 
 	"github.com/gabriel-vasile/mimetype/internal/charset"
 	"github.com/gabriel-vasile/mimetype/internal/json"
 )
 
 var (
-	// Html matches a Hypertext Markup Language file.
-	Html = markup(
+	// HTML matches a Hypertext Markup Language file.
+	HTML = markup(
 		[]byte("<!DOCTYPE HTML"),
 		[]byte("<HTML"),
 		[]byte("<HEAD"),
@@ -27,45 +28,44 @@ var (
 		[]byte("<BODY"),
 		[]byte("<BR"),
 		[]byte("<P"),
-		[]byte("<!--"),
 	)
-	// Xml matches an Extensible Markup Language file.
-	Xml = markup([]byte("<?XML"))
+	// XML matches an Extensible Markup Language file.
+	XML = markup([]byte("<?XML"))
 	// Owl2 matches an Owl ontology file.
-	Owl2 = xml(newXmlSig("Ontology", `xmlns="http://www.w3.org/2002/07/owl#"`))
+	Owl2 = xml(newXMLSig("Ontology", `xmlns="http://www.w3.org/2002/07/owl#"`))
 	// Rss matches a Rich Site Summary file.
-	Rss = xml(newXmlSig("rss", ""))
+	Rss = xml(newXMLSig("rss", ""))
 	// Atom matches an Atom Syndication Format file.
-	Atom = xml(newXmlSig("feed", `xmlns="http://www.w3.org/2005/Atom"`))
+	Atom = xml(newXMLSig("feed", `xmlns="http://www.w3.org/2005/Atom"`))
 	// Kml matches a Keyhole Markup Language file.
 	Kml = xml(
-		newXmlSig("kml", `xmlns="http://www.opengis.net/kml/2.2"`),
-		newXmlSig("kml", `xmlns="http://earth.google.com/kml/2.0"`),
-		newXmlSig("kml", `xmlns="http://earth.google.com/kml/2.1"`),
-		newXmlSig("kml", `xmlns="http://earth.google.com/kml/2.2"`),
+		newXMLSig("kml", `xmlns="http://www.opengis.net/kml/2.2"`),
+		newXMLSig("kml", `xmlns="http://earth.google.com/kml/2.0"`),
+		newXMLSig("kml", `xmlns="http://earth.google.com/kml/2.1"`),
+		newXMLSig("kml", `xmlns="http://earth.google.com/kml/2.2"`),
 	)
 	// Xliff matches a XML Localization Interchange File Format file.
-	Xliff = xml(newXmlSig("xliff", `xmlns="urn:oasis:names:tc:xliff:document:1.2"`))
+	Xliff = xml(newXMLSig("xliff", `xmlns="urn:oasis:names:tc:xliff:document:1.2"`))
 	// Collada matches a COLLAborative Design Activity file.
-	Collada = xml(newXmlSig("COLLADA", `xmlns="http://www.collada.org/2005/11/COLLADASchema"`))
+	Collada = xml(newXMLSig("COLLADA", `xmlns="http://www.collada.org/2005/11/COLLADASchema"`))
 	// Gml matches a Geography Markup Language file.
 	Gml = xml(
-		newXmlSig("", `xmlns:gml="http://www.opengis.net/gml"`),
-		newXmlSig("", `xmlns:gml="http://www.opengis.net/gml/3.2"`),
-		newXmlSig("", `xmlns:gml="http://www.opengis.net/gml/3.3/exr"`),
+		newXMLSig("", `xmlns:gml="http://www.opengis.net/gml"`),
+		newXMLSig("", `xmlns:gml="http://www.opengis.net/gml/3.2"`),
+		newXMLSig("", `xmlns:gml="http://www.opengis.net/gml/3.3/exr"`),
 	)
 	// Gpx matches a GPS Exchange Format file.
-	Gpx = xml(newXmlSig("gpx", `xmlns="http://www.topografix.com/GPX/1/1"`))
+	Gpx = xml(newXMLSig("gpx", `xmlns="http://www.topografix.com/GPX/1/1"`))
 	// Tcx matches a Training Center XML file.
-	Tcx = xml(newXmlSig("TrainingCenterDatabase", `xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"`))
+	Tcx = xml(newXMLSig("TrainingCenterDatabase", `xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"`))
 	// X3d matches an Extensible 3D Graphics file.
-	X3d = xml(newXmlSig("X3D", `xmlns:xsd="http://www.w3.org/2001/XMLSchema-instance"`))
+	X3d = xml(newXMLSig("X3D", `xmlns:xsd="http://www.w3.org/2001/XMLSchema-instance"`))
 	// Amf matches an Additive Manufacturing XML file.
-	Amf = xml(newXmlSig("amf", ""))
+	Amf = xml(newXMLSig("amf", ""))
 	// Threemf matches a 3D Manufacturing Format file.
-	Threemf = xml(newXmlSig("model", `xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"`))
+	Threemf = xml(newXMLSig("model", `xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"`))
 	// Xfdf matches a XML Forms Data Format file.
-	Xfdf = xml(newXmlSig("xfdf", `xmlns="http://ns.adobe.com/xfdf/"`))
+	Xfdf = xml(newXMLSig("xfdf", `xmlns="http://ns.adobe.com/xfdf/"`))
 	// VCard matches a Virtual Contact File.
 	VCard = ciPrefix([]byte("BEGIN:VCARD\n"), []byte("BEGIN:VCARD\r\n"))
 	// ICalendar matches a iCalendar file.
@@ -120,7 +120,7 @@ var (
 		[]byte("/usr/bin/env wish"),
 	)
 	// Rtf matches a Rich Text Format file.
-	Rtf = prefix([]byte("{\\rtf1"))
+	Rtf = prefix([]byte("{\\rtf"))
 )
 
 // Text matches a plain text file.
@@ -155,12 +155,14 @@ func Php(raw []byte, limit uint32) bool {
 // JSON matches a JavaScript Object Notation file.
 func JSON(raw []byte, limit uint32) bool {
 	raw = trimLWS(raw)
-	if len(raw) == 0 || (raw[0] != '[' && raw[0] != '{') {
+	// #175 A single JSON string, number or bool is not considered JSON.
+	// JSON objects and arrays are reported as JSON.
+	if len(raw) < 2 || (raw[0] != '[' && raw[0] != '{') {
 		return false
 	}
 	parsed, err := json.Scan(raw)
 	// If the full file content was provided, check there is no error.
-	if len(raw) < int(limit) {
+	if limit == 0 || len(raw) < int(limit) {
 		return err == nil
 	}
 
@@ -226,12 +228,15 @@ func GeoJSON(raw []byte, limit uint32) bool {
 	return false
 }
 
-// NdJSON matches a Newline delimited JSON file.
+// NdJSON matches a Newline delimited JSON file. All complete lines from raw
+// must be valid JSON documents meaning they contain one of the valid JSON data
+// types.
 func NdJSON(raw []byte, limit uint32) bool {
-	lCount := 0
-	sc := bufio.NewScanner(dropLastLine(raw, limit))
-	for sc.Scan() {
-		l := sc.Bytes()
+	lCount, hasObjOrArr := 0, false
+	raw = dropLastLine(raw, limit)
+	var l []byte
+	for len(raw) != 0 {
+		l, raw = scanLine(raw)
 		// Empty lines are allowed in NDJSON.
 		if l = trimRWS(trimLWS(l)); len(l) == 0 {
 			continue
@@ -240,13 +245,16 @@ func NdJSON(raw []byte, limit uint32) bool {
 		if err != nil {
 			return false
 		}
+		if l[0] == '[' || l[0] == '{' {
+			hasObjOrArr = true
+		}
 		lCount++
 	}
 
-	return lCount > 1
+	return lCount > 1 && hasObjOrArr
 }
 
-// Har matches a HAR Spec file.
+// HAR matches a HAR Spec file.
 // Spec: http://www.softwareishard.com/blog/har-12-spec/
 func HAR(raw []byte, limit uint32) bool {
 	s := []byte(`"log"`)
@@ -272,12 +280,12 @@ func HAR(raw []byte, limit uint32) bool {
 	// Skip any whitespace after the colon.
 	raw = trimLWS(raw[1:])
 
-	harJsonTypes := [][]byte{
+	harJSONTypes := [][]byte{
 		[]byte(`"version"`),
 		[]byte(`"creator"`),
 		[]byte(`"entries"`),
 	}
-	for _, t := range harJsonTypes {
+	for _, t := range harJSONTypes {
 		si := bytes.Index(raw, t)
 		if si > -1 {
 			return true
@@ -290,4 +298,84 @@ func HAR(raw []byte, limit uint32) bool {
 // Svg matches a SVG file.
 func Svg(raw []byte, limit uint32) bool {
 	return bytes.Contains(raw, []byte("<svg"))
+}
+
+// Srt matches a SubRip file.
+func Srt(raw []byte, _ uint32) bool {
+	line, raw := scanLine(raw)
+
+	// First line must be 1.
+	if string(line) != "1" {
+		return false
+	}
+	line, raw = scanLine(raw)
+	secondLine := string(line)
+	// Timestamp format (e.g: 00:02:16,612 --> 00:02:19,376) limits secondLine
+	// length to exactly 29 characters.
+	if len(secondLine) != 29 {
+		return false
+	}
+	// Decimal separator of fractional seconds in the timestamps must be a
+	// comma, not a period.
+	if strings.Contains(secondLine, ".") {
+		return false
+	}
+	// Second line must be a time range.
+	ts := strings.Split(secondLine, " --> ")
+	if len(ts) != 2 {
+		return false
+	}
+	const layout = "15:04:05,000"
+	t0, err := time.Parse(layout, ts[0])
+	if err != nil {
+		return false
+	}
+	t1, err := time.Parse(layout, ts[1])
+	if err != nil {
+		return false
+	}
+	if t0.After(t1) {
+		return false
+	}
+
+	line, _ = scanLine(raw)
+	// A third line must exist and not be empty. This is the actual subtitle text.
+	return len(line) != 0
+}
+
+// Vtt matches a Web Video Text Tracks (WebVTT) file. See
+// https://www.iana.org/assignments/media-types/text/vtt.
+func Vtt(raw []byte, limit uint32) bool {
+	// Prefix match.
+	prefixes := [][]byte{
+		{0xEF, 0xBB, 0xBF, 0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x0A}, // UTF-8 BOM, "WEBVTT" and a line feed
+		{0xEF, 0xBB, 0xBF, 0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x0D}, // UTF-8 BOM, "WEBVTT" and a carriage return
+		{0xEF, 0xBB, 0xBF, 0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x20}, // UTF-8 BOM, "WEBVTT" and a space
+		{0xEF, 0xBB, 0xBF, 0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x09}, // UTF-8 BOM, "WEBVTT" and a horizontal tab
+		{0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x0A},                   // "WEBVTT" and a line feed
+		{0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x0D},                   // "WEBVTT" and a carriage return
+		{0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x20},                   // "WEBVTT" and a space
+		{0x57, 0x45, 0x42, 0x56, 0x54, 0x54, 0x09},                   // "WEBVTT" and a horizontal tab
+	}
+	for _, p := range prefixes {
+		if bytes.HasPrefix(raw, p) {
+			return true
+		}
+	}
+
+	// Exact match.
+	return bytes.Equal(raw, []byte{0xEF, 0xBB, 0xBF, 0x57, 0x45, 0x42, 0x56, 0x54, 0x54}) || // UTF-8 BOM and "WEBVTT"
+		bytes.Equal(raw, []byte{0x57, 0x45, 0x42, 0x56, 0x54, 0x54}) // "WEBVTT"
+}
+
+// dropCR drops a terminal \r from the data.
+func dropCR(data []byte) []byte {
+	if len(data) > 0 && data[len(data)-1] == '\r' {
+		return data[0 : len(data)-1]
+	}
+	return data
+}
+func scanLine(b []byte) (line, remainder []byte) {
+	line, remainder, _ = bytes.Cut(b, []byte("\n"))
+	return dropCR(line), remainder
 }

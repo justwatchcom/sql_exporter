@@ -1,5 +1,3 @@
-// Copyright (c) 2021-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -32,43 +30,43 @@ func (sc *snowflakeConn) handleMultiExec(
 	ctx context.Context,
 	data execResponseData) (
 	driver.Result, error) {
+	if data.ResultIDs == "" {
+		return nil, (&SnowflakeError{
+			Number:   ErrNoResultIDs,
+			SQLState: data.SQLState,
+			Message:  errMsgNoResultIDs,
+			QueryID:  data.QueryID,
+		}).exceptionTelemetry(sc)
+	}
 	var updatedRows int64
 	childResults := getChildResults(data.ResultIDs, data.ResultTypes)
 	for _, child := range childResults {
 		resultPath := fmt.Sprintf(urlQueriesResultFmt, child.id)
-		childData, err := sc.getQueryResultResp(ctx, resultPath)
+		childResultType, err := strconv.ParseInt(child.typ, 10, 64)
 		if err != nil {
-			logger.Errorf("error: %v", err)
-			code, err := strconv.Atoi(childData.Code)
+			return nil, err
+		}
+		if isDml(childResultType) {
+			childData, err := sc.getQueryResultResp(ctx, resultPath)
 			if err != nil {
+				logger.WithContext(ctx).Errorf("error: %v", err)
 				return nil, err
 			}
-			if childData != nil {
+			if childData != nil && !childData.Success {
+				code, err := strconv.Atoi(childData.Code)
+				if err != nil {
+					return nil, err
+				}
 				return nil, (&SnowflakeError{
 					Number:   code,
 					SQLState: childData.Data.SQLState,
-					Message:  err.Error(),
+					Message:  childData.Message,
 					QueryID:  childData.Data.QueryID,
 				}).exceptionTelemetry(sc)
 			}
-			return nil, err
-		}
-		if isDml(childData.Data.StatementTypeID) {
 			count, err := updateRows(childData.Data)
 			if err != nil {
 				logger.WithContext(ctx).Errorf("error: %v", err)
-				if childData != nil {
-					code, err := strconv.Atoi(childData.Code)
-					if err != nil {
-						return nil, err
-					}
-					return nil, (&SnowflakeError{
-						Number:   code,
-						SQLState: childData.Data.SQLState,
-						Message:  err.Error(),
-						QueryID:  childData.Data.QueryID,
-					}).exceptionTelemetry(sc)
-				}
 				return nil, err
 			}
 			updatedRows += count
@@ -78,7 +76,7 @@ func (sc *snowflakeConn) handleMultiExec(
 	return &snowflakeResult{
 		affectedRows: updatedRows,
 		insertID:     -1,
-		queryID:      sc.QueryID,
+		queryID:      data.QueryID,
 	}, nil
 }
 
@@ -88,6 +86,14 @@ func (sc *snowflakeConn) handleMultiQuery(
 	ctx context.Context,
 	data execResponseData,
 	rows *snowflakeRows) error {
+	if data.ResultIDs == "" {
+		return (&SnowflakeError{
+			Number:   ErrNoResultIDs,
+			SQLState: data.SQLState,
+			Message:  errMsgNoResultIDs,
+			QueryID:  data.QueryID,
+		}).exceptionTelemetry(sc)
+	}
 	childResults := getChildResults(data.ResultIDs, data.ResultTypes)
 	for _, child := range childResults {
 		if err := sc.rowsForRunningQuery(ctx, child.id, rows); err != nil {

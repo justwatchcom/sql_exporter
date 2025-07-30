@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2021 Micro Focus or one of its affiliates.
+// Copyright (c) 2019-2023 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ import (
 	"database/sql/driver"
 	"encoding/binary"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -83,8 +84,8 @@ func (t *_tlsConfigs) get(name string) (*tls.Config, bool) {
 
 var tlsConfigs = &_tlsConfigs{m: make(map[string]*tls.Config)}
 
-//  db, err := sql.Open("vertica", "user@tcp(localhost:3306)/test?tlsmode=custom")
-//  reserved modes: 'server', 'server-strict' or 'none'
+// db, err := sql.Open("vertica", "user@tcp(localhost:3306)/test?tlsmode=custom")
+// reserved modes: 'server', 'server-strict' or 'none'
 func RegisterTLSConfig(name string, config *tls.Config) error {
 	if name == tlsModeServer || name == tlsModeServerStrict || name == tlsModeNone {
 		return fmt.Errorf("config name '%s' is reserved therefore cannot be used", name)
@@ -107,9 +108,12 @@ type connection struct {
 	connHostsList    []string
 	scratch          [512]byte
 	sessionID        string
+	autocommit       string
+	oauthaccesstoken string
 	serverTZOffset   string
 	dead             bool // used if a ROLLBACK severity error is encountered
 	sessMutex        sync.Mutex
+	workload         string
 }
 
 // Begin - Begin starts and returns a new transaction. (DEPRECATED)
@@ -216,12 +220,26 @@ func newConnection(connString string) (*connection, error) {
 	}
 
 	result.clientPID = os.Getpid()
-	result.sessionID = fmt.Sprintf("%s-%s-%d-%d", driverName, driverVersion, result.clientPID, time.Now().Unix())
+	if client_label := result.connURL.Query().Get("client_label"); client_label != "" {
+		result.sessionID = client_label
+	} else {
+		result.sessionID = fmt.Sprintf("%s-%s-%d-%d", driverName, driverVersion, result.clientPID, time.Now().Unix())
+	}
 
 	// Read the interpolate flag.
 	if iFlag := result.connURL.Query().Get("use_prepared_statements"); iFlag != "" {
 		result.usePreparedStmts = iFlag == "1"
 	}
+
+	// Read Autocommit flag.
+	if iFlag := result.connURL.Query().Get("autocommit"); iFlag == "" || iFlag == "1" {
+		result.autocommit = "on"
+	} else {
+		result.autocommit = "off"
+	}
+
+	// Read OAuth access token flag.
+	result.oauthaccesstoken = result.connURL.Query().Get("oauth_access_token")
 
 	// Read connection load balance flag.
 	loadBalanceFlag := result.connURL.Query().Get("connection_load_balance")
@@ -231,7 +249,7 @@ func newConnection(connString string) (*connection, error) {
 	if backupHostsStr == "" {
 		result.connHostsList = []string{result.connURL.Host}
 	} else {
-		// Parse comma-seperated list of backup host-port pairs
+		// Parse comma-separated list of backup host-port pairs
 		hosts := strings.Split(backupHostsStr, ",")
 		// Push target host to front of the hosts list
 		result.connHostsList = append([]string{result.connURL.Host}, hosts...)
@@ -242,6 +260,9 @@ func newConnection(connString string) (*connection, error) {
 	if sslFlag == "" {
 		sslFlag = tlsModeNone
 	}
+
+	// Read Workload flag
+	result.workload = result.connURL.Query().Get("workload")
 
 	result.conn, err = result.establishSocketConnection()
 
@@ -277,18 +298,33 @@ func (v *connection) establishSocketConnection() (net.Conn, error) {
 	// Failover: loop to try all hosts in the list
 	err_msg := ""
 	for i := 0; i < len(v.connHostsList); i++ {
-		// net.Dial will resolve the host to multiple IP addresses,
-		// and try each IP address in order until one succeeds.
-		conn, err := net.Dial("tcp", v.connHostsList[i])
+		host, port, err := net.SplitHostPort(v.connHostsList[i])
 		if err != nil {
+			// no host-port pair identified
 			err_msg += fmt.Sprintf("\n  '%s': %s", v.connHostsList[i], err.Error())
-		} else {
-			if len(err_msg) != 0 {
-				connectionLogger.Debug("Failed to establish a connection to %s", err_msg)
+			continue
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			// failed to resolve any IPs from host
+			err_msg += fmt.Sprintf("\n  '%s': %s", host, err.Error())
+			continue
+		}
+		r := rand.New(rand.NewSource(time.Now().Unix()))
+		for _, j := range r.Perm(len(ips)) {
+			// j comes from random permutation of indexes - ips[j] will access a random resolved ip
+			addrString := net.JoinHostPort(ips[j].String(), port) // IPv6 returns "[host]:port"
+			conn, err := net.Dial("tcp", addrString)
+			if err != nil {
+				err_msg += fmt.Sprintf("\n  '%s': %s", v.connHostsList[i], err.Error())
+			} else {
+				if len(err_msg) != 0 {
+					connectionLogger.Debug("Failed to establish a connection to %s", err_msg)
+				}
+				connectionLogger.Debug("Established socket connection to %s", addrString)
+				v.connHostsList = v.connHostsList[i:]
+				return conn, err
 			}
-			connectionLogger.Debug("Established socket connection to %s", v.connHostsList[i])
-			v.connHostsList = v.connHostsList[i:]
-			return conn, err
 		}
 	}
 	// All of the hosts failed
@@ -355,9 +391,16 @@ func (v *connection) sendMessageTo(msg msgs.FrontEndMsg, conn net.Conn) error {
 
 		_, result = conn.Write(sizeBytes)
 
-		if result == nil {
-			if len(msgBytes) > 0 {
-				_, result = conn.Write(msgBytes)
+		if result == nil && len(msgBytes) > 0 {
+			size := 8192 // Max msg size, consistent with how the server works
+			pos := 0
+			var sent int
+			for pos < len(msgBytes) {
+				sent, result = conn.Write(msgBytes[pos:min(pos+size, len(msgBytes))])
+				if result != nil {
+					break
+				}
+				pos += sent
 			}
 		}
 	}
@@ -371,32 +414,41 @@ func (v *connection) sendMessageTo(msg msgs.FrontEndMsg, conn net.Conn) error {
 	return result
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (v *connection) handshake() error {
 
-	if v.connURL.User == nil {
-		return fmt.Errorf("connection string must include a user name")
+	if v.connURL.User == nil && len(v.oauthaccesstoken) == 0 {
+		return fmt.Errorf("connection string must include a user name or oauth_access_token")
 	}
 
 	userName := v.connURL.User.Username()
 
-	if len(userName) == 0 {
-		return fmt.Errorf("connection string must have a non-empty user name")
+	if len(userName) == 0 && len(v.oauthaccesstoken) == 0 {
+		return fmt.Errorf("connection string must have a non-empty user name or oauth_access_token")
 	}
 
-	if len(v.connURL.Path) <= 1 {
-		return fmt.Errorf("connection string must include a database name")
+	dbName := ""
+	if len(v.connURL.Path) > 1 {
+		dbName = v.connURL.Path[1:]
 	}
-
-	path := v.connURL.Path[1:]
 
 	msg := &msgs.FEStartupMsg{
-		ProtocolVersion: protocolVersion,
-		DriverName:      driverName,
-		DriverVersion:   driverVersion,
-		Username:        userName,
-		Database:        path,
-		SessionID:       v.sessionID,
-		ClientPID:       v.clientPID,
+		ProtocolVersion:  protocolVersion,
+		DriverName:       driverName,
+		DriverVersion:    driverVersion,
+		Username:         userName,
+		Database:         dbName,
+		SessionID:        v.sessionID,
+		ClientPID:        v.clientPID,
+		Autocommit:       v.autocommit,
+		OAuthAccessToken: v.oauthaccesstoken,
+		Workload:         v.workload,
 	}
 
 	if err := v.sendMessage(msg); err != nil {
@@ -460,11 +512,21 @@ func (v *connection) initializeSession() error {
 		return fmt.Errorf("can't get server timezone: %s", str)
 	}
 
-	v.serverTZOffset = str[len(str)-3:]
+	v.serverTZOffset = getTimeZoneOffset(str)
 
-	connectionLogger.Debug("Setting server timezone offset to %s", str[len(str)-3:])
+	connectionLogger.Debug("Setting server timezone offset to %s", v.serverTZOffset)
 
 	return nil
+}
+
+func getTimeZoneOffset(str string) string {
+	for i := len(str) - 1; i >= 0 && i >= len(str)-8; i-- {
+		ch := str[i]
+		if ch == '+' || ch == '-' {
+			return str[i:]
+		}
+	}
+	return "+00"
 }
 
 func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {
@@ -484,6 +546,8 @@ func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {
 			err = v.authSendMD5Password(msg.ExtraAuthData)
 		case common.AuthenticationSHA512Password:
 			err = v.authSendSHA512Password(msg.ExtraAuthData)
+		case common.AuthenticationOAuth:
+			err = v.authSendOAuthAccessToken()
 		default:
 			handled = false
 			err = fmt.Errorf("unsupported authentication scheme: %d", msg.Response)
@@ -670,6 +734,11 @@ func (v *connection) authSendSHA512Password(extraAuthData []byte) error {
 
 	msg := &msgs.FEPasswordMsg{PasswordData: hash2}
 
+	return v.sendMessage(msg)
+}
+
+func (v *connection) authSendOAuthAccessToken() error {
+	msg := &msgs.FEPasswordMsg{PasswordData: v.oauthaccesstoken}
 	return v.sendMessage(msg)
 }
 
