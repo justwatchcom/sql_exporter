@@ -85,26 +85,22 @@ func main() {
 
 						if connection.conn != nil {
 							if err := connection.conn.Ping(); err != nil {
-								// if any of the connections fails to be established/verified, fail the /healthz request
-								http.Error(w, err.Error(), http.StatusInternalServerError)
-								return
+								continue
 							}
-							// otherwise we've successfully verified the connection, continue to the next one
-							continue
-						}
-
-						if err := connection.connect(job); err != nil {
-							// if any of the connections fails to be established, fail the /healthz request
-							http.Error(w, err.Error(), http.StatusInternalServerError)
+							// if we meet at least one successful connection we consider the app healthy
+							http.Error(w, "OK", http.StatusOK)
 							return
 						}
 
+						if err := connection.connect(job); err == nil {
+							// if we meet at least one successful connection we consider the app healthy
+							http.Error(w, "OK", http.StatusOK)
+							return
+						}
 					}
 				}
-
-				// otherwise return OK
-				http.Error(w, "OK", http.StatusOK)
-
+				// no successful connections found, fail the /healthz request
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 			})
 	} else {
 		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "OK", http.StatusOK) })
