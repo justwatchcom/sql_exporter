@@ -66,6 +66,8 @@ func (q *Query) Run(conn *connection) error {
 		if q.AllowZeroRows {
 			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(0.0)
 		} else {
+			failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+			failedQueryCounter.WithLabelValues(q.jobName, q.Name).Inc()
 			return fmt.Errorf("zero rows returned")
 		}
 	}

@@ -90,9 +90,13 @@ The following connection parameters are supported:
     is 60 seconds. The login request gives up after the timeout length if the
     HTTP response is success.
 
+  - requestTimeout: Specifies the timeout, in seconds, for a query to complete.
+    0 (zero) specifies that the driver should wait indefinitely. The default is 0 seconds.
+    The query request gives up after the timeout length if the HTTP response is success.
+
   - authenticator: Specifies the authenticator to use for authenticating user credentials:
 
-  - To use the internal Snowflake authenticator, specify snowflake (Default).
+  - To use the internal Snowflake authenticator, specify snowflake (Default). If you want to cache your MFA logins, use AuthTypeUsernamePasswordMFA authenticator.
 
   - To authenticate through Okta, specify https://<okta_account_name>.okta.com (URL prefix for Okta).
 
@@ -102,9 +106,11 @@ The following connection parameters are supported:
 
   - application: Identifies your application to Snowflake Support.
 
-  - insecureMode: false by default. Set to true to bypass the Online
+  - disableOCSPChecks: false by default. Set to true to bypass the Online
     Certificate Status Protocol (OCSP) certificate revocation check.
     IMPORTANT: Change the default value for testing or emergency situations only.
+
+  - insecureMode: deprecated. Use disableOCSPChecks instead.
 
   - token: a token that can be used to authenticate. Should be used in conjunction with the "oauth" authenticator.
 
@@ -126,6 +132,8 @@ The following connection parameters are supported:
   - clientConfigFile: specifies the location of the client configuration json file.
     In this file you can configure Easy Logging feature.
 
+  - disableSamlURLCheck: disables the SAML URL check. Default value is false.
+
 All other parameters are interpreted as session parameters (https://docs.snowflake.com/en/sql-reference/parameters.html).
 For example, the TIMESTAMP_OUTPUT_FORMAT session parameter can be set by adding:
 
@@ -142,6 +150,32 @@ Session-level parameters can also be set by using the SQL command "ALTER SESSION
 (https://docs.snowflake.com/en/sql-reference/sql/alter-session.html).
 
 Alternatively, use OpenWithConfig() function to create a database handle with the specified Config.
+
+# Connection Config
+
+You can also connect to your warehouse using the connection config. The dbSql library states that when you want to take advantage of driver-specific connection features that aren’t
+available in a connection string. Each driver supports its own set of connection properties, often providing ways to customize the connection request specific to the DBMS
+For example:
+
+	c := &gosnowflake.Config{
+		~your credentials go here~
+	}
+	connector := gosnowflake.NewConnector(gosnowflake.SnowflakeDriver{}, *c)
+	db := sql.OpenDB(connector)
+
+If you are using this method, you dont need to pass a driver name to specify the driver type in which
+you are looking to connect. Since the driver name is not needed, you can optionally bypass driver registration
+on startup. To do this, set `GOSNOWFLAKE_SKIP_REGISTERATION` in your environment. This is useful you wish to
+register multiple verions of the driver.
+
+Note: `GOSNOWFLAKE_SKIP_REGISTERATION` should not be used if sql.Open() is used as the method
+to connect to the server, as sql.Open will require registration so it can map the driver name
+to the driver type, which in this case is "snowflake" and SnowflakeDriver{}.
+
+You can load the connnection configuration with .toml file format.
+With two environment variables, `SNOWFLAKE_HOME` (`connections.toml` file directory) and `SNOWFLAKE_DEFAULT_CONNECTION_NAME` (DSN name),
+the driver will search the config file and load the connection. You can find how to use this connection way at ./cmd/tomlfileconnection
+or Snowflake doc: https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/connecting/specify-credentials
 
 # Proxy
 
@@ -166,6 +200,18 @@ Users can use SetLogger in driver.go to set a customized logger for gosnowflake 
 
 In order to enable debug logging for the driver, user could use SetLogLevel("debug") in SFLogger interface
 as shown in demo code at cmd/logger.go. To redirect the logs SFlogger.SetOutput method could do the work.
+
+If you want to define S3 client logging, override S3LoggingMode variable using configuration: https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#ClientLogMode
+Example:
+
+	    import (
+	      sf "github.com/snowflakedb/gosnowflake"
+	      "github.com/aws/aws-sdk-go-v2/aws"
+	    )
+
+	    ...
+
+		sf.S3LoggingMode = aws.LogRequest | aws.LogResponseWithBody | aws.LogRetries
 
 # Query tag
 
@@ -212,6 +258,32 @@ For execs:
 		result.(SnowflakeResult).GetQueryID()
 		stmt.(SnowflakeStmt).GetQueryID()
 		return nil
+	}
+
+```
+
+# Fetch Results by Query ID
+
+The result of your query can be retrieved by setting the query ID in the WithFetchResultByID context.
+```
+
+	// Get the query ID using raw connection as mentioned above:
+	err := conn.Raw(func(x any) error {
+		rows1, err = x.(driver.QueryerContext).QueryContext(ctx, "SELECT 1", nil)
+		queryID = rows1.(sf.SnowflakeRows).GetQueryID()
+		return nil
+	}
+
+	// Update the Context object to specify the query ID
+	fetchResultByIDCtx = sf.WithFetchResultByID(ctx, queryID)
+
+	// Execute an empty string query
+	rows2, err := db.QueryContext(fetchResultByIDCtx, "")
+
+	// Retrieve the results as usual
+	for rows2.Next()  {
+		err = rows2.Scan(...)
+		...
 	}
 
 ```
@@ -341,11 +413,13 @@ data types. The columns are:
     -------------------------------------------------------------------------------------------------------------------
     BINARY               | []byte                                      | string                 | []byte
     -------------------------------------------------------------------------------------------------------------------
-    ARRAY                | string                                      | string
+    ARRAY [6]            | string / array                              | string / array
     -------------------------------------------------------------------------------------------------------------------
-    OBJECT               | string                                      | string
+    OBJECT [6]           | string / struct                             | string / struct
     -------------------------------------------------------------------------------------------------------------------
     VARIANT              | string                                      | string
+    -------------------------------------------------------------------------------------------------------------------
+    MAP                  | map                                         | map
 
     [1] Converting from a higher precision data type to a lower precision data type via the snowflakeRows.Scan()
     method can lose low bits (lose precision), lose high bits (completely change the value), or result in error.
@@ -362,7 +436,155 @@ data types. The columns are:
     [5] You cannot directly Scan() into the alternative data types via snowflakeRows.Scan(), but can convert to
     those data types by using .Float32()/.String()/.Float64() methods. For an example, see below.
 
+    [6] Arrays and objects can be either semistructured or structured, see more info in section below.
+
 Note: SQL NULL values are converted to Golang nil values, and vice-versa.
+
+# Semistructured and structured types
+
+Snowflake supports two flavours of "structured data" - semistructured and structured.
+Semistructured types are variants, objects and arrays without schema.
+When data is fetched, it's represented as strings and the client is responsible for its interpretation.
+Example table definition:
+
+	CREATE TABLE semistructured (v VARIANT, o OBJECT, a ARRAY)
+
+The data not have any corresponding schema, so values in table may be slightly different.
+
+Semistuctured variants, objects and arrays are always represented as strings for scanning:
+
+	rows, err := db.Query("SELECT {'a': 'b'}::OBJECT")
+	// handle error
+	defer rows.Close()
+	rows.Next()
+	var v string
+	err := rows.Scan(&v)
+
+When inserting, a marker indicating correct type must be used, for example:
+
+	db.Exec("CREATE TABLE test_object_binding (obj OBJECT)")
+	db.Exec("INSERT INTO test_object_binding SELECT (?)", DataTypeObject, "{'s': 'some string'}")
+
+Structured types differentiate from semistructured types by having specific schema.
+In all rows of the table, values must conform to this schema.
+Example table definition:
+
+	CREATE TABLE structured (o OBJECT(s VARCHAR, i INTEGER), a ARRAY(INTEGER), m MAP(VARCHAR, BOOLEAN))
+
+To retrieve structured objects, follow these steps:
+
+1. Create a struct implementing sql.Scanner interface, example:
+
+a)
+
+	type simpleObject struct {
+		s string
+		i int32
+	}
+
+	func (so *simpleObject) Scan(val any) error {
+		st := val.(StructuredObject)
+		var err error
+		if so.s, err = st.GetString("s"); err != nil {
+			return err
+		}
+		if so.i, err = st.GetInt32("i"); err != nil {
+			return err
+		}
+		return nil
+	}
+
+b)
+
+	type simpleObject struct {
+		S string `sf:"otherName"`
+		I int32 `sf:"i,ignore"`
+	}
+
+	func (so *simpleObject) Scan(val any) error {
+		st := val.(StructuredObject)
+		return st.ScanTo(so)
+	}
+
+Automatic scan goes through all fields in a struct and read object fields.
+Struct fields have to be public.
+Embedded structs have to be pointers.
+Matching name is built using struct field name with first letter lowercase.
+Additionally, `sf` tag can be added:
+- first value is always a name of a field in an SQL object
+- additionally `ignore` parameter can be passed to omit this field
+
+2. Use WithStructuredTypesEnabled context while querying data.
+3. Use it in regular scan:
+
+	var res simpleObject
+	err := rows.Scan(&res)
+
+See StructuredObject for all available operations including null support, embedding nested structs, etc.
+
+Retrieving array of simple types works exactly the same like normal values - using Scan function.
+
+You can use WithMapValuesNullable and WithArrayValuesNullable contexts to handle null values in, respectively, maps
+and arrays of simple types in the database. In that case, sql null types will be used:
+
+	ctx := WithArrayValuesNullable(WithStructuredTypesEnabled(context.Background))
+	...
+	var res []sql.NullBool
+	err := rows.Scan(&res)
+
+If you want to scan array of structs, you have to use a helper function ScanArrayOfScanners:
+
+	var res []*simpleObject
+	err := rows.Scan(ScanArrayOfScanners(&res))
+
+Retrieving structured maps is very similar to retrieving arrays:
+
+	var res map[string]*simpleObject
+	err := rows.Scan(ScanMapOfScanners(&res))
+
+To bind structured objects use:
+
+1. Create a type which implements a StructuredObjectWriter interface, example:
+
+a)
+
+	type simpleObject struct {
+		s string
+		i int32
+	}
+
+	func (so *simpleObject) Write(sowc StructuredObjectWriterContext) error {
+		if err := sowc.WriteString("s", so.s); err != nil {
+			return err
+		}
+		if err := sowc.WriteInt32("i", so.i); err != nil {
+			return err
+		}
+		return nil
+	}
+
+b)
+
+	type simpleObject struct {
+		S string `sf:"otherName"`
+		I int32 `sf:"i,ignore"`
+	}
+
+	func (so *simpleObject) Write(sowc StructuredObjectWriterContext) error {
+		return sowc.WriteAll(so)
+	}
+
+2. Use an instance as regular bind.
+3. If you need to bind nil value, use special syntax:
+
+	db.Exec('INSERT INTO some_table VALUES ?', sf.DataTypeNilObject, reflect.TypeOf(simpleObject{})
+
+Binding structured arrays are like any other parameter.
+The only difference is - if you want to insert empty array (not nil but empty), you have to use:
+
+	db.Exec('INSERT INTO some_table VALUES ?', sf.DataTypeEmptyArray, reflect.TypeOf(simpleObject{}))
+
+# Using higher precision numbers
 
 The following example shows how to retrieve very large values using the math/big
 package. This example retrieves a large INTEGER value to an interface and then
@@ -429,6 +651,107 @@ of the returned value:
 	    }
 	}
 
+# Arrow batches
+
+You can retrieve data in a columnar format similar to the format a server returns, without transposing them to rows.
+When working with the arrow columnar format in go driver, ArrowBatch structs are used. These are structs
+mostly corresponding to data chunks received from the backend. They allow for access to specific arrow.Record structs.
+
+An ArrowBatch can exist in a state where the underlying data has not yet been loaded. The data is downloaded and
+translated only on demand. Translation options are retrieved from a context.Context interface, which is either
+passed from query context or set by the user using WithContext(ctx) method.
+
+In order to access them you must use `WithArrowBatches` context, similar to the following:
+
+	    var rows driver.Rows
+		err = conn.Raw(func(x interface{}) error {
+			rows, err = x.(driver.QueryerContext).QueryContext(ctx, query, nil)
+			return err
+		})
+
+		...
+
+		batches, err := rows.(sf.SnowflakeRows).GetArrowBatches()
+
+		... // use Arrow records
+
+This returns []*ArrowBatch.
+
+ArrowBatch functions:
+
+GetRowCount():
+Returns the number of rows in the ArrowBatch. Note that this returns 0 if the data has not yet been loaded,
+irrespective of it’s actual size.
+
+WithContext(ctx context.Context):
+Sets the context of the ArrowBatch to the one provided. Note that the context will not retroactively apply to data
+that has already been downloaded. For example:
+
+	records1, _ := batch.Fetch()
+	records2, _ := batch.WithContext(ctx).Fetch()
+
+will produce the same result in records1 and records2, irrespective of the newly provided ctx. Context worth noting are:
+-WithArrowBatchesTimestampOption
+-WithHigherPrecision
+-WithArrowBatchesUtf8Validation
+described in more detail later.
+
+Fetch():
+Returns the underlying records as *[]arrow.Record. When this function is called, the ArrowBatch checks whether
+the underlying data has already been loaded, and downloads it if not.
+
+Limitations:
+
+ 1. For some queries Snowflake may decide to return data in JSON format (examples: `SHOW PARAMETERS` or `ls @stage`). You cannot use JSON with Arrow batches context. See alternative below.
+ 2. Snowflake handles timestamps in a range which is broader than available space in Arrow timestamp type. Because of that special treatment should be used (see below).
+ 3. When using numbers, Snowflake chooses the smallest type that covers all values in a batch. So even when your column is NUMBER(38, 0), if all values are 8bits, array.Int8 is used.
+
+How to handle timestamps in Arrow batches:
+
+Snowflake returns timestamps natively (from backend to driver) in multiple formats.
+The Arrow timestamp is an 8-byte data type, which is insufficient to handle the larger date and time ranges used by Snowflake.
+Also, Snowflake supports 0-9 (nanosecond) digit precision for seconds, while Arrow supports only 3 (millisecond), 6 (microsecond), an 9 (nanosecond) precision.
+Consequently, Snowflake uses a custom timestamp format in Arrow, which differs on timestamp type and precision.
+
+If you want to use timestamps in Arrow batches, you have two options:
+
+ 1. The Go driver can reduce timestamp struct into simple Arrow Timestamp, if you set `WithArrowBatchesTimestampOption` to nanosecond, microsecond, millisecond or second.
+    For nanosecond, some timestamp values might not fit into Arrow timestamp. E.g after year 2262 or before 1677.
+ 2. You can use native Snowflake values. In that case you will receive complex structs as described above. To transform Snowflake values into the Golang time.Time struct you can use `ArrowSnowflakeTimestampToTime`.
+    To enable this feature, you must use `WithArrowBatchesTimestampOption` context with value set to`UseOriginalTimestamp`.
+
+How to handle invalid UTF-8 characters in Arrow batches:
+
+Snowflake previously allowed users to upload data with invalid UTF-8 characters. Consequently, Arrow records containing string columns in Snowflake could include these invalid UTF-8 characters.
+However, according to the Arrow specifications (https://arrow.apache.org/docs/cpp/api/datatype.html
+and https://github.com/apache/arrow/blob/a03d957b5b8d0425f9d5b6c98b6ee1efa56a1248/go/arrow/datatype.go#L73-L74),
+Arrow string columns should only contain UTF-8 characters.
+
+To address this issue and prevent potential downstream disruptions, the context WithArrowBatchesUtf8Validation, is introduced.
+When enabled, this feature iterates through all values in string columns, identifying and replacing any invalid characters with `�`.
+This ensures that Arrow records conform to the UTF-8 standards, preventing validation failures in downstream services like the Rust Arrow library that impose strict validation checks.
+
+How to handle higher precision in Arrow batches:
+
+To preserve BigDecimal values within Arrow batches, use WithHigherPrecision.
+This offers two main benefits: it helps avoid precision loss and defers the conversion to upstream services.
+Alternatively, without this setting, all non-zero scale numbers will be converted to float64, potentially resulting in loss of precision.
+Zero-scale numbers (DECIMAL256, DECIMAL128) will be converted to int64, which could lead to overflow.
+WHen using NUMBERs with non zero scale, the value is returned as an integer type and a scale is provided in record metadata.
+Example. When we have a 123.45 value that comes from NUMBER(9, 4), it will be represented as 1234500 with scale equal to 4. It is a client responsibility to interpret it correctly.
+Also - see limitations section above.
+
+How to handle JSON responses in Arrow batches:
+
+Due to technical limitations Snowflake backend may return JSON even if client expects Arrow.
+In that case Arrow batches are not available and the error with code ErrNonArrowResponseInArrowBatches is returned.
+The response is parsed to regular rows.
+You can read rows in a way described in transform_batches_to_rows.go example.
+This has a very strong limitation though - this is a very low level API (Go driver API), so there are no conversions ready.
+All values are returned as strings.
+Alternative approach is to rerun a query, but without enabling Arrow batches and use a general Go SQL API instead of driver API.
+It can be optimized by using `WithRequestID`, so backend returns results from cache.
+
 # Binding Parameters
 
 Binding allows a SQL statement to use a value that is stored in a Golang variable.
@@ -478,7 +801,7 @@ binds arrays to the parameters in the INSERT statement.
 	_, err = db.Exec("insert into my_table values (?, ?, ?, ?)", Array(&intArray), Array(&fltArray), Array(&boolArray), Array(&strArray))
 
 If the array contains SQL NULL values, use slice []interface{}, which allows Golang nil values.
-This feature is available in version 1.6.12 (and later) of the driver. For exmaple,
+This feature is available in version 1.6.12 (and later) of the driver. For example,
 
 	 	// Define the arrays containing the data to insert.
 	 	strArray := make([]interface{}, 3)
@@ -506,7 +829,7 @@ This feature is available in version 1.6.12 (and later) of the driver. For exmap
 		}
 
 For slices []interface{} containing time.Time values, a binding parameter flag is required for the preceding array variable in the Array() function.
-This feature is available in version 1.6.13 (and later) of the driver. For exmaple,
+This feature is available in version 1.6.13 (and later) of the driver. For example,
 
 	_, err = db.Exec("create or replace table my_table(c1 timestamp_ntz, c2 timestamp_ltz)")
 	_, err = db.Exec("insert into my_table values (?,?)", Array(&ntzArray, sf.TimestampNTZType), Array(&ltzArray, sf.TimestampLTZType))
@@ -917,7 +1240,7 @@ See the following for information on the syntax and supported parameters:
   - PUT: https://docs.snowflake.com/en/sql-reference/sql/put.html
   - GET: https://docs.snowflake.com/en/sql-reference/sql/get.html
 
-## Using PUT
+Using PUT:
 
 The following example shows how to run a PUT command by passing a string to the
 db.Query() function:
@@ -953,7 +1276,7 @@ To send information from a stream (rather than a file) use code similar to the c
 
 Note: PUT statements are not supported for multi-statement queries.
 
-## Using GET
+Using GET:
 
 The following example shows how to run a GET command by passing a string to the
 db.Query() function:
@@ -965,7 +1288,20 @@ an absolute path rather than a relative path. For example:
 
 	db.Query("GET @~ file:///tmp/my_data_file auto_compress=false overwrite=false")
 
-## Specifying temporary directory for encryption and compression
+To download a file into an in-memory stream (rather than a file) use code similar to the code below.
+
+	var streamBuf bytes.Buffer
+	ctx := WithFileTransferOptions(context.Background(), &SnowflakeFileTransferOptions{GetFileToStream: true})
+	ctx = WithFileGetStream(ctx, &streamBuf)
+
+	sql := "get @~/data1.txt.gz file:///tmp/testData"
+	dbt.mustExecContext(ctx, sql)
+	// streamBuf is now filled with the stream. Use bytes.NewReader(streamBuf.Bytes()) to read uncompressed stream or
+	// use gzip.NewReader(&streamBuf) for to read compressed stream.
+
+Note: GET statements are not supported for multi-statement queries.
+
+Specifying temporary directory for encryption and compression:
 
 Putting and getting requires compression and/or encryption, which is done in the OS temporary directory.
 If you cannot use default temporary directory for your OS or you want to specify it yourself, you can use "tmpDirPath" DSN parameter.
@@ -974,9 +1310,20 @@ Example:
 
 	u:p@a.r.c.snowflakecomputing.com/db/s?account=a.r.c&tmpDirPath=%2Fother%2Ftmp
 
-## Using custom configuration for PUT/GET
+Using custom configuration for PUT/GET:
 
 If you want to override some default configuration options, you can use `WithFileTransferOptions` context.
 There are multiple config parameters including progress bars or compression.
+
+# Surfacing errors originating from PUT and GET commands
+
+Default behaviour is to propagate the potential underlying errors encountered during executing calls associated with the PUT or GET commands to the caller, for increased awareness and easier handling or troubleshooting them.
+
+The behaviour is governed by the `RaisePutGetError` flag on `SnowflakeFileTransferOptions` (default: `true`)
+
+If you wish to ignore those errors instead, you can set `RaisePutGetError: false`. Example snippet:
+
+	ctx := WithFileTransferOptions(context.Background(), &SnowflakeFileTransferOptions{RaisePutGetError: false})
+	db.ExecContext(ctx, "PUT ...")
 */
 package gosnowflake

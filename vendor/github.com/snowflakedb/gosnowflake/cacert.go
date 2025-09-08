@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 // caRootPEM includes a snapshot of root CAs downloaded from https://curl.haxx.se/ca/cacert.pem

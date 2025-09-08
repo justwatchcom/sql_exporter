@@ -1,5 +1,3 @@
-// Copyright (c) 2017-2022 Snowflake Computing Inc. All rights reserved.
-
 package gosnowflake
 
 import (
@@ -15,8 +13,10 @@ const (
 )
 
 type execBindParameter struct {
-	Type  string      `json:"type"`
-	Value interface{} `json:"value"`
+	Type   string         `json:"type"`
+	Value  interface{}    `json:"value"`
+	Format string         `json:"fmt,omitempty"`
+	Schema *bindingSchema `json:"schema,omitempty"`
 }
 
 type execRequest struct {
@@ -47,13 +47,36 @@ type contextData struct {
 }
 
 type execResponseRowType struct {
-	Name       string `json:"name"`
-	ByteLength int64  `json:"byteLength"`
-	Length     int64  `json:"length"`
-	Type       string `json:"type"`
-	Precision  int64  `json:"precision"`
-	Scale      int64  `json:"scale"`
-	Nullable   bool   `json:"nullable"`
+	Name       string          `json:"name"`
+	Fields     []fieldMetadata `json:"fields"`
+	ByteLength int64           `json:"byteLength"`
+	Length     int64           `json:"length"`
+	Type       string          `json:"type"`
+	Precision  int64           `json:"precision"`
+	Scale      int64           `json:"scale"`
+	Nullable   bool            `json:"nullable"`
+}
+
+func (ex *execResponseRowType) toFieldMetadata() fieldMetadata {
+	return fieldMetadata{
+		ex.Name,
+		ex.Type,
+		ex.Nullable,
+		int(ex.Length),
+		int(ex.Scale),
+		int(ex.Precision),
+		ex.Fields,
+	}
+}
+
+type fieldMetadata struct {
+	Name      string          `json:"name,omitempty"`
+	Type      string          `json:"type"`
+	Nullable  bool            `json:"nullable"`
+	Length    int             `json:"length"`
+	Scale     int             `json:"scale"`
+	Precision int             `json:"precision"`
+	Fields    []fieldMetadata `json:"fields,omitempty"`
 }
 
 type execResponseChunk struct {
@@ -83,6 +106,8 @@ type execResponseStageInfo struct {
 	Creds                 execResponseCredentials `json:"creds,omitempty"`
 	PresignedURL          string                  `json:"presignedUrl,omitempty"`
 	EndPoint              string                  `json:"endPoint,omitempty"`
+	UseS3RegionalURL      bool                    `json:"useS3RegionalUrl,omitempty"`
+	UseRegionalURL        bool                    `json:"useRegionalUrl,omitempty"`
 }
 
 // make all data field optional
