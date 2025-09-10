@@ -651,7 +651,7 @@ func (c *connection) connect(job *Job) error {
 				}
 				c.tokenExpirationTime = time.Now().Add(time.Hour)
 			}
-			
+
 			db, err := sqlx.Open("snowflake", c.snowflakeDSN)
 			if err != nil {
 				return fmt.Errorf("failed to open Snowflake connection: %w (host: %s)", err, c.host)
