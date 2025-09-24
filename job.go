@@ -14,6 +14,8 @@ import (
 	"encoding/pem"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
 	"github.com/cenkalti/backoff"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -28,9 +30,6 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
-
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
 )
 
 var (
@@ -104,7 +103,7 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 		q.desc = prometheus.NewDesc(
 			name,
 			help,
-			append(q.Labels, "driver", "host", "database", "user", "col"),
+			append(q.Labels, GetLabelsForSQLGauges()...),
 			prometheus.Labels{
 				"sql_job": j.Name,
 			},
@@ -316,7 +315,7 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "You cannot use exclude and include:", "url", conn, "err", err)
 						return
 					} else {
-						extractedPath := u.Path //save pattern
+						extractedPath := u.Path // save pattern
 						u.Path = "/postgres"
 						dsn := u.String()
 						databases, err := listDatabases(dsn)
@@ -569,7 +568,7 @@ func (j *Job) runOnceConnection(conn *connection, done chan int) {
 
 func (j *Job) markFailed(conn *connection) {
 	for _, q := range j.Queries {
-		failedScrapes.WithLabelValues(conn.driver, conn.host, conn.database, conn.user, q.jobName, q.Name).Set(1.0)
+		failedScrapes.WithLabelValues(FilteredLabelValuesForFailedScrapes(conn, q)...).Set(1.0)
 	}
 }
 

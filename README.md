@@ -114,6 +114,9 @@ For a more realistic example please have a look at [examples/kubernetes/configma
 
 ```yaml
 ---
+# redacted_labels contains the list of standard labels you can hide from the generated
+# metrics, it supports the values: "host", "database", "user"
+redacted_labels: []
 # jobs is a map of jobs, define any number but please keep the connection usage on the DBs in mind
 jobs:
   # each job needs a unique name, it's used for logging and as a default label
