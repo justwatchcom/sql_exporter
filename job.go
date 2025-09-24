@@ -2,6 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"github.com/cloudflare/certinel/fswatcher"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,10 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
 	"github.com/go-kit/log"
@@ -65,6 +69,10 @@ func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 // Init will initialize the metric descriptors
 func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	j.log = log.With(logger, "job", j.Name)
+	// Initialize mTLS setup with default filesystem implementation
+	if j.mtlsSetup == nil {
+		j.mtlsSetup = NewFilesystemMTLSSetup()
+	}
 	// register each query as an metric
 	for _, q := range j.Queries {
 		if q == nil {
@@ -112,6 +120,32 @@ func (j *Job) Init(logger log.Logger, queries map[string]string) error {
 	}
 	j.updateConnections()
 	return nil
+}
+
+// configureClickHouseTLS configures TLS for ClickHouse connections
+func (j *Job) configureClickHouseTLS(conn string, originalURL string) TLSConfigResult {
+	if !strings.Contains(conn, "tls_config=spiffe") {
+		return TLSConfigResult{ModifiedURL: originalURL}
+	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	if err := j.mtlsSetup.SetupMTLS(j, tlsConfig); err != nil {
+		return TLSConfigResult{Error: err}
+	}
+
+	parsedDSN, err := url.Parse(originalURL)
+	if err != nil {
+		return TLSConfigResult{Error: err}
+	}
+	q := parsedDSN.Query()
+	q.Del("tls_config")
+	parsedDSN.RawQuery = q.Encode()
+
+	return TLSConfigResult{
+		TLSConfig:   tlsConfig,
+		ModifiedURL: parsedDSN.String(),
+	}
 }
 
 func (j *Job) updateConnections() {
@@ -395,16 +429,25 @@ func (j *Job) updateConnections() {
 					continue
 				}
 			}
+			// Configure ClickHouse TLS if needed
+			if strings.Contains(newConn.driver, "clickhouse") {
+				tlsResult := j.configureClickHouseTLS(conn, newConn.url)
+				if tlsResult.Error != nil {
+					level.Error(j.log).Log("msg", "Failed to configure ClickHouse TLS", "connection", conn, "err", tlsResult.Error)
+					continue
+				}
+				newConn.tlsConfig = tlsResult.TLSConfig
+				newConn.url = tlsResult.ModifiedURL
+			}
 			if newConn.driver == "snowflake" {
 				u, err := url.Parse(conn)
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to parse Snowflake URL", "url", conn, "err", err)
 					continue
 				}
-			
+
 				queryParams := u.Query()
 				privateKeyPath := os.ExpandEnv(queryParams.Get("private_key_file"))
-			
 				cfg := &gosnowflake.Config{
 					Account:  u.Host,
 					User:     u.User.Username(),
@@ -412,7 +455,7 @@ func (j *Job) updateConnections() {
 					Database: queryParams.Get("database"),
 					Schema:   queryParams.Get("schema"),
 				}
-			
+
 				if privateKeyPath != "" {
 					// RSA key auth
 					keyBytes, err := os.ReadFile(privateKeyPath)
@@ -420,13 +463,13 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to read private key file", "path", privateKeyPath, "err", err)
 						continue
 					}
-			
+
 					keyBlock, _ := pem.Decode(keyBytes)
 					if keyBlock == nil {
 						level.Error(j.log).Log("msg", "Failed to decode PEM block", "path", privateKeyPath)
 						continue
 					}
-			
+
 					var privateKey *rsa.PrivateKey
 					if parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); err == nil {
 						privateKey, _ = parsedKey.(*rsa.PrivateKey)
@@ -436,16 +479,16 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to parse private key", "err", err)
 						continue
 					}
-			
+
 					cfg.Authenticator = gosnowflake.AuthTypeJwt
 					cfg.PrivateKey = privateKey
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with RSA", "err", err)
 						continue
 					}
-			
+
 					newConn.snowflakeConfig = cfg
 					newConn.snowflakeDSN = dsn
 					newConn.host = u.Host
@@ -460,20 +503,20 @@ func (j *Job) updateConnections() {
 							cfg.Port = port
 						}
 					}
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with password", "err", err)
 						continue
 					}
-			
+
 					newConn.conn, err = sqlx.Open("snowflake", dsn)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "err", err)
 						continue
 					}
 				}
-			
+
 				j.conns = append(j.conns, newConn)
 				continue
 			}
@@ -492,14 +535,14 @@ func (j *Job) ExecutePeriodically() {
 	}
 }
 
-func (j *Job) runOnceConnection(conn *connection, done chan int) {
+func (j *Job) runOnceConnection(ctx context.Context, conn *connection, done chan int) {
 	updated := 0
 	defer func() {
 		done <- updated
 	}()
 
 	// connect to DB if not connected already
-	if err := conn.connect(j); err != nil {
+	if err := conn.connect(ctx, j); err != nil {
 		level.Warn(j.log).Log("msg", "Failed to connect", "err", err, "host", conn.host)
 		j.markFailed(conn)
 		// we don't have the query name yet.
@@ -588,9 +631,17 @@ func (j *Job) Run() {
 func (j *Job) runOnce() error {
 	doneChan := make(chan int, len(j.conns))
 
+	// Create context with timeout for database operations
+	timeout := j.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second // default timeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	// execute queries for each connection in parallel
 	for _, conn := range j.conns {
-		go j.runOnceConnection(conn, doneChan)
+		go j.runOnceConnection(ctx, conn, doneChan)
 	}
 
 	// connections now run in parallel, wait for and collect results
@@ -605,7 +656,7 @@ func (j *Job) runOnce() error {
 	return nil
 }
 
-func (c *connection) connect(job *Job) error {
+func (c *connection) connect(ctx context.Context, job *Job) error {
 	// already connected
 	if c.conn != nil {
 		if strings.HasPrefix(c.url, "rds-mysql://") && time.Now().After(c.tokenExpirationTime) {
@@ -651,40 +702,53 @@ func (c *connection) connect(job *Job) error {
 				}
 				c.tokenExpirationTime = time.Now().Add(time.Hour)
 			}
-	
+
 			db, err := sqlx.Open("snowflake", c.snowflakeDSN)
 			if err != nil {
 				return fmt.Errorf("failed to open Snowflake connection: %w (host: %s)", err, c.host)
 			}
-	
+
 			db.SetMaxOpenConns(1)
 			db.SetMaxIdleConns(0)
 			db.SetConnMaxLifetime(30 * time.Minute)
-	
-			if err := db.Ping(); err != nil {
+
+			if err := db.PingContext(ctx); err != nil {
 				db.Close()
 				return fmt.Errorf("failed to ping Snowflake: %w (host: %s)", err, c.host)
 			}
-	
+
 			c.conn = db
 			return nil
 		}
+	}
+
+	// Handle all ClickHouse connections (both TLS and non-TLS)
+	if strings.Contains(c.driver, "clickhouse") {
+		conn, err := c.connectClickHouse(ctx, job)
+		if err != nil {
+			return err
+		}
+		c.conn = conn
+	return nil
 	}
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
 		dsn = strings.TrimPrefix(dsn, "rds-mysql://")
-	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
-		dsn = strings.TrimPrefix(dsn, "clickhouse+")
-		c.driver = "clickhouse"
-	case "clickhouse": // Backward compatible alias
-		dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
 	}
 	conn, err := sqlx.Connect(c.driver, dsn)
 	if err != nil {
 		return err
 	}
+
+	// Configure connection and execute startup SQL
+	c.conn = c.configureConnection(conn, job)
+	return nil
+}
+
+// configureConnection sets up connection pool settings and executes StartupSQL
+func (c *connection) configureConnection(conn *sqlx.DB, job *Job) *sqlx.DB {
 	// be nice and don't use up too many connections for mere metrics
 	conn.SetMaxOpenConns(1)
 	conn.SetMaxIdleConns(1)
@@ -699,7 +763,108 @@ func (c *connection) connect(job *Job) error {
 		conn.MustExec(query)
 	}
 
-	c.conn = conn
+	return conn
+}
+
+func (c *connection) connectClickHouse(ctx context.Context, job *Job) (*sqlx.DB, error) {
+	// Normalize driver and URL based on the original driver type
+	// Use local variables to avoid mutating the connection struct
+	dsn := c.url
+	driver := c.driver // Local copy to avoid mutation
+
+	switch c.driver {
+	case "clickhouse+tcp", "clickhouse+http", "clickhouse+https":
+		dsn = strings.TrimPrefix(dsn, "clickhouse+")
+		driver = "clickhouse" // Use local variable instead of mutating c.driver
+	case "clickhouse":
+		// Backward compatible alias - add tcp:// prefix if not present
+		if !strings.HasPrefix(dsn, "tcp://") && !strings.HasPrefix(dsn, "http://") && !strings.HasPrefix(dsn, "https://") {
+			dsn = "tcp://" + strings.TrimPrefix(dsn, "clickhouse://")
+		}
+	}
+
+	// If we have a custom TLS config or need to use ClickHouse-specific features, use OpenDB
+	if c.tlsConfig != nil || strings.Contains(dsn, "tls_config=") {
+		return c.connectClickHouseWithOpenDB(ctx, job, dsn)
+	}
+
+	// For simple connections without custom TLS, use the standard sqlx.Connect approach
+	conn, err := sqlx.Connect(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to ClickHouse: %w", err)
+	}
+
+	// Test the connection
+	if err := conn.PingContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
+	}
+
+	// Configure connection pool settings and execute StartupSQL
+	conn = c.configureConnection(conn, job)
+
+	level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse", "host", c.host)
+	return conn, nil
+}
+
+func (c *connection) connectClickHouseWithOpenDB(ctx context.Context, job *Job, dsn string) (*sqlx.DB, error) {
+	level.Debug(job.log).Log("msg", "Connecting to ClickHouse with OpenDB", "dsn", dsn)
+
+	// Parse the DSN to extract connection details
+	options, err := clickhouse.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ClickHouse DSN: %w", err)
+	}
+
+	options.TLS = c.tlsConfig
+
+	// Create connection using ClickHouse OpenDB
+	db := clickhouse.OpenDB(options)
+	if db == nil {
+		return nil, fmt.Errorf("failed to create ClickHouse connection")
+	}
+
+	// Wrap with sqlx
+	conn := sqlx.NewDb(db, "clickhouse")
+
+	// Test the connection
+	if err := conn.PingContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
+	}
+
+	// Configure connection pool settings and execute StartupSQL
+	conn = c.configureConnection(conn, job)
+
+	if c.tlsConfig != nil {
+		level.Info(job.log).Log("msg", "Successfully connected to ClickHouse with custom TLS", "host", c.host)
+	} else {
+		level.Debug(job.log).Log("msg", "Successfully connected to ClickHouse with OpenDB", "host", c.host)
+	}
+	return conn, nil
+}
+
+// SetupMTLS implements the MTLSSetup interface for filesystem-based certificates
+func (f *FilesystemMTLSSetup) SetupMTLS(job *Job, tlsConfig *tls.Config) error {
+	if _, err := os.Stat(job.MTLSIdentity.CertPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("certificate file %s doesn't exist: %w", job.MTLSIdentity.CertPath, err)
+	}
+	certWatcher, err := fswatcher.New(
+		job.MTLSIdentity.CertPath,
+		job.MTLSIdentity.KeyPath,
+	)
+	if err != nil {
+		return fmt.Errorf("could not set up identity cert watcher: %w", err)
+	}
+	go func() {
+		level.Info(job.log).Log("msg", "watching ClickHouse TLS client certificate", "certfile", job.MTLSIdentity.CertPath, "keyfile", job.MTLSIdentity.KeyPath)
+		err := certWatcher.Start(context.Background())
+		if err != nil {
+			level.Error(job.log).Log("msg", "cert watcher error", "err", err)
+			os.Exit(1)
+		}
+	}()
+	tlsConfig.GetClientCertificate = certWatcher.GetClientCertificate
 	return nil
 }
 

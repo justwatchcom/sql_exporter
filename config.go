@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -142,10 +143,38 @@ func (c *cronConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+// MTLSIdentity allows to configure which TLS certificate will be presented by
+// the client when connecting to the database server
+type MTLSIdentity struct {
+	CertPath string `yaml:"cert_path"`
+	KeyPath  string `yaml:"key_path"`
+}
+
+// MTLSSetup interface for dependency injection of mTLS setup logic
+type MTLSSetup interface {
+	SetupMTLS(job *Job, tlsConfig *tls.Config) error
+}
+
+// FilesystemMTLSSetup implements MTLSSetup using filesystem-based certificates
+type FilesystemMTLSSetup struct{}
+
+// NewFilesystemMTLSSetup creates a new filesystem-based mTLS setup
+func NewFilesystemMTLSSetup() MTLSSetup {
+	return &FilesystemMTLSSetup{}
+}
+
+// TLSConfigResult holds the result of TLS configuration
+type TLSConfigResult struct {
+	TLSConfig   *tls.Config
+	ModifiedURL string
+	Error       error
+}
+
 // Job is a collection of connections and queries
 type Job struct {
 	log          log.Logger
 	conns        []*connection
+	mtlsSetup    MTLSSetup     // Injectable dependency for mTLS setup
 	Name         string        `yaml:"name"`          // name of this job
 	KeepAlive    bool          `yaml:"keepalive"`     // keep connection between runs?
 	Interval     time.Duration `yaml:"interval"`      // interval at which this job is run
@@ -154,6 +183,8 @@ type Job struct {
 	Queries      []*Query      `yaml:"queries"`
 	StartupSQL   []string      `yaml:"startup_sql"` // SQL executed on startup
 	Iterator     Iterator      `yaml:"iterator"`    // Iterator configuration
+	MTLSIdentity MTLSIdentity  `yaml:"mtls_identity"`
+	Timeout      time.Duration `yaml:"timeout"` // timeout for database operations (default: 30s)
 }
 
 type connection struct {
@@ -165,8 +196,9 @@ type connection struct {
 	user                string
 	tokenExpirationTime time.Time
 	iteratorValues      []string
-    	snowflakeConfig *gosnowflake.Config
-    	snowflakeDSN    string
+	snowflakeConfig     *gosnowflake.Config
+	snowflakeDSN        string
+	tlsConfig           *tls.Config
 }
 
 // Query is an SQL query that is executed on a connection
