@@ -28,4 +28,4 @@ RUN chmod 0755 /usr/bin/sql_exporter
 
 USER prom
 
-CMD ["sql_exporter"]
+ENTRYPOINT ["sql_exporter"]
