@@ -1,4 +1,35 @@
 # Changelog
+## 1.9.3
+
+### Bug fixes
+
+* Fix parsing of ADO connection strings with double-quoted values containing semicolons (#282)
+
+## 1.9.2
+
+### Bug fixes
+
+* Fix race condition in message queue query model (#277)
+
+## 1.9.1
+
+### Bug fixes
+
+* Fix bulk insert failure with datetime values near midnight due to day overflow (#271)
+* Fix: apply guidConversion option in TestBulkcopy (#255)
+
+### Features
+
+* support configuring custom time.Location for datetime encoding and decoding via DSN (#260)
+* Implement support for the latest Azure credential types in the azuread package (#269)
+
+## 1.8.2
+
+### Bug fixes
+
+* Added "Pwd" as a recognized alias for "Password" in connection strings (#262)
+* Updated `isProc` to detect more keywords
+
 ## 1.7.0
 
 ### Changed

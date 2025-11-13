@@ -84,7 +84,23 @@ const (
 	Pipe                   = "pipe"
 	MultiSubnetFailover    = "multisubnetfailover"
 	NoTraceID              = "notraceid"
+	GuidConversion         = "guid conversion"
+	Timezone               = "timezone"
 )
+
+type EncodeParameters struct {
+	// Properly convert GUIDs, using correct byte endianness
+	GuidConversion bool
+	// Timezone is the timezone to use for encoding and decoding datetime values.
+	Timezone *time.Location
+}
+
+func (e EncodeParameters) GetTimezone() *time.Location {
+	if e.Timezone == nil {
+		return time.UTC
+	}
+	return e.Timezone
+}
 
 type Config struct {
 	Port       uint64
@@ -141,6 +157,8 @@ type Config struct {
 	// When true, no connection id or trace id value is sent in the prelogin packet.
 	// Some cloud servers may block connections that lack such values.
 	NoTraceID bool
+	// Parameters related to type encoding
+	Encoding EncodeParameters
 }
 
 func readDERFile(filename string) ([]byte, error) {
@@ -293,6 +311,9 @@ func Parse(dsn string) (Config, error) {
 	p := Config{
 		ProtocolParameters: map[string]interface{}{},
 		Protocols:          []string{},
+		Encoding: EncodeParameters{
+			Timezone: time.UTC,
+		},
 	}
 
 	activityid, uerr := uuid.NewRandom()
@@ -315,6 +336,15 @@ func Parse(dsn string) (Config, error) {
 			return p, fmt.Errorf("invalid log parameter '%s': %s", strlog, err.Error())
 		}
 		p.LogFlags = Log(flags)
+	}
+
+	tz, ok := params[Timezone]
+	if ok {
+		location, err := time.LoadLocation(tz)
+		if err != nil {
+			return p, fmt.Errorf("invalid timezone '%s': %s", tz, err.Error())
+		}
+		p.Encoding.Timezone = location
 	}
 
 	p.Database = params[Database]
@@ -525,6 +555,20 @@ func Parse(dsn string) (Config, error) {
 			p.NoTraceID = notraceid
 		}
 	}
+
+	guidConversion, ok := params[GuidConversion]
+	if ok {
+		var err error
+		p.Encoding.GuidConversion, err = strconv.ParseBool(guidConversion)
+		if err != nil {
+			f := "invalid guid conversion '%s': %s"
+			return p, fmt.Errorf(f, guidConversion, err.Error())
+		}
+	} else {
+		// set to false for backward compatibility
+		p.Encoding.GuidConversion = false
+	}
+
 	return p, nil
 }
 
@@ -585,6 +629,15 @@ func (p Config) URL() *url.URL {
 	if p.ColumnEncryption {
 		q.Add("columnencryption", "true")
 	}
+
+	if p.Encoding.GuidConversion {
+		q.Add(GuidConversion, strconv.FormatBool(p.Encoding.GuidConversion))
+	}
+
+	if tz := p.Encoding.Timezone; tz != nil && tz != time.UTC {
+		q.Add(Timezone, tz.String())
+	}
+
 	if len(q) > 0 {
 		res.RawQuery = q.Encode()
 	}
@@ -601,13 +654,14 @@ var adoSynonyms = map[string]string{
 	"addr":                      Server,
 	"user":                      UserID,
 	"uid":                       UserID,
+	"pwd":                       Password,
 	"initial catalog":           Database,
 	"column encryption setting": "columnencryption",
 }
 
 func splitConnectionString(dsn string) (res map[string]string) {
 	res = map[string]string{}
-	parts := strings.Split(dsn, ";")
+	parts := splitAdoConnectionStringParts(dsn)
 	for _, part := range parts {
 		if len(part) == 0 {
 			continue
@@ -620,6 +674,12 @@ func splitConnectionString(dsn string) (res map[string]string) {
 		var value string = ""
 		if len(lst) > 1 {
 			value = strings.TrimSpace(lst[1])
+			// Remove surrounding double quotes if present
+			if len(value) >= 2 && strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+				value = value[1 : len(value)-1]
+				// Unescape double quotes
+				value = strings.ReplaceAll(value, "\"\"", "\"")
+			}
 		}
 		synonym, hasSynonym := adoSynonyms[name]
 		if hasSynonym {
@@ -643,6 +703,45 @@ func splitConnectionString(dsn string) (res map[string]string) {
 		res[name] = value
 	}
 	return res
+}
+
+// splitAdoConnectionStringParts splits an ADO connection string into parts,
+// properly handling double-quoted values that may contain semicolons
+func splitAdoConnectionStringParts(dsn string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuotes := false
+	
+	runes := []rune(dsn)
+	for i := 0; i < len(runes); i++ {
+		char := runes[i]
+		
+		if char == '"' {
+			if inQuotes && i+1 < len(runes) && runes[i+1] == '"' {
+				// Double quote escape sequence - add both quotes to current part
+				current.WriteRune(char)
+				current.WriteRune(runes[i+1])
+				i++ // Skip the next quote
+			} else {
+				// Start or end of quoted section
+				inQuotes = !inQuotes
+				current.WriteRune(char)
+			}
+		} else if char == ';' && !inQuotes {
+			// Semicolon outside of quotes - end current part
+			parts = append(parts, current.String())
+			current.Reset()
+		} else {
+			current.WriteRune(char)
+		}
+	}
+	
+	// Add the last part if it's not empty
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	
+	return parts
 }
 
 // Splits a URL of the form sqlserver://username:password@host/instance?param1=value&param2=value

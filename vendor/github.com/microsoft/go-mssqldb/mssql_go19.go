@@ -145,6 +145,8 @@ func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 func (s *Stmt) makeParamExtra(val driver.Value) (res param, err error) {
+	loc := getTimezone(s.c)
+
 	switch val := val.(type) {
 	case VarChar:
 		res.ti.TypeId = typeBigVarChar
@@ -174,12 +176,12 @@ func (s *Stmt) makeParamExtra(val driver.Value) (res param, err error) {
 		res.ti.Size = len(res.buffer)
 	case civil.Date:
 		res.ti.TypeId = typeDateN
-		res.buffer = encodeDate(val.In(time.UTC))
+		res.buffer = encodeDate(val.In(loc))
 		res.ti.Size = len(res.buffer)
 	case civil.DateTime:
 		res.ti.TypeId = typeDateTime2N
 		res.ti.Scale = 7
-		res.buffer = encodeDateTime2(val.In(time.UTC), int(res.ti.Scale))
+		res.buffer = encodeDateTime2(val.In(loc), int(res.ti.Scale))
 		res.ti.Size = len(res.buffer)
 	case civil.Time:
 		res.ti.TypeId = typeTimeN
@@ -206,7 +208,7 @@ func (s *Stmt) makeParamExtra(val driver.Value) (res param, err error) {
 			err = errCalTypes
 			return
 		}
-		res.buffer, err = val.encode(schema, name, columnStr, tvpFieldIndexes)
+		res.buffer, err = val.encode(schema, name, columnStr, tvpFieldIndexes, s.c.sess.encoding)
 		if err != nil {
 			return
 		}

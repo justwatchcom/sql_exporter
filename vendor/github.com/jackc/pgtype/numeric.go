@@ -448,7 +448,7 @@ func (src *Numeric) toFloat64() (float64, error) {
 		return math.Inf(-1), nil
 	}
 
-	if src.Exp == 1 {
+	if src.Exp == 0 {
 		return float64(src.Int.Int64()), nil
 	}
 

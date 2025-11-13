@@ -31,6 +31,7 @@ Other supported formats are listed below.
   * `true`/`mandatory`/`yes`/`1`/`t` - Data sent between client and server is encrypted.
 * `app name` - The application name (default is go-mssqldb)
 * `authenticator` - Can be used to specify use of a registered authentication provider. (e.g. ntlm, winsspi (on windows) or krb5 (on linux))
+* `timezone` - Sets the time zone used by the driver when parsing time types. For example: `timezone=Asia/Shanghai`. Supports [IANA](https://www.iana.org/time-zones) time zone names.
 
 ### Connection parameters for ODBC and ADO style connection strings
 
@@ -68,6 +69,7 @@ Other supported formats are listed below.
 * `multisubnetfailover`
   * `true` (Default) Client attempt to connect to all IPs simultaneously. 
   * `false` Client attempts to connect to IPs in serial.
+* `guid conversion` - Enables the conversion of GUIDs, so that byte order is preserved. UniqueIdentifier isn't supported for nullable fields, NullUniqueIdentifier must be used instead.
 
 ### Connection parameters for namedpipe package
 * `pipe`  - If set, no Browser query is made and named pipe used will be `\\<host>\pipe\<pipe>`
@@ -170,11 +172,13 @@ For further information on usage:
 * `sqlserver://username@host/instance?krb5-configfile=path/to/file&krb5-credcachefile=/path/to/cache`
     * `sqlserver://username@host/instance?krb5-configfile=path/to/file&krb5-realm=domain.com&krb5-keytabfile=/path/to/keytabfile`
 
-2. ADO: `key=value` pairs separated by `;`. Values may not contain `;`, leading and trailing whitespace is ignored.
+2. ADO: `key=value` pairs separated by `;`. Values can contain `;` and other special characters by enclosing them in double quotes. Leading and trailing whitespace is ignored.
      Examples:
 
     * `server=localhost\\SQLExpress;user id=sa;database=master;app name=MyAppName`
     * `server=localhost;user id=sa;database=master;app name=MyAppName`
+    * `server=localhost;user id=sa;password="my;complex;password";database=master` // Password with semicolons
+    * `server=localhost;user id=sa;password="value with ""quotes"" inside";database=master` // Escaped quotes using double quotes
     * `server=localhost;user id=sa;database=master;app name=MyAppName;krb5-configfile=path/to/file;krb5-credcachefile=path/to/cache;authenticator=krb5`
     * `server=localhost;user id=sa;database=master;app name=MyAppName;krb5-configfile=path/to/file;krb5-realm=domain.com;krb5-keytabfile=path/to/keytabfile;authenticator=krb5`
 
@@ -233,6 +237,33 @@ The credential type is determined by the new `fedauth` connection string paramet
   * `applicationclientid=<application id>` - This guid identifies an Azure Active Directory enterprise application that the AAD admin has approved for accessing Azure SQL database resources in the tenant. This driver does not have an associated application id of its own.
 * `fedauth=ActiveDirectoryDeviceCode` - prints a message to stdout giving the user a URL and code to authenticate. Connection continues after user completes the login separately.
 * `fedauth=ActiveDirectoryAzCli` - reuses local authentication the user already performed using Azure CLI.
+* `fedauth=ActiveDirectoryAzureDeveloperCli` - reuses local authentication the user already performed using Azure Developer CLI.
+* `fedauth=ActiveDirectoryEnvironment` - authenticates using environment variables. Uses the same environment variables as [EnvironmentCredential](https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity#EnvironmentCredential).
+* `fedauth=ActiveDirectoryWorkloadIdentity` - authenticates using workload identity credentials for Kubernetes and other OIDC environments.
+* `fedauth=ActiveDirectoryAzurePipelines` - authenticates using Azure Pipelines service connection.
+  * `user id=<service principal id>[@tenantid]` - The service principal client ID and tenant ID. If not provided, uses `AZURESUBSCRIPTION_CLIENT_ID` and `AZURESUBSCRIPTION_TENANT_ID` environment variables.
+  * `serviceconnectionid=<connection id>` - The service connection ID from Azure DevOps. If not provided, uses `AZURESUBSCRIPTION_SERVICE_CONNECTION_ID` environment variable.
+  * `systemtoken=<system token>` - The system access token for the pipeline. If not provided, uses `SYSTEM_ACCESSTOKEN` environment variable.
+  * Note: Environment variables are automatically configured by Azure Pipelines in AzureCLI@2 and AzurePowerShell@5 tasks.
+* `fedauth=ActiveDirectoryClientAssertion` - authenticates using a client assertion (JWT token).
+  * `user id=<client id>[@tenantid]` - The client ID and tenant ID.
+  * `clientassertion=<jwt token>` - The JWT assertion token.
+* `fedauth=ActiveDirectoryOnBehalfOf` - authenticates using the on-behalf-of flow for delegated access.
+  * `user id=<client id>[@tenantid]` - The client ID and tenant ID.
+  * `userassertion=<user token>` - The user assertion token.
+  * Use one of the following for client authentication:
+    * `password=<client secret>` - Client secret
+    * `clientcertpath=<path to certificate file>;password=<certificate password>` - Client certificate
+    * `clientassertion=<jwt token>` - Client assertion JWT
+
+#### Common Credential Options
+
+The following connection string parameters can be used with most Azure credential types to provide additional configuration:
+
+* `additionallyallowedtenants=<tenant1,tenant2>` - Comma or semicolon-separated list of additional tenant IDs that the credential may authenticate to. Use "*" to allow any tenant.
+* `disableinstancediscovery=true` - Disables Microsoft Entra instance discovery. Set to `true` only for disconnected or private clouds like Azure Stack.
+* `tokenfilepath=<path>` - For `ActiveDirectoryWorkloadIdentity`, specifies the path to the Kubernetes service account token file.
+* `sendcertificatechain=true` - For certificate-based authentication, controls whether to send the full certificate chain in token requests. Required for Subject Name/Issuer (SNI) authentication.
 
 ```go
 
@@ -246,6 +277,33 @@ import (
 
 func ConnectWithMSI() (*sql.DB, error) {
   return sql.Open(azuread.DriverName, "sqlserver://azuresql.database.windows.net?database=yourdb&fedauth=ActiveDirectoryMSI")
+}
+
+func ConnectWithEnvironmentCredential() (*sql.DB, error) {
+  // Requires AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET environment variables
+  return sql.Open(azuread.DriverName, "sqlserver://azuresql.database.windows.net?database=yourdb&fedauth=ActiveDirectoryEnvironment")
+}
+
+func ConnectWithWorkloadIdentity() (*sql.DB, error) {
+  // For use in Kubernetes environments with workload identity
+  return sql.Open(azuread.DriverName, "sqlserver://azuresql.database.windows.net?database=yourdb&fedauth=ActiveDirectoryWorkloadIdentity")
+}
+
+func ConnectWithAzurePipelines() (*sql.DB, error) {
+  // For use in Azure DevOps Pipelines with explicit parameters
+  connStr := "sqlserver://azuresql.database.windows.net?database=yourdb&fedauth=ActiveDirectoryAzurePipelines"
+  connStr += "&user+id=" + url.QueryEscape("client-id@tenant-id")
+  connStr += "&serviceconnectionid=connection-id"
+  connStr += "&systemtoken=access-token"
+  return sql.Open(azuread.DriverName, connStr)
+}
+
+func ConnectWithAzurePipelinesEnvVars() (*sql.DB, error) {
+  // For use in Azure DevOps Pipelines with AzureCLI@2 or AzurePowerShell@5 tasks
+  // Environment variables are automatically set by these tasks
+  connStr := "sqlserver://azuresql.database.windows.net?database=yourdb&fedauth=ActiveDirectoryAzurePipelines"
+  connStr += "&systemtoken=access-token"  // Only systemtoken needs to be provided
+  return sql.Open(azuread.DriverName, connStr)
 }
 
 ```

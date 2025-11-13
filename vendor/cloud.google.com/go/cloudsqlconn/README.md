@@ -39,6 +39,14 @@ guide](./migration-guide.md).
 
 For a quick example, try out the Go Connector in a [Codelab][codelab].
 
+
+> [!WARNING]
+> **Go versions 1.25.2 and 1.24.8 are NOT compatible with Cloud SQL Go Connector.**
+>
+> A recent update to the Go version 1.25.2 and Go 1.24.8 breaks SAN verificaton in Go Connector. This is because Cloud SQL includes a trailing dot in the DNS name within the certificate's Subject Alternative Name (SAN), which the above Go versions reject as a malformed DNS name.
+>
+> For more details, please see the related Go issue: [crypto/x509: quadratic complexity when checking name constraints ](https://github.com/golang/go/issues/75715).
+
 ## Installation
 
 You can install this repo with `go get`:
@@ -234,7 +242,8 @@ func connect() {
     // ... etc
 }
 ```
-### Using DNS to identify an instance
+
+### Using DNS domain names to identify instances
 
 The connector can be configured to use DNS to look up an instance. This would
 allow you to configure your application to connect to a database instance, and
@@ -259,7 +268,7 @@ For example: suppose you wanted to use the domain name
 
 #### Configure the connector
 
-Configure the connector as described above, replacing the conenctor ID with
+Configure the connector as described above, replacing the connector ID with
 the DNS name. 
 
 Adapting the MySQL + database/sql example above:
@@ -276,8 +285,7 @@ import (
 
 func connect() {
 	cleanup, err := mysql.RegisterDriver("cloudsql-mysql",
-		cloudsqlconn.WithDNSResolver(),
-		cloudsqlconn.WithCredentialsFile("key.json"))
+		cloudsqlconn.WithDNSResolver())
 	if err != nil {
 		// ... handle error
 	}
@@ -291,6 +299,40 @@ func connect() {
 	// ... etc
 }
 ```
+
+### Automatic fail-over using DNS domain names
+
+When the connector is configured using a domain name, the connector will 
+periodically check if the DNS record for an instance changes. When the connector 
+detects that the domain name refers to a different instance, the connector will
+close all open connections to the old instance. Subsequent connection attempts
+will be directed to the new instance. 
+
+For example: suppose application is configured to connect using the
+domain name `prod-db.mycompany.example.com`. Initially the corporate DNS 
+zone has a TXT record with the value `my-project:region:my-instance`. The
+application establishes connections to the `my-project:region:my-instance` 
+Cloud SQL instance. 
+
+Then, to reconfigure the application to use a different database
+instance, change the value of the `prod-db.mycompany.example.com` DNS record
+from `my-project:region:my-instance` to `my-project:other-region:my-instance-2`
+
+The connector inside the application detects the change to this
+DNS record. Now, when the application connects to its database using the 
+domain name `prod-db.mycompany.example.com`, it will connect to the
+`my-project:other-region:my-instance-2` Cloud SQL instance. 
+
+The connector will automatically close all existing connections to
+`my-project:region:my-instance`. This will force the connection pools to 
+establish new connections. Also, it may cause database queries in progress 
+to fail. 
+
+The connector will poll for changes to the DNS name every 30 seconds by default.
+You may configure the frequency of the connections using the option 
+`WithFailoverPeriod(d time.Duration)`. When this is set to 0, the connector will
+disable polling and only check if the DNS record changed when it is
+creating a new connection. 
 
 
 ### Using Options

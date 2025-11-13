@@ -3,7 +3,8 @@
 
 ---
 
-This version is used with pgx `v4`. In pgx `v5` it is part of the https://github.com/jackc/pgx repository.
+This version is used with pgx `v4`. In pgx `v5` it is part of the https://github.com/jackc/pgx repository. Only bug
+fixes will be made to this version. New features will only be considered for the current release.
 
 ---
 

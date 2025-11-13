@@ -554,13 +554,20 @@ func (s *Stmt) sendQuery(ctx context.Context, args []namedValue) (err error) {
 			params[0] = makeStrParam(s.query)
 			params[1] = makeStrParam(strings.Join(decls, ","))
 		}
-		if err = sendRpc(conn.sess.buf, headers, proc, 0, params, reset); err != nil {
+		if err = sendRpc(conn.sess.buf, headers, proc, 0, params, reset, conn.sess.encoding); err != nil {
 			conn.sess.LogF(ctx, msdsn.LogErrors, "Failed to send Rpc with %v", err)
 			conn.connectionGood = false
 			return fmt.Errorf("failed to send RPC: %v", err)
 		}
 	}
 	return
+}
+
+// Builtin commands are not stored procs, but rather T-SQL commands
+// those commands can be invoke without extra options
+var builtinCommands = []string{
+	"RECONFIGURE", "SHUTDOWN", "CHECKPOINT",
+	"COMMIT", "ROLLBACK",
 }
 
 // isProc takes the query text in s and determines if it is a stored proc name
@@ -619,6 +626,12 @@ func isProc(s string) bool {
 			case r == ']':
 				st = outside
 			}
+		}
+	}
+	s = strings.ToUpper(s)
+	for _, cmd := range builtinCommands {
+		if s == cmd {
+			return false
 		}
 	}
 	return true
@@ -968,6 +981,7 @@ func (s *Stmt) makeParam(val driver.Value) (res param, err error) {
 		res.ti.Size = 0
 		return
 	}
+
 	switch valuer := val.(type) {
 	// sql.Nullxxx integer types return an int64. We want the original type, to match the SQL type size.
 	case sql.NullByte:
@@ -1254,7 +1268,6 @@ type Rowsq struct {
 
 func (rc *Rowsq) Close() error {
 	rc.cancel()
-
 	for {
 		tok, err := rc.reader.nextToken()
 		if err == nil {
@@ -1328,6 +1341,7 @@ func (rc *Rowsq) Next(dest []driver.Value) error {
 					return nil
 				case doneStruct:
 					if tokdata.Status&doneMore == 0 {
+						rc.reader.sess.LogF(rc.reader.ctx, msdsn.LogDebug, "Setting requestDone to true for done token with status %d", tokdata.Status)
 						rc.requestDone = true
 					}
 					if tokdata.isError() {
@@ -1361,7 +1375,7 @@ func (rc *Rowsq) Next(dest []driver.Value) error {
 // In Message Queue mode, we always claim another resultset could be on the way
 // to avoid Rows being closed prematurely
 func (rc *Rowsq) HasNextResultSet() bool {
-	return !rc.requestDone
+	return true
 }
 
 // Scans to the end of the current statement being processed

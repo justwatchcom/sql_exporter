@@ -22,12 +22,14 @@ import (
 	"os"
 	"time"
 
+	"cloud.google.com/go/auth"
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/oauth2adapt"
 	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/errtype"
 	"cloud.google.com/go/cloudsqlconn/instance"
 	"cloud.google.com/go/cloudsqlconn/internal/cloudsql"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	apiopt "google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
@@ -36,24 +38,27 @@ import (
 type Option func(d *dialerConfig)
 
 type dialerConfig struct {
-	rsaKey                 *rsa.PrivateKey
-	sqladminOpts           []apiopt.ClientOption
-	dialOpts               []DialOption
-	dialFunc               func(ctx context.Context, network, addr string) (net.Conn, error)
-	refreshTimeout         time.Duration
-	useIAMAuthN            bool
-	logger                 debug.ContextLogger
-	lazyRefresh            bool
-	iamLoginTokenSource    oauth2.TokenSource
-	useragents             []string
-	credentialsUniverse    string
-	serviceUniverse        string
-	setAdminAPIEndpoint    bool
-	setUniverseDomain      bool
-	setCredentials         bool
-	setTokenSource         bool
-	setIAMAuthNTokenSource bool
-	resolver               instance.ConnectionNameResolver
+	rsaKey                   *rsa.PrivateKey
+	sqladminOpts             []apiopt.ClientOption
+	dialOpts                 []DialOption
+	dialFunc                 func(ctx context.Context, network, addr string) (net.Conn, error)
+	refreshTimeout           time.Duration
+	useIAMAuthN              bool
+	logger                   debug.ContextLogger
+	lazyRefresh              bool
+	clientUniverseDomain     string
+	quotaProject             string
+	authCredentials          *auth.Credentials
+	iamLoginTokenProvider    auth.TokenProvider
+	useragents               []string
+	setAdminAPIEndpoint      bool
+	setCredentials           bool
+	setHTTPClient            bool
+	setTokenSource           bool
+	setIAMAuthNTokenSource   bool
+	resolver                 instance.ConnectionNameResolver
+	failoverPeriod           time.Duration
+	metadataExchangeDisabled bool
 	// err tracks any dialer options that may have failed.
 	err error
 }
@@ -86,26 +91,25 @@ func WithCredentialsFile(filename string) Option {
 // or refresh token JSON credentials to be used as the basis for authentication.
 func WithCredentialsJSON(b []byte) Option {
 	return func(d *dialerConfig) {
-		c, err := google.CredentialsFromJSON(context.Background(), b, sqladmin.SqlserviceAdminScope)
+		c, err := credentials.DetectDefault(&credentials.DetectOptions{
+			Scopes:          []string{sqladmin.SqlserviceAdminScope},
+			CredentialsJSON: b,
+		})
 		if err != nil {
 			d.err = errtype.NewConfigError(err.Error(), "n/a")
 			return
 		}
-		ud, err := c.GetUniverseDomain()
-		if err != nil {
-			d.err = errtype.NewConfigError(err.Error(), "n/a")
-			return
-		}
-		d.credentialsUniverse = ud
-		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithCredentials(c))
-
+		d.authCredentials = c
 		// Create another set of credentials scoped to login only
-		scoped, err := google.CredentialsFromJSON(context.Background(), b, iamLoginScope)
+		scoped, err := credentials.DetectDefault(&credentials.DetectOptions{
+			Scopes:          []string{iamLoginScope},
+			CredentialsJSON: b,
+		})
 		if err != nil {
 			d.err = errtype.NewConfigError(err.Error(), "n/a")
 			return
 		}
-		d.iamLoginTokenSource = scoped.TokenSource
+		d.iamLoginTokenProvider = scoped.TokenProvider
 		d.setCredentials = true
 	}
 }
@@ -128,9 +132,11 @@ func WithDefaultDialOptions(opts ...DialOption) Option {
 // WithTokenSource returns an Option that specifies an OAuth2 token source to be
 // used as the basis for authentication.
 //
-// When Auth IAM AuthN is enabled, use WithIAMAuthNTokenSources to set the token
+// When Auth IAM AuthN is enabled, use WithIAMAuthNTokenSources or WithIAMAuthNCredentials to set the token
 // source for login tokens separately from the API client token source.
-// WithTokenSource should not be used with WithIAMAuthNTokenSources.
+//
+// You may only use one of the following options:
+// WithIAMAuthNCredentials, WithIAMAuthNTokenSources, WithCredentials, WithTokenSource
 func WithTokenSource(s oauth2.TokenSource) Option {
 	return func(d *dialerConfig) {
 		d.setTokenSource = true
@@ -150,15 +156,58 @@ func WithTokenSource(s oauth2.TokenSource) Option {
 //
 //  1. https://www.googleapis.com/auth/sqlservice.login.
 //
-// Prefer this option over WithTokenSource when using IAM AuthN which does not
-// distinguish between the two token sources. WithIAMAuthNTokenSources should
-// not be used with WithTokenSource.
+// Prefer this option over WithTokenSource or WithCredentials when using IAM AuthN which does not
+// distinguish between the two token sources.
+//
+// You may only use one of the following options:
+// WithIAMAuthNCredentials, WithIAMAuthNTokenSources, WithCredentials, WithTokenSource
 func WithIAMAuthNTokenSources(apiTS, iamLoginTS oauth2.TokenSource) Option {
 	return func(d *dialerConfig) {
 		d.setIAMAuthNTokenSource = true
 		d.setCredentials = true
-		d.iamLoginTokenSource = iamLoginTS
+		d.iamLoginTokenProvider = oauth2adapt.TokenProviderFromTokenSource(iamLoginTS)
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithTokenSource(apiTS))
+	}
+}
+
+// WithCredentials returns an Option that specifies an OAuth2 token source to be
+// used as the basis for authentication.
+//
+// When Auth IAM AuthN is enabled, use WithIAMAuthNTokenSources to set the token
+// source for login tokens separately from the API client token source.
+//
+// You may only use one of the following options:
+// WithIAMAuthNCredentials, WithIAMAuthNTokenSources, WithCredentials, WithTokenSource
+func WithCredentials(c *auth.Credentials) Option {
+	return func(d *dialerConfig) {
+		d.setTokenSource = true
+		d.setCredentials = true
+		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithAuthCredentials(c))
+	}
+}
+
+// WithIAMAuthNCredentials sets the oauth2.TokenSource for the API client and a
+// second token source for IAM AuthN login tokens. The API client token source
+// should have the following scopes:
+//
+//  1. https://www.googleapis.com/auth/sqlservice.admin, and
+//  2. https://www.googleapis.com/auth/cloud-platform
+//
+// The IAM AuthN token source on the other hand should only have:
+//
+//  1. https://www.googleapis.com/auth/sqlservice.login.
+//
+// Prefer this option over WithTokenSource or WithCredentials when using IAM AuthN which does not
+// distinguish between the two token sources.
+//
+// You may only use one of the following options:
+// WithIAMAuthNCredentials, WithIAMAuthNTokenSources, WithCredentials, WithTokenSource
+func WithIAMAuthNCredentials(apiCreds, iamCreds *auth.Credentials) Option {
+	return func(d *dialerConfig) {
+		d.setIAMAuthNTokenSource = true
+		d.setCredentials = true
+		d.iamLoginTokenProvider = iamCreds
+		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithAuthCredentials(apiCreds))
 	}
 }
 
@@ -183,6 +232,7 @@ func WithRefreshTimeout(t time.Duration) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(d *dialerConfig) {
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithHTTPClient(client))
+		d.setHTTPClient = true
 	}
 }
 
@@ -192,7 +242,6 @@ func WithAdminAPIEndpoint(url string) Option {
 	return func(d *dialerConfig) {
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithEndpoint(url))
 		d.setAdminAPIEndpoint = true
-		d.serviceUniverse = ""
 	}
 }
 
@@ -201,15 +250,14 @@ func WithAdminAPIEndpoint(url string) Option {
 func WithUniverseDomain(ud string) Option {
 	return func(d *dialerConfig) {
 		d.sqladminOpts = append(d.sqladminOpts, apiopt.WithUniverseDomain(ud))
-		d.serviceUniverse = ud
-		d.setUniverseDomain = true
+		d.clientUniverseDomain = ud
 	}
 }
 
 // WithQuotaProject returns an Option that specifies the project used for quota and billing purposes.
 func WithQuotaProject(p string) Option {
 	return func(cfg *dialerConfig) {
-		cfg.sqladminOpts = append(cfg.sqladminOpts, apiopt.WithQuotaProject(p))
+		cfg.quotaProject = p
 	}
 }
 
@@ -271,6 +319,26 @@ func WithDNSResolver() Option {
 	}
 }
 
+// WithFailoverPeriod will cause the connector to periodically check the SRV DNS
+// records of instance configured using DNS names. By default, this is 30
+// seconds. If this is set to 0, the connector will only check for domain name
+// changes when establishing a new connection.
+func WithFailoverPeriod(f time.Duration) Option {
+	return func(d *dialerConfig) {
+		d.failoverPeriod = f
+	}
+}
+
+// WithDisableMetadataExchange enables or disables the dialer from sending the
+// metadata exchange message to the instance on each connection. This
+// is necessary for MySQL instances with caching_sha2_passwords. Metadata Exchange
+// is enabled by default for instances that accept MDX.
+func WithDisableMetadataExchange() Option {
+	return func(cfg *dialerConfig) {
+		cfg.metadataExchangeDisabled = true
+	}
+}
+
 type debugLoggerWithoutContext struct {
 	logger debug.Logger
 }
@@ -317,10 +385,11 @@ func WithLazyRefresh() Option {
 type DialOption func(d *dialConfig)
 
 type dialConfig struct {
-	dialFunc     func(ctx context.Context, network, addr string) (net.Conn, error)
-	ipType       string
-	tcpKeepAlive time.Duration
-	useIAMAuthN  bool
+	dialFunc              func(ctx context.Context, network, addr string) (net.Conn, error)
+	ipType                string
+	tcpKeepAlive          time.Duration
+	useIAMAuthN           bool
+	mdxClientProtocolType string
 }
 
 // DialOptions turns a list of DialOption instances into an DialOption.
@@ -388,5 +457,16 @@ func WithAutoIP() DialOption {
 func WithDialIAMAuthN(b bool) DialOption {
 	return func(cfg *dialConfig) {
 		cfg.useIAMAuthN = b
+	}
+}
+
+// WithMdxClientProtocolType controls client protocol type is sent to the server
+// in the metadata exchange request. This may be one of cloudsql.ClientProtocolTLS cloudsql.ClientProtocolTCP
+// or cloudsql.ClientProtocolUDS. If this is empty, it will be omitted from the MDX request.
+// This is important for MySQL clients that use caching_sha2_password.
+// Valid values: "tls" "tcp" "uds"
+func WithMdxClientProtocolType(s string) DialOption {
+	return func(cfg *dialConfig) {
+		cfg.mdxClientProtocolType = s
 	}
 }

@@ -30,7 +30,7 @@ func (e *genericError) Error() string {
 // NewConfigError initializes a ConfigError.
 func NewConfigError(msg, cn string) *ConfigError {
 	return &ConfigError{
-		genericError: &genericError{Message: "Config error: " + msg, ConnName: cn},
+		genericError: &genericError{Message: "config error: " + msg, ConnName: cn},
 	}
 }
 
@@ -61,9 +61,9 @@ type RefreshError struct {
 
 func (e *RefreshError) Error() string {
 	if e.Err == nil {
-		return fmt.Sprintf("Refresh error: %v", e.genericError)
+		return fmt.Sprintf("refresh error: %v", e.genericError)
 	}
-	return fmt.Sprintf("Refresh error: %v: %v", e.genericError, e.Err)
+	return fmt.Sprintf("refresh error: %v: %v", e.genericError, e.Err)
 }
 
 func (e *RefreshError) Unwrap() error { return e.Err }
@@ -88,9 +88,9 @@ type DialError struct {
 
 func (e *DialError) Error() string {
 	if e.Err == nil {
-		return fmt.Sprintf("Dial error: %v", e.genericError)
+		return fmt.Sprintf("dial error: %v", e.genericError)
 	}
-	return fmt.Sprintf("Dial error: %v: %v", e.genericError, e.Err)
+	return fmt.Sprintf("dial error: %v: %v", e.genericError, e.Err)
 }
 
 func (e *DialError) Unwrap() error { return e.Err }

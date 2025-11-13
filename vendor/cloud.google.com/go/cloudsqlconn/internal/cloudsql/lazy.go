@@ -20,13 +20,13 @@ import (
 	"sync"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/instance"
-	"golang.org/x/oauth2"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
-// LazyRefreshCache is caches connection info and refreshes the cache only when
+// LazyRefreshCache caches connection info and refreshes the cache only when
 // a caller requests connection info and the current certificate is expired.
 type LazyRefreshCache struct {
 	connName        instance.ConnName
@@ -45,7 +45,7 @@ func NewLazyRefreshCache(
 	client *sqladmin.Service,
 	key *rsa.PrivateKey,
 	_ time.Duration,
-	ts oauth2.TokenSource,
+	tp auth.TokenProvider,
 	dialerID string,
 	useIAMAuthNDial bool,
 ) *LazyRefreshCache {
@@ -56,7 +56,7 @@ func NewLazyRefreshCache(
 			l,
 			client,
 			key,
-			ts,
+			tp,
 			dialerID,
 		),
 		useIAMAuthNDial: useIAMAuthNDial,
@@ -74,7 +74,7 @@ func (c *LazyRefreshCache) ConnectionInfo(
 	defer c.mu.Unlock()
 	// strip monotonic clock with UTC()
 	now := time.Now().UTC()
-	// Pad expiration with a buffer to give the client plenty of time to
+	// Pad expiration with a bufferPool to give the client plenty of time to
 	// establish a connection to the server with the certificate.
 	exp := c.cached.Expiration.UTC().Add(-refreshBuffer)
 	if !c.needsRefresh && now.Before(exp) {
