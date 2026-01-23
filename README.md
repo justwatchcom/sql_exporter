@@ -15,6 +15,7 @@ Currently supported:
 - Postgres
 - ClickHouse
 - AWS Athena
+- Databricks
 - MS-SQL
 - MySQL
 - Snowflake
@@ -229,6 +230,7 @@ For some database backends some special functionality is available:
 
 * cloudsql-postgres: A special `*` character can be used to query all databases accessible by the account
 * cloudsql-mysql: Same as above
+* databricks: Supports access token, OAuth M2M (machine-to-machine) or U2M (user-to-machine) authentication as supported by the [driver](https://github.com/databricks/databricks-sql-go).
 * rds-postgres: This type of URL expects a working AWS configuration
   which will use the equivalent of `rds generate-db-auth-token`
   for the password. For this driver, the `AWS_REGION` environment variable

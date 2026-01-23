@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"database/sql"
+	"database/sql/driver"
+	"encoding/pem"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,12 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
+	dbsql "github.com/databricks/databricks-sql-go" // register the Databricks driver
+	"github.com/databricks/databricks-sql-go/auth/oauth/m2m"
+	"github.com/databricks/databricks-sql-go/auth/oauth/u2m"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql" // register the MySQL driver
@@ -285,6 +290,56 @@ func (j *Job) updateConnections() {
 				continue
 			}
 
+			// Handle Databricks connections
+			// Supports standard token auth and OAuth (M2M and U2M)
+			// OAuth M2M: databricks://host/httpPath?catalog=xxx&authType=m2m&clientId=xxx&clientSecret=xxx
+			// OAuth U2M: databricks://host/httpPath?catalog=xxx&authType=u2m
+			// Token auth: databricks://token:xxx@host/httpPath?catalog=xxx
+			if strings.HasPrefix(conn, "databricks://") {
+				u, err := url.Parse(conn)
+				if err != nil {
+					level.Error(j.log).Log("msg", "Failed to parse Databricks URL", "url", conn, "err", err)
+					continue
+				}
+
+				user := ""
+				if u.User != nil {
+					user = u.User.Username()
+				}
+
+				// Extract catalog/database from query params or path
+				queryParams := u.Query()
+				database := queryParams.Get("catalog")
+				httpPath := strings.TrimPrefix(u.Path, "/")
+
+				// Check for OAuth authentication type
+				authType := queryParams.Get("authType")
+				clientID := queryParams.Get("clientId")
+				clientSecret := queryParams.Get("clientSecret")
+
+				newConn := &connection{
+					conn:     nil,
+					url:      conn,
+					driver:   "databricks",
+					host:     u.Host,
+					database: database,
+					user:     user,
+				}
+
+				// Configure OAuth if specified
+				if authType == "m2m" || authType == "u2m" {
+					newConn.databricksOAuthType = authType
+					newConn.databricksClientID = clientID
+					newConn.databricksClientSecret = clientSecret
+					newConn.databricksHost = u.Host
+					newConn.databricksHTTPPath = httpPath
+					newConn.databricksCatalog = database
+				}
+
+				j.conns = append(j.conns, newConn)
+				continue
+			}
+
 			if strings.HasPrefix(conn, "rds-postgres://") {
 				// Reuse Postgres driver by stripping "rds-" from connection URL after building the RDS authentication token
 				conn = strings.TrimPrefix(conn, "rds-")
@@ -386,10 +441,7 @@ func (j *Job) updateConnections() {
 				user:     user,
 			}
 			if newConn.driver == "athena" {
-				// call go-athena's Open() to ensure conn.db is set,
-				// otherwise API calls will complain about an empty database field:
-				// "InvalidParameter: 1 validation error(s) found. - minimum field size of 1, StartQueryExecutionInput.QueryExecutionContext.Database."
-				newConn.conn, err = sqlx.Open("athena", u.String())
+				newConn.conn, err = sqlx.Open("athena", u.RawQuery)
 				if err != nil {
 					level.Error(j.log).Log("msg", "Failed to open Athena connection", "connection", conn, "err", err)
 					continue
@@ -401,10 +453,10 @@ func (j *Job) updateConnections() {
 					level.Error(j.log).Log("msg", "Failed to parse Snowflake URL", "url", conn, "err", err)
 					continue
 				}
-			
+
 				queryParams := u.Query()
 				privateKeyPath := os.ExpandEnv(queryParams.Get("private_key_file"))
-			
+
 				cfg := &gosnowflake.Config{
 					Account:  u.Host,
 					User:     u.User.Username(),
@@ -412,7 +464,7 @@ func (j *Job) updateConnections() {
 					Database: queryParams.Get("database"),
 					Schema:   queryParams.Get("schema"),
 				}
-			
+
 				if privateKeyPath != "" {
 					// RSA key auth
 					keyBytes, err := os.ReadFile(privateKeyPath)
@@ -420,13 +472,13 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to read private key file", "path", privateKeyPath, "err", err)
 						continue
 					}
-			
+
 					keyBlock, _ := pem.Decode(keyBytes)
 					if keyBlock == nil {
 						level.Error(j.log).Log("msg", "Failed to decode PEM block", "path", privateKeyPath)
 						continue
 					}
-			
+
 					var privateKey *rsa.PrivateKey
 					if parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); err == nil {
 						privateKey, _ = parsedKey.(*rsa.PrivateKey)
@@ -436,16 +488,16 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to parse private key", "err", err)
 						continue
 					}
-			
+
 					cfg.Authenticator = gosnowflake.AuthTypeJwt
 					cfg.PrivateKey = privateKey
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with RSA", "err", err)
 						continue
 					}
-			
+
 					newConn.snowflakeConfig = cfg
 					newConn.snowflakeDSN = dsn
 					newConn.host = u.Host
@@ -460,20 +512,20 @@ func (j *Job) updateConnections() {
 							cfg.Port = port
 						}
 					}
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with password", "err", err)
 						continue
 					}
-			
+
 					newConn.conn, err = sqlx.Open("snowflake", dsn)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "err", err)
 						continue
 					}
 				}
-			
+
 				j.conns = append(j.conns, newConn)
 				continue
 			}
@@ -651,30 +703,85 @@ func (c *connection) connect(job *Job) error {
 				}
 				c.tokenExpirationTime = time.Now().Add(time.Hour)
 			}
-	
+
 			db, err := sqlx.Open("snowflake", c.snowflakeDSN)
 			if err != nil {
 				return fmt.Errorf("failed to open Snowflake connection: %w (host: %s)", err, c.host)
 			}
-	
+
 			db.SetMaxOpenConns(1)
 			db.SetMaxIdleConns(0)
 			db.SetConnMaxLifetime(30 * time.Minute)
-	
+
 			if err := db.Ping(); err != nil {
 				db.Close()
 				return fmt.Errorf("failed to ping Snowflake: %w (host: %s)", err, c.host)
 			}
-	
+
 			c.conn = db
 			return nil
 		}
+	}
+	// Handle Databricks OAuth connections (M2M and U2M)
+	if c.driver == "databricks" && c.databricksOAuthType != "" {
+		var connector driver.Connector
+		var err error
+
+		connectorOptions := []dbsql.ConnOption{
+			dbsql.WithServerHostname(c.databricksHost),
+			dbsql.WithHTTPPath(c.databricksHTTPPath),
+		}
+
+		if c.databricksCatalog != "" {
+			connectorOptions = append(connectorOptions, dbsql.WithInitialNamespace(c.databricksCatalog, ""))
+		}
+
+		switch c.databricksOAuthType {
+		case "m2m":
+			// Machine-to-Machine OAuth using client credentials
+			if c.databricksClientID == "" || c.databricksClientSecret == "" {
+				return fmt.Errorf("databricks M2M OAuth requires clientId and clientSecret parameters")
+			}
+			authenticator := m2m.NewAuthenticator(c.databricksClientID, c.databricksClientSecret, c.databricksHost)
+			connectorOptions = append(connectorOptions, dbsql.WithAuthenticator(authenticator))
+
+		case "u2m":
+			// User-to-Machine OAuth (interactive browser-based authentication)
+			authenticator, err := u2m.NewAuthenticator(c.databricksHost, 2*time.Minute)
+			if err != nil {
+				return fmt.Errorf("failed to create Databricks U2M authenticator: %w", err)
+			}
+			connectorOptions = append(connectorOptions, dbsql.WithAuthenticator(authenticator))
+		}
+
+		connector, err = dbsql.NewConnector(connectorOptions...)
+		if err != nil {
+			return fmt.Errorf("failed to create Databricks connector: %w (host: %s)", err, c.host)
+		}
+
+		db := sql.OpenDB(connector)
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(job.Interval * 2)
+
+		// Wrap with sqlx
+		c.conn = sqlx.NewDb(db, "databricks")
+
+		// execute StartupSQL
+		for _, query := range job.StartupSQL {
+			level.Debug(job.log).Log("msg", "StartupSQL", "Query:", query)
+			c.conn.MustExec(query)
+		}
+
+		return nil
 	}
 	dsn := c.url
 	switch c.driver {
 	case "mysql":
 		dsn = strings.TrimPrefix(dsn, "mysql://")
 		dsn = strings.TrimPrefix(dsn, "rds-mysql://")
+	case "databricks":
+		dsn = strings.TrimPrefix(dsn, "databricks://")
 	case "clickhouse+tcp", "clickhouse+http": // Support both http and tcp connections
 		dsn = strings.TrimPrefix(dsn, "clickhouse+")
 		c.driver = "clickhouse"

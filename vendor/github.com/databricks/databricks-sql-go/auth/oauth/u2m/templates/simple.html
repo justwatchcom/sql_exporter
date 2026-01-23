@@ -1,0 +1,100 @@
+<!DOCTYPE html SYSTEM "http://www.thymeleaf.org/dtd/xhtml1-strict-thymeleaf-4.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <title>{{ .Title }}</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,700;1,400&display=swap"
+        rel="stylesheet" />
+
+    <style>
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            font-family: "IBM Plex Sans";
+            font-style: normal;
+            font-size: 14px;
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            background: #f5f6f6;
+            align-items: center;
+        }
+
+        .root-container {
+            display: flex;
+            height: 100%;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .info-container {
+            width: 320px;
+            box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.1),
+                0px 8px 25px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            padding: 48px;
+            background: #fff;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            gap: 24px;
+        }
+
+        .logo {
+            display: "block";
+            max-width: 140px;
+            max-height: 40px;
+        }
+
+        .title {
+            font-weight: 600;
+            font-size: 24px;
+            line-height: 28px;
+        }
+
+        .content {
+            width: 300px;
+            font-size: 14px;
+        }
+
+        .button {
+            display: flex;
+            background: #191519;
+            align-items: center;
+            justify-content: center;
+            height: 40px;
+            width: 300px;
+            border-radius: 4px;
+            text-align: center;
+            text-decoration: none;
+            color: #ffffff !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="root-container">
+        <div class="info-container">
+            <img class="logo"
+                src="https://www.databricks.com/wp-content/uploads/2022/06/db-nav-logo-stacked-white-desktop.svg" />
+            <div class="title">{{ .Heading }}</div>
+            <div class="content">{{ .Content }}</div>
+            <!-- {{ if .Action.Link }} -->
+            <a class="button" target="_blank" href="{{ .Action.Link }}">{{ .Action.Label }}</a>
+            <!--{{ end }} -->
+            <!-- {{ if .Code }} -->
+            <code>{{ .Code }}</code>
+            <!--{{ end }} -->
+        </div>
+    </div>
+</body>
+
+</html>

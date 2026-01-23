@@ -165,8 +165,15 @@ type connection struct {
 	user                string
 	tokenExpirationTime time.Time
 	iteratorValues      []string
-    	snowflakeConfig *gosnowflake.Config
-    	snowflakeDSN    string
+	snowflakeConfig     *gosnowflake.Config
+	snowflakeDSN        string
+	// Databricks OAuth configuration
+	databricksOAuthType    string // "m2m" or "u2m"
+	databricksClientID     string
+	databricksClientSecret string
+	databricksHost         string
+	databricksHTTPPath     string
+	databricksCatalog      string
 }
 
 // Query is an SQL query that is executed on a connection

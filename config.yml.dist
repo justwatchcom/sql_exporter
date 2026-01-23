@@ -128,7 +128,7 @@ jobs:
   interval: '5m'
   connections:
   # see https://godoc.org/github.com/segmentio/go-athena#Driver.Open
-  - 'athena://HOST_VALUE_IGNORED/<DB_NAME>?db=<DB_NAME>&region=<AWS_REGION>&output_location=s3://aws-athena-query-results-<ACCOUNT_ID>-<REGION>'
+  - 'athena://?db=<DB_NAME>&region=<AWS_REGION>&output_location=s3://aws-athena-query-results-<ACCOUNT_ID>-<REGION>'
   queries:
   - name: "athena_query_rows"
     help: "Number of rows..."
@@ -193,3 +193,25 @@ jobs:
     query:  |
             SELECT datname::text, usename::text, COUNT(*)::float AS count
             FROM pg_stat_activity GROUP BY datname, usename;
+- name: "databricks"
+  interval: '5m'
+  connections:
+  # Connect to Databricks SQL Warehouse or All Purpose Cluster
+  # Connect with M2M
+  # - databricks://your-workspace.cloud.databricks.com/sql/1.0/warehouses/abc123?catalog=main&authType=m2m&clientId=YOUR_CLIENT_ID&clientSecret=YOUR_CLIENT_SECRET
+  # Connect with a token
+  - 'databricks://token:TOKEN@INSTANCE.cloud.databricks.com:443/sql/1.0/warehouses/WAREHOUSE_ID'
+  queries:
+  - name: "databricks_usage"
+    help: "Total databricks usage by date"
+    values:
+      - "total"
+    query: |
+        SELECT 
+            usage_date,
+            SUM(usage_quantity) AS total
+        FROM 
+            system.billing.usage
+        WHERE 
+            usage_date = CURRENT_DATE()
+        GROUP BY usage_date;
