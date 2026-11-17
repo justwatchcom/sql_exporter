@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/go-kit/log v0.2.1
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/gobwas/glob v1.1.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
