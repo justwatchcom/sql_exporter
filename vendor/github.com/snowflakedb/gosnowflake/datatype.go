@@ -13,6 +13,7 @@ type snowflakeType int
 const (
 	fixedType snowflakeType = iota
 	realType
+	decfloatType
 	textType
 	dateType
 	variantType
@@ -38,6 +39,7 @@ const (
 var snowflakeToDriverType = map[string]snowflakeType{
 	"FIXED":         fixedType,
 	"REAL":          realType,
+	"DECFLOAT":      decfloatType,
 	"TEXT":          textType,
 	"DATE":          dateType,
 	"VARIANT":       variantType,
@@ -85,6 +87,8 @@ var (
 	DataTypeFixed = []byte{fixedType.Byte()}
 	// DataTypeReal is a REAL datatype.
 	DataTypeReal = []byte{realType.Byte()}
+	// DataTypeDecfloat is a DECFLOAT datatype.
+	DataTypeDecfloat = []byte{decfloatType.Byte()}
 	// DataTypeText is a TEXT datatype.
 	DataTypeText = []byte{textType.Byte()}
 	// DataTypeDate is a Date datatype.
@@ -119,6 +123,8 @@ var (
 func dataTypeMode(v driver.Value) (tsmode snowflakeType, err error) {
 	if bd, ok := v.([]byte); ok {
 		switch {
+		case bytes.Equal(bd, DataTypeDecfloat):
+			tsmode = decfloatType
 		case bytes.Equal(bd, DataTypeDate):
 			tsmode = dateType
 		case bytes.Equal(bd, DataTypeTime):
@@ -214,7 +220,7 @@ func populateSnowflakeParameter(colname string, p *SnowflakeParameter) interface
 	case "partial_rollout":
 		return &p.PartialRollout
 	default:
-		debugPanicf("unknown type: %v", colname)
+		logger.Debugf("unknown type: %v", colname)
 		return &p.Unknown
 	}
 }

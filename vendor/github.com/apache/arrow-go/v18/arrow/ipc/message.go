@@ -18,6 +18,7 @@ package ipc
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -66,7 +67,7 @@ func (m MessageType) String() string {
 
 // Message is an IPC message, including metadata and body.
 type Message struct {
-	refCount int64
+	refCount atomic.Int64
 	msg      *flatbuf.Message
 	meta     *memory.Buffer
 	body     *memory.Buffer
@@ -80,12 +81,13 @@ func NewMessage(meta, body *memory.Buffer) *Message {
 	}
 	meta.Retain()
 	body.Retain()
-	return &Message{
-		refCount: 1,
-		msg:      flatbuf.GetRootAsMessage(meta.Bytes(), 0),
-		meta:     meta,
-		body:     body,
+	m := &Message{
+		msg:  flatbuf.GetRootAsMessage(meta.Bytes(), 0),
+		meta: meta,
+		body: body,
 	}
+	m.refCount.Add(1)
+	return m
 }
 
 func newMessageFromFB(meta *flatbuf.Message, body *memory.Buffer) *Message {
@@ -93,27 +95,28 @@ func newMessageFromFB(meta *flatbuf.Message, body *memory.Buffer) *Message {
 		panic("arrow/ipc: nil buffers")
 	}
 	body.Retain()
-	return &Message{
-		refCount: 1,
-		msg:      meta,
-		meta:     memory.NewBufferBytes(meta.Table().Bytes),
-		body:     body,
+	m := &Message{
+		msg:  meta,
+		meta: memory.NewBufferBytes(meta.Table().Bytes),
+		body: body,
 	}
+	m.refCount.Add(1)
+	return m
 }
 
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (msg *Message) Retain() {
-	atomic.AddInt64(&msg.refCount, 1)
+	msg.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // Release may be called simultaneously from multiple goroutines.
 // When the reference count goes to zero, the memory is freed.
 func (msg *Message) Release() {
-	debug.Assert(atomic.LoadInt64(&msg.refCount) > 0, "too many releases")
+	debug.Assert(msg.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&msg.refCount, -1) == 0 {
+	if msg.refCount.Add(-1) == 0 {
 		msg.meta.Release()
 		msg.body.Release()
 		msg.msg = nil
@@ -144,10 +147,13 @@ type MessageReader interface {
 type messageReader struct {
 	r io.Reader
 
-	refCount int64
+	refCount atomic.Int64
 	msg      *Message
 
-	mem memory.Allocator
+	mem             memory.Allocator
+	maxMetadataSize int64
+	maxBodySize     int64
+	header          [4]byte
 }
 
 // NewMessageReader returns a reader that reads messages from an input stream.
@@ -157,22 +163,37 @@ func NewMessageReader(r io.Reader, opts ...Option) MessageReader {
 		opt(cfg)
 	}
 
-	return &messageReader{r: r, refCount: 1, mem: cfg.alloc}
+	mr := &messageReader{
+		r:               r,
+		mem:             cfg.alloc,
+		maxMetadataSize: cfg.maxMetadataSize,
+		maxBodySize:     cfg.maxBodySize,
+	}
+	mr.refCount.Add(1)
+	return mr
+}
+
+func readFullMessagePart(r io.Reader, buf []byte) error {
+	_, err := io.ReadFull(r, buf)
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
 }
 
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (r *messageReader) Retain() {
-	atomic.AddInt64(&r.refCount, 1)
+	r.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (r *messageReader) Release() {
-	debug.Assert(atomic.LoadInt64(&r.refCount) > 0, "too many releases")
+	debug.Assert(r.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&r.refCount, -1) == 0 {
+	if r.refCount.Add(-1) == 0 {
 		if r.msg != nil {
 			r.msg.Release()
 			r.msg = nil
@@ -183,9 +204,16 @@ func (r *messageReader) Release() {
 // Message returns the current message that has been extracted from the
 // underlying stream.
 // It is valid until the next call to Message.
-func (r *messageReader) Message() (*Message, error) {
-	var buf = make([]byte, 4)
-	_, err := io.ReadFull(r.r, buf)
+func (r *messageReader) Message() (msg *Message, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			msg = nil
+			err = fmt.Errorf("arrow/ipc: invalid message metadata: %v", recovered)
+		}
+	}()
+
+	buf := r.header[:]
+	_, err = io.ReadFull(r.r, buf)
 	if err != nil {
 		return nil, fmt.Errorf("arrow/ipc: could not read continuation indicator: %w", err)
 	}
@@ -198,7 +226,7 @@ func (r *messageReader) Message() (*Message, error) {
 		// EOS message.
 		return nil, io.EOF // FIXME(sbinet): send nil instead? or a special EOS error?
 	case kIPCContToken:
-		_, err = io.ReadFull(r.r, buf)
+		err = readFullMessagePart(r.r, buf)
 		if err != nil {
 			return nil, fmt.Errorf("arrow/ipc: could not read message length: %w", err)
 		}
@@ -213,21 +241,34 @@ func (r *messageReader) Message() (*Message, error) {
 		// messages produced prior to version 0.15.0
 		msgLen = int32(cid)
 	}
+	if msgLen < 4 {
+		return nil, fmt.Errorf("arrow/ipc: invalid message metadata length %d", msgLen)
+	}
+	if r.maxMetadataSize > 0 && int64(msgLen) > r.maxMetadataSize {
+		return nil, fmt.Errorf("arrow/ipc: message metadata length %d exceeds limit %d", msgLen, r.maxMetadataSize)
+	}
 
 	buf = make([]byte, msgLen)
-	_, err = io.ReadFull(r.r, buf)
+	err = readFullMessagePart(r.r, buf)
 	if err != nil {
 		return nil, fmt.Errorf("arrow/ipc: could not read message metadata: %w", err)
 	}
 
 	meta := flatbuf.GetRootAsMessage(buf, 0)
 	bodyLen := meta.BodyLength()
+	maxInt := int64(^uint(0) >> 1)
+	if bodyLen < 0 || bodyLen > maxInt {
+		return nil, fmt.Errorf("arrow/ipc: invalid message body length %d", bodyLen)
+	}
+	if r.maxBodySize > 0 && bodyLen > r.maxBodySize {
+		return nil, fmt.Errorf("arrow/ipc: message body length %d exceeds limit %d", bodyLen, r.maxBodySize)
+	}
 
 	body := memory.NewResizableBuffer(r.mem)
 	defer body.Release()
 	body.Resize(int(bodyLen))
 
-	_, err = io.ReadFull(r.r, body.Bytes())
+	err = readFullMessagePart(r.r, body.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("arrow/ipc: could not read message body: %w", err)
 	}

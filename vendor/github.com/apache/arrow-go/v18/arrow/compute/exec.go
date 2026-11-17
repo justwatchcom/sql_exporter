@@ -93,6 +93,14 @@ func execInternal(ctx context.Context, fn Function, opts FunctionOptions, passed
 			executor.Clear()
 			vectorExecPool.Put(executor.(*vectorExecutor))
 		}()
+	case FuncScalarAgg:
+		executor = scalarAggExecPool.Get().(*scalarAggExecutor)
+		// Clear also runs the aggregate state cleanup for the paths where
+		// the executor never got to run, and is a no-op once it has run
+		defer func() {
+			executor.Clear()
+			scalarAggExecPool.Put(executor.(*scalarAggExecutor))
+		}()
 	default:
 		return nil, fmt.Errorf("%w: direct execution of %s", arrow.ErrNotImplemented, fn.Kind())
 	}
@@ -150,7 +158,7 @@ func execInternal(ctx context.Context, fn Function, opts FunctionOptions, passed
 			}
 		case FuncVector:
 			vkernel := k.(*exec.VectorKernel)
-			if !(allSame || !vkernel.CanExecuteChunkWise) {
+			if !allSame && vkernel.CanExecuteChunkWise {
 				return nil, fmt.Errorf("%w: vector kernel arguments must all be the same length", arrow.ErrInvalid)
 			}
 		}
@@ -158,7 +166,12 @@ func execInternal(ctx context.Context, fn Function, opts FunctionOptions, passed
 
 	ectx := GetExecCtx(ctx)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// The kernel watches the caller's context (kctx above), and cancelling a
+	// parent closes its Done channel before its children are cancelled. Check
+	// callerCtx as well as ctx below, so a result produced in that gap is not
+	// returned from a cancelled call.
+	callerCtx := ctx
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	ch := make(chan Datum, ectx.ExecChannelSize)
@@ -170,12 +183,26 @@ func execInternal(ctx context.Context, fn Function, opts FunctionOptions, passed
 	}()
 
 	result = executor.WrapResults(ctx, ch, haveChunkedArray(input.Values))
-	if err == nil {
-		debug.Assert(executor.CheckResultType(result) == nil, "invalid result type")
+	if callerCtx.Err() != nil || ctx.Err() != nil {
+		for value := range ch {
+			if value != nil {
+				value.Release()
+			}
+		}
+		if err == nil {
+			if callerCtx.Err() != nil {
+				err = context.Cause(callerCtx)
+			} else {
+				err = context.Cause(ctx)
+			}
+		}
+		if result != nil {
+			result.Release()
+			result = nil
+		}
 	}
-
-	if ctx.Err() == context.Canceled && result != nil {
-		result.Release()
+	if err == nil && result != nil {
+		debug.Assert(executor.CheckResultType(result) == nil, "invalid result type")
 	}
 
 	return

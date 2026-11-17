@@ -21,14 +21,14 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"sort"
 	"strings"
-	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/cloudsqlconn/debug"
 	"cloud.google.com/go/cloudsqlconn/errtype"
 	"cloud.google.com/go/cloudsqlconn/instance"
 	"cloud.google.com/go/cloudsqlconn/internal/trace"
-	"golang.org/x/oauth2"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
@@ -42,16 +42,32 @@ const (
 	// AutoIP selects public IP if available and otherwise selects private
 	// IP.
 	AutoIP = "AutoIP"
+
+	// SQLData is for access through the SQL Data endpoint and does not require
+	// a dataplane network path.
+	SQLData = "SQLData"
+
+	// ConnectTunnel is for access through the SQL Data endpoint without falling
+	// back to direct IP connections on backend failure.
+	ConnectTunnel = "ConnectTunnel"
+
+	// ClientProtocolTCP The value for the TCP client protocol type for MDX.
+	ClientProtocolTCP = "tcp"
+	// ClientProtocolUDS The value for the UDS client protocol type for MDX.
+	ClientProtocolUDS = "uds"
+	// ClientProtocolTLS The value for the TLS client protocol type for MDX.
+	ClientProtocolTLS = "tls"
 )
 
 // metadata contains information about a Cloud SQL instance needed to create
 // connections.
 type metadata struct {
-	ipAddrs      map[string]string
-	serverCACert []*x509.Certificate
-	serverCAMode string
-	dnsName      string
-	version      string
+	ipAddrs            map[string][]string
+	serverCACert       []*x509.Certificate
+	serverCAMode       string
+	dnsName            string
+	version            string
+	mdxProtocolSupport []string
 }
 
 // fetchMetadata uses the Cloud SQL Admin APIs get method to retrieve the
@@ -89,20 +105,42 @@ func fetchMetadata(
 	}
 
 	// parse any ip addresses that might be used to connect
-	ipAddrs := make(map[string]string)
+	ipAddrs := make(map[string][]string)
 	for _, ip := range db.IpAddresses {
 		switch ip.Type {
 		case "PRIMARY":
-			ipAddrs[PublicIP] = ip.IpAddress
+			ipAddrs[PublicIP] = []string{ip.IpAddress}
 		case "PRIVATE":
-			ipAddrs[PrivateIP] = ip.IpAddress
+			ipAddrs[PrivateIP] = []string{ip.IpAddress}
 		}
 	}
 
 	// resolve DnsName into IP address for PSC
 	// Note that we have to check for PSC enablement first because CAS instances also set the DnsName.
-	if db.PscEnabled && db.DnsName != "" {
-		ipAddrs[PSC] = db.DnsName
+	if db.PscEnabled {
+		// Search the dns_names field for the PSC DNS Name.
+		var pscDNSNames []string
+		for _, dnm := range db.DnsNames {
+			if dnm.Name != "" &&
+				dnm.ConnectionType == "PRIVATE_SERVICE_CONNECT" && dnm.DnsScope == "INSTANCE" {
+				// trim . from end of dns name
+				name := strings.TrimSuffix(dnm.Name, ".")
+				pscDNSNames = append(pscDNSNames, name)
+			}
+		}
+
+		// If the psc dns name was not found, use the legacy dns_name field
+		if len(pscDNSNames) == 0 && db.DnsName != "" {
+			// trim . from end of dns name
+			name := strings.TrimSuffix(db.DnsName, ".")
+			pscDNSNames = append(pscDNSNames, name)
+		}
+
+		// If the psc dns name was found, add it to the ipaddrs map.
+		if len(pscDNSNames) > 0 {
+			sortPSCDNSNames(pscDNSNames)
+			ipAddrs[PSC] = pscDNSNames
+		}
 	}
 
 	if len(ipAddrs) == 0 {
@@ -114,6 +152,9 @@ func fetchMetadata(
 
 	// parse the server-side CA certificate
 	caCerts := []*x509.Certificate{}
+	if db.ServerCaCert == nil {
+		return metadata{}, errtype.NewRefreshError("instance does not have a server CA certificate", inst.String(), nil)
+	}
 	for b, rest := pem.Decode([]byte(db.ServerCaCert.Cert)); b != nil; b, rest = pem.Decode(rest) {
 		if b == nil {
 			return metadata{}, errtype.NewRefreshError("failed to decode valid PEM cert", inst.String(), nil)
@@ -129,47 +170,40 @@ func fetchMetadata(
 		caCerts = append(caCerts, caCert)
 	}
 
+	// Find a DNS name to use to validate the certificate from the dns_names field. Any
+	// name in the list may be used to validate the server TLS certificate.
+	// Fall back to legacy dns_name field if necessary.
+	var serverName string
+	if len(ipAddrs[PSC]) > 0 {
+		serverName = ipAddrs[PSC][0]
+	} else if len(db.DnsNames) > 0 {
+		serverName = db.DnsNames[0].Name
+	}
+	if serverName == "" {
+		serverName = db.DnsName
+	}
+
 	m = metadata{
-		ipAddrs:      ipAddrs,
-		serverCACert: caCerts,
-		version:      db.DatabaseVersion,
-		dnsName:      db.DnsName,
-		serverCAMode: db.ServerCaMode,
+		ipAddrs:            ipAddrs,
+		serverCACert:       caCerts,
+		version:            db.DatabaseVersion,
+		dnsName:            serverName,
+		serverCAMode:       db.ServerCaMode,
+		mdxProtocolSupport: db.MdxProtocolSupport,
 	}
 
 	return m, nil
 }
 
-var expired = time.Time{}.Add(1)
-
-// canRefresh determines if the provided token was refreshed or if it still has
-// the sentinel expiration, which means the token was provided without a
-// refresh token (as with the Cloud SQL Proxy's --token flag) and therefore
-// cannot be refreshed.
-func canRefresh(t *oauth2.Token) bool {
-	return t.Expiry.Unix() != expired.Unix()
-}
-
-// refreshToken will retrieve a new token, only if a refresh token is present.
-func refreshToken(ts oauth2.TokenSource, tok *oauth2.Token) (*oauth2.Token, error) {
-	expiredToken := &oauth2.Token{
-		AccessToken:  tok.AccessToken,
-		TokenType:    tok.TokenType,
-		RefreshToken: tok.RefreshToken,
-		Expiry:       expired,
-	}
-	return oauth2.ReuseTokenSource(expiredToken, ts).Token()
-}
-
 // fetchEphemeralCert uses the Cloud SQL Admin API's createEphemeral method to
-// create a signed TLS certificate that authorized to connect via the Cloud SQL
+// create a signed ClientProtocolTLS certificate that authorized to connect via the Cloud SQL
 // instance's serverside proxy. The cert if valid for approximately one hour.
 func fetchEphemeralCert(
 	ctx context.Context,
 	client *sqladmin.Service,
 	inst instance.ConnName,
 	key *rsa.PrivateKey,
-	ts oauth2.TokenSource,
+	tp auth.TokenProvider,
 ) (c tls.Certificate, err error) {
 	var end trace.EndSpanFunc
 	ctx, end = trace.StartSpan(ctx, "cloud.google.com/go/cloudsqlconn/internal.FetchEphemeralCert")
@@ -182,10 +216,10 @@ func fetchEphemeralCert(
 	req := sqladmin.GenerateEphemeralCertRequest{
 		PublicKey: string(pem.EncodeToMemory(&pem.Block{Bytes: clientPubKey, Type: "RSA PUBLIC KEY"})),
 	}
-	var tok *oauth2.Token
-	if ts != nil {
+	var tok *auth.Token
+	if tp != nil {
 		var tokErr error
-		tok, tokErr = ts.Token()
+		tok, tokErr = tp.Token(ctx)
 		if tokErr != nil {
 			return tls.Certificate{}, errtype.NewRefreshError(
 				"failed to retrieve Oauth2 token",
@@ -193,17 +227,7 @@ func fetchEphemeralCert(
 				tokErr,
 			)
 		}
-		// Always refresh the token to ensure its expiration is far enough in
-		// the future.
-		tok, tokErr = refreshToken(ts, tok)
-		if tokErr != nil {
-			return tls.Certificate{}, errtype.NewRefreshError(
-				"failed to refresh Oauth2 token",
-				inst.String(),
-				tokErr,
-			)
-		}
-		req.AccessToken = tok.AccessToken
+		req.AccessToken = tok.Value
 	}
 	resp, err := retry50x(ctx, func(ctx2 context.Context) (*sqladmin.GenerateEphemeralCertResponse, error) {
 		return client.Connect.GenerateEphemeralCert(
@@ -235,10 +259,10 @@ func fetchEphemeralCert(
 			nil,
 		)
 	}
-	if ts != nil {
+	if tp != nil {
 		// Adjust the certificate's expiration to be the earliest of
 		// the token's expiration or the certificate's expiration.
-		if canRefresh(tok) && tok.Expiry.Before(clientCert.NotAfter) {
+		if tok.Expiry.Before(clientCert.NotAfter) {
 			clientCert.NotAfter = tok.Expiry
 		}
 	}
@@ -256,7 +280,7 @@ func newAdminAPIClient(
 	l debug.ContextLogger,
 	svc *sqladmin.Service,
 	key *rsa.PrivateKey,
-	ts oauth2.TokenSource,
+	tp auth.TokenProvider,
 	dialerID string,
 ) adminAPIClient {
 	return adminAPIClient{
@@ -264,7 +288,7 @@ func newAdminAPIClient(
 		logger:   l,
 		key:      key,
 		client:   svc,
-		ts:       ts,
+		tp:       tp,
 	}
 }
 
@@ -277,8 +301,8 @@ type adminAPIClient struct {
 	// key is used to generate the client certificate
 	key    *rsa.PrivateKey
 	client *sqladmin.Service
-	// ts is the TokenSource used for IAM DB AuthN.
-	ts oauth2.TokenSource
+	// tp is the TokenProvider used for IAM DB AuthN.
+	tp auth.TokenProvider
 }
 
 // ConnectionInfo immediately performs a full refresh operation using the Cloud
@@ -316,11 +340,11 @@ func (c adminAPIClient) ConnectionInfo(
 	ecC := make(chan ecRes, 1)
 	go func() {
 		defer close(ecC)
-		var iamTS oauth2.TokenSource
+		var iamTP auth.TokenProvider
 		if iamAuthNDial {
-			iamTS = c.ts
+			iamTP = c.tp
 		}
-		ec, err := fetchEphemeralCert(ctx, c.client, cn, c.key, iamTS)
+		ec, err := fetchEphemeralCert(ctx, c.client, cn, c.key, iamTP)
 		ecC <- ecRes{ec, err}
 	}()
 
@@ -353,7 +377,7 @@ func (c adminAPIClient) ConnectionInfo(
 	}
 
 	return NewConnectionInfo(
-		cn, md.dnsName, md.serverCAMode, md.version, md.ipAddrs, md.serverCACert, ec,
+		cn, md.dnsName, md.serverCAMode, md.version, md.ipAddrs, md.serverCACert, ec, md.mdxProtocolSupport,
 	), nil
 }
 
@@ -368,4 +392,22 @@ func supportsAutoIAMAuthN(version string) error {
 	default:
 		return fmt.Errorf("%s does not support Auto IAM DB Authentication", version)
 	}
+}
+
+// sortPSCDNSNames sorts PSC DNS names alphabetically, putting the names
+// that end with `.sql-psc.goog.` first.
+func sortPSCDNSNames(names []string) {
+	sort.SliceStable(names, func(i, j int) bool {
+		nameI := strings.TrimSuffix(strings.ToLower(names[i]), ".")
+		nameJ := strings.TrimSuffix(strings.ToLower(names[j]), ".")
+		iIsPsc := strings.HasSuffix(nameI, ".sql-psc.goog")
+		jIsPsc := strings.HasSuffix(nameJ, ".sql-psc.goog")
+		if iIsPsc && !jIsPsc {
+			return true // i comes first
+		}
+		if !iIsPsc && jIsPsc {
+			return false // j comes first
+		}
+		return names[i] < names[j]
+	})
 }

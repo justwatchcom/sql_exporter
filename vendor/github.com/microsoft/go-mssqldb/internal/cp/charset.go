@@ -96,6 +96,13 @@ func CharsetToUTF8(col Collation, s []byte) string {
 		return string(s)
 	}
 
+	// Fast path: every code page maps the ASCII range (0x00-0x7F) to the
+	// identical Unicode code points, so a pure ASCII input can be returned
+	// without per-character decoding.
+	if isASCII(s) {
+		return string(s)
+	}
+
 	buf := strings.Builder{}
 	buf.Grow(len(s))
 	for i := 0; i < len(s); i++ {

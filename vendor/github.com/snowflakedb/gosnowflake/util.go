@@ -26,6 +26,7 @@ const (
 	fileGetStream                    contextKey = "STREAMING_GET_FILE"
 	fileTransferOptions              contextKey = "FILE_TRANSFER_OPTIONS"
 	enableHigherPrecision            contextKey = "ENABLE_HIGHER_PRECISION"
+	enableDecfloat                   contextKey = "ENABLE_DECFLOAT"
 	enableArrowBatchesUtf8Validation contextKey = "ENABLE_ARROW_BATCHES_UTF8_VALIDATION"
 	arrowBatches                     contextKey = "ARROW_BATCHES"
 	arrowAlloc                       contextKey = "ARROW_ALLOC"
@@ -34,13 +35,12 @@ const (
 	enableStructuredTypes            contextKey = "ENABLE_STRUCTURED_TYPES"
 	mapValuesNullable                contextKey = "MAP_VALUES_NULLABLE"
 	arrayValuesNullable              contextKey = "ARRAY_VALUES_NULLABLE"
-)
-
-const (
-	describeOnly        contextKey = "DESCRIBE_ONLY"
-	internalQuery       contextKey = "INTERNAL_QUERY"
-	cancelRetry         contextKey = "CANCEL_RETRY"
-	streamChunkDownload contextKey = "STREAM_CHUNK_DOWNLOAD"
+	describeOnly                     contextKey = "DESCRIBE_ONLY"
+	internalQuery                    contextKey = "INTERNAL_QUERY"
+	cancelRetry                      contextKey = "CANCEL_RETRY"
+	streamChunkDownload              contextKey = "STREAM_CHUNK_DOWNLOAD"
+	logQueryText                     contextKey = "LOG_QUERY_TEXT"
+	logQueryParameters               contextKey = "LOG_QUERY_PARAMETERS"
 )
 
 var (
@@ -103,6 +103,15 @@ func WithDescribeOnly(ctx context.Context) context.Context {
 // When used in combination with WithArrowBatches, original BigDecimal in arrow batches will be preserved.
 func WithHigherPrecision(ctx context.Context) context.Context {
 	return context.WithValue(ctx, enableHigherPrecision, true)
+}
+
+// WithDecfloatMappingEnabled returns a context that enables native support for DECFLOAT.
+// Without this context, DECFLOAT columns are returned as strings.
+// With this context enabled, DECFLOAT columns are returned as *big.Float or float64 (depending on HigherPrecision setting).
+// Keep in mind that both float64 and *big.Float are not able to precisely represent some DECFLOAT values.
+// If precision is important, you have to use string representation and use your own library to parse it.
+func WithDecfloatMappingEnabled(ctx context.Context) context.Context {
+	return context.WithValue(ctx, enableDecfloat, true)
 }
 
 // WithArrowBatches returns a context that allows users to retrieve
@@ -175,6 +184,16 @@ func WithArrayValuesNullable(ctx context.Context) context.Context {
 // WithInternal sets the internal query flag.
 func WithInternal(ctx context.Context) context.Context {
 	return context.WithValue(ctx, internalQuery, true)
+}
+
+// WithLogQueryText enables logging of the query text.
+func WithLogQueryText(ctx context.Context) context.Context {
+	return context.WithValue(ctx, logQueryText, true)
+}
+
+// WithLogQueryParameters enables logging of the query parameters.
+func WithLogQueryParameters(ctx context.Context) context.Context {
+	return context.WithValue(ctx, logQueryParameters, true)
 }
 
 // Get the request ID from the context if specified, otherwise generate one
@@ -288,6 +307,14 @@ func (sta *simpleTokenAccessor) SetTokens(token string, masterToken string, sess
 	sta.token = token
 	sta.masterToken = masterToken
 	sta.sessionID = sessionID
+}
+
+func safeGetTokens(sr *snowflakeRestful) (token string, masterToken string, sessionID int64) {
+	if sr == nil || sr.TokenAccessor == nil {
+		logger.Error("safeGetTokens: could not get tokens as TokenAccessor was nil")
+		return "", "", 0
+	}
+	return sr.TokenAccessor.GetTokens()
 }
 
 func escapeForCSV(value string) string {

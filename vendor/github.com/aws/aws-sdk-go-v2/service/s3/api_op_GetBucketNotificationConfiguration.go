@@ -4,34 +4,49 @@ package s3
 
 import (
 	"context"
-	"fmt"
-	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3cust "github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/middleware"
 	"github.com/aws/smithy-go/ptr"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// This operation is not supported by directory buckets. Returns the notification
-// configuration of a bucket. If notifications are not enabled on the bucket, the
-// action returns an empty NotificationConfiguration element. By default, you must
-// be the bucket owner to read the notification configuration of a bucket. However,
-// the bucket owner can use a bucket policy to grant permission to other users to
-// read this configuration with the s3:GetBucketNotification permission. When you
-// use this API operation with an access point, provide the alias of the access
-// point in place of the bucket name. When you use this API operation with an
-// Object Lambda access point, provide the alias of the Object Lambda access point
-// in place of the bucket name. If the Object Lambda access point alias in a
-// request is not valid, the error code InvalidAccessPointAliasError is returned.
-// For more information about InvalidAccessPointAliasError , see List of Error
-// Codes (https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html#ErrorCodeList)
-// . For more information about setting and reading the notification configuration
-// on a bucket, see Setting Up Notification of Bucket Events (https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html)
-// . For more information about bucket policies, see Using Bucket Policies (https://docs.aws.amazon.com/AmazonS3/latest/dev/using-iam-policies.html)
-// . The following action is related to GetBucketNotification :
-//   - PutBucketNotification (https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketNotification.html)
+// This operation is not supported for directory buckets.
+//
+// Returns the notification configuration of a bucket.
+//
+// If notifications are not enabled on the bucket, the action returns an empty
+// NotificationConfiguration element.
+//
+// By default, you must be the bucket owner to read the notification configuration
+// of a bucket. However, the bucket owner can use a bucket policy to grant
+// permission to other users to read this configuration with the
+// s3:GetBucketNotification permission.
+//
+// When you use this API operation with an access point, provide the alias of the
+// access point in place of the bucket name.
+//
+// When you use this API operation with an Object Lambda access point, provide the
+// alias of the Object Lambda access point in place of the bucket name. If the
+// Object Lambda access point alias in a request is not valid, the error code
+// InvalidAccessPointAliasError is returned. For more information about
+// InvalidAccessPointAliasError , see [List of Error Codes].
+//
+// For more information about setting and reading the notification configuration
+// on a bucket, see [Setting Up Notification of Bucket Events]. For more information about bucket policies, see [Using Bucket Policies].
+//
+// The following action is related to GetBucketNotification :
+//
+// [PutBucketNotification]
+//
+// You must URL encode any signed header values that contain spaces. For example,
+// if your header value is my file.txt , containing two spaces after my , you must
+// URL encode this value to my%20%20file.txt .
+//
+// [Using Bucket Policies]: https://docs.aws.amazon.com/AmazonS3/latest/dev/using-iam-policies.html
+// [Setting Up Notification of Bucket Events]: https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html
+// [List of Error Codes]: https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html#ErrorCodeList
+// [PutBucketNotification]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketNotification.html
 func (c *Client) GetBucketNotificationConfiguration(ctx context.Context, params *GetBucketNotificationConfigurationInput, optFns ...func(*Options)) (*GetBucketNotificationConfigurationOutput, error) {
 	if params == nil {
 		params = &GetBucketNotificationConfigurationInput{}
@@ -49,15 +64,18 @@ func (c *Client) GetBucketNotificationConfiguration(ctx context.Context, params 
 
 type GetBucketNotificationConfigurationInput struct {
 
-	// The name of the bucket for which to get the notification configuration. When
-	// you use this API operation with an access point, provide the alias of the access
-	// point in place of the bucket name. When you use this API operation with an
-	// Object Lambda access point, provide the alias of the Object Lambda access point
-	// in place of the bucket name. If the Object Lambda access point alias in a
-	// request is not valid, the error code InvalidAccessPointAliasError is returned.
-	// For more information about InvalidAccessPointAliasError , see List of Error
-	// Codes (https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html#ErrorCodeList)
-	// .
+	// The name of the bucket for which to get the notification configuration.
+	//
+	// When you use this API operation with an access point, provide the alias of the
+	// access point in place of the bucket name.
+	//
+	// When you use this API operation with an Object Lambda access point, provide the
+	// alias of the Object Lambda access point in place of the bucket name. If the
+	// Object Lambda access point alias in a request is not valid, the error code
+	// InvalidAccessPointAliasError is returned. For more information about
+	// InvalidAccessPointAliasError , see [List of Error Codes].
+	//
+	// [List of Error Codes]: https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html#ErrorCodeList
 	//
 	// This member is required.
 	Bucket *string
@@ -71,6 +89,7 @@ type GetBucketNotificationConfigurationInput struct {
 }
 
 func (in *GetBucketNotificationConfigurationInput) bindEndpointParams(p *EndpointParameters) {
+
 	p.Bucket = in.Bucket
 	p.UseS3ExpressControlEndpoint = ptr.Bool(true)
 }
@@ -101,9 +120,6 @@ type GetBucketNotificationConfigurationOutput struct {
 }
 
 func (c *Client) addOperationGetBucketNotificationConfigurationMiddlewares(stack *middleware.Stack, options Options) (err error) {
-	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
-		return err
-	}
 	err = stack.Serialize.Add(&awsRestxml_serializeOpGetBucketNotificationConfiguration{}, middleware.After)
 	if err != nil {
 		return err
@@ -112,62 +128,29 @@ func (c *Client) addOperationGetBucketNotificationConfigurationMiddlewares(stack
 	if err != nil {
 		return err
 	}
-	if err := addProtocolFinalizerMiddlewares(stack, options, "GetBucketNotificationConfiguration"); err != nil {
-		return fmt.Errorf("add protocol finalizers: %v", err)
-	}
 
-	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
-		return err
-	}
-	if err = addSetLoggerMiddleware(stack, options); err != nil {
-		return err
-	}
-	if err = addClientRequestID(stack); err != nil {
-		return err
-	}
-	if err = addComputeContentLength(stack); err != nil {
-		return err
-	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
-		return err
-	}
-	if err = addRawResponseToMetadata(stack); err != nil {
-		return err
-	}
-	if err = addRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+	if err = addRecordResponseTiming(stack, options); err != nil {
 		return err
 	}
 	if err = addPutBucketContextMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addIsExpressUserAgent(stack); err != nil {
+		return err
+	}
+	if err = addCredentialSource(stack, options); err != nil {
+		return err
+	}
 	if err = addOpGetBucketNotificationConfigurationValidationMiddleware(stack); err != nil {
 		return err
 	}
-	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGetBucketNotificationConfiguration(options.Region), middleware.Before); err != nil {
-		return err
-	}
 	if err = addMetadataRetrieverMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addGetBucketNotificationConfigurationUpdateEndpoint(stack, options); err != nil {
@@ -182,6 +165,9 @@ func (c *Client) addOperationGetBucketNotificationConfigurationMiddlewares(stack
 	if err = disableAcceptEncodingGzip(stack); err != nil {
 		return err
 	}
+	if err = s3cust.HandleResponseErrorWith200Status(stack); err != nil {
+		return err
+	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
 		return err
 	}
@@ -189,6 +175,9 @@ func (c *Client) addOperationGetBucketNotificationConfigurationMiddlewares(stack
 		return err
 	}
 	if err = addSerializeImmutableHostnameBucketMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -199,14 +188,6 @@ func (v *GetBucketNotificationConfigurationInput) bucket() (string, bool) {
 		return "", false
 	}
 	return *v.Bucket, true
-}
-
-func newServiceMetadataMiddleware_opGetBucketNotificationConfiguration(region string) *awsmiddleware.RegisterServiceMetadata {
-	return &awsmiddleware.RegisterServiceMetadata{
-		Region:        region,
-		ServiceID:     ServiceID,
-		OperationName: "GetBucketNotificationConfiguration",
-	}
 }
 
 // getGetBucketNotificationConfigurationBucketMember returns a pointer to string

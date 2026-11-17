@@ -2,21 +2,22 @@ package gosnowflake
 
 import "errors"
 
-type queryStatus string
+// QueryStatus denotes the status of a query.
+type QueryStatus string
 
 const (
 	// QueryStatusInProgress denotes a query execution in progress
-	QueryStatusInProgress queryStatus = "queryStatusInProgress"
+	QueryStatusInProgress QueryStatus = "queryStatusInProgress"
 	// QueryStatusComplete denotes a completed query execution
-	QueryStatusComplete queryStatus = "queryStatusComplete"
+	QueryStatusComplete QueryStatus = "queryStatusComplete"
 	// QueryFailed denotes a failed query
-	QueryFailed queryStatus = "queryFailed"
+	QueryFailed QueryStatus = "queryFailed"
 )
 
 // SnowflakeResult provides an API for methods exposed to the clients
 type SnowflakeResult interface {
 	GetQueryID() string
-	GetStatus() queryStatus
+	GetStatus() QueryStatus
 	GetArrowBatches() ([]*ArrowBatch, error)
 }
 
@@ -24,7 +25,7 @@ type snowflakeResult struct {
 	affectedRows int64
 	insertID     int64 // Snowflake doesn't support last insert id
 	queryID      string
-	status       queryStatus
+	status       QueryStatus
 	err          error
 	errChannel   chan error
 }
@@ -47,7 +48,7 @@ func (res *snowflakeResult) GetQueryID() string {
 	return res.queryID
 }
 
-func (res *snowflakeResult) GetStatus() queryStatus {
+func (res *snowflakeResult) GetStatus() QueryStatus {
 	return res.status
 }
 
@@ -60,7 +61,8 @@ func (res *snowflakeResult) GetArrowBatches() ([]*ArrowBatch, error) {
 
 func (res *snowflakeResult) waitForAsyncExecStatus() error {
 	// if async exec, block until execution is finished
-	if res.status == QueryStatusInProgress {
+	switch res.status {
+	case QueryStatusInProgress:
 		err := <-res.errChannel
 		res.status = QueryStatusComplete
 		if err != nil {
@@ -68,10 +70,12 @@ func (res *snowflakeResult) waitForAsyncExecStatus() error {
 			res.err = err
 			return err
 		}
-	} else if res.status == QueryFailed {
+		return nil
+	case QueryFailed:
 		return res.err
+	default:
+		return nil
 	}
-	return nil
 }
 
 type snowflakeResultNoRows struct {

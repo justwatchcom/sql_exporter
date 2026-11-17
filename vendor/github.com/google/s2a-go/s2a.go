@@ -33,8 +33,9 @@ import (
 	"github.com/google/s2a-go/internal/handshaker"
 	"github.com/google/s2a-go/internal/handshaker/service"
 	"github.com/google/s2a-go/internal/tokenmanager"
-	"github.com/google/s2a-go/internal/v2"
+	v2 "github.com/google/s2a-go/internal/v2"
 	"github.com/google/s2a-go/retry"
+	"github.com/google/s2a-go/stream"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/protobuf/proto"
@@ -304,6 +305,11 @@ type TLSClientConfigOptions struct {
 	//			ServerName: "example.com",
 	//		})
 	ServerName string
+
+	// NextProtos is the list of ALPN protocols offered during the TLS
+	// handshake. If empty, ClientOptions.NextProtos is used; if that is also
+	// empty, HTTP/2 ("h2") is offered.
+	NextProtos []string
 }
 
 // TLSClientConfigFactory defines the interface for a client TLS config factory.
@@ -319,6 +325,10 @@ func NewTLSClientConfigFactory(opts *ClientOptions) (TLSClientConfigFactory, err
 	if opts.EnableLegacyMode {
 		return nil, fmt.Errorf("NewTLSClientConfigFactory only supports S2Av2")
 	}
+	localIdentity, err := toV2ProtoIdentity(opts.LocalIdentity)
+	if err != nil {
+		return nil, err
+	}
 	tokenManager, err := tokenmanager.NewSingleTokenAccessTokenManager()
 	if err != nil {
 		// The only possible error is: access token not set in the environment,
@@ -330,6 +340,9 @@ func NewTLSClientConfigFactory(opts *ClientOptions) (TLSClientConfigFactory, err
 			tokenManager:              nil,
 			verificationMode:          getVerificationMode(opts.VerificationMode),
 			serverAuthorizationPolicy: opts.serverAuthorizationPolicy,
+			getStream:                 opts.getS2AStream,
+			localIdentity:             localIdentity,
+			nextProtos:                opts.NextProtos,
 		}, nil
 	}
 	return &s2aTLSClientConfigFactory{
@@ -338,6 +351,9 @@ func NewTLSClientConfigFactory(opts *ClientOptions) (TLSClientConfigFactory, err
 		tokenManager:              tokenManager,
 		verificationMode:          getVerificationMode(opts.VerificationMode),
 		serverAuthorizationPolicy: opts.serverAuthorizationPolicy,
+		getStream:                 opts.getS2AStream,
+		localIdentity:             localIdentity,
+		nextProtos:                opts.NextProtos,
 	}, nil
 }
 
@@ -347,15 +363,25 @@ type s2aTLSClientConfigFactory struct {
 	tokenManager              tokenmanager.AccessTokenManager
 	verificationMode          s2av2pb.ValidatePeerCertificateChainReq_VerificationMode
 	serverAuthorizationPolicy []byte
+	getStream                 stream.GetS2AStream
+	// localIdentity should only be used by the client.
+	localIdentity *commonpb.Identity
+	nextProtos    []string
 }
 
 func (f *s2aTLSClientConfigFactory) Build(
 	ctx context.Context, opts *TLSClientConfigOptions) (*tls.Config, error) {
 	serverName := ""
-	if opts != nil && opts.ServerName != "" {
-		serverName = opts.ServerName
+	nextProtos := f.nextProtos
+	if opts != nil {
+		if opts.ServerName != "" {
+			serverName = opts.ServerName
+		}
+		if len(opts.NextProtos) > 0 {
+			nextProtos = opts.NextProtos
+		}
 	}
-	return v2.NewClientTLSConfig(ctx, f.s2av2Address, f.transportCreds, f.tokenManager, f.verificationMode, serverName, f.serverAuthorizationPolicy)
+	return v2.NewClientTLSConfig(ctx, f.s2av2Address, f.transportCreds, f.tokenManager, f.verificationMode, serverName, f.serverAuthorizationPolicy, f.getStream, f.localIdentity, nextProtos)
 }
 
 func getVerificationMode(verificationMode VerificationModeType) s2av2pb.ValidatePeerCertificateChainReq_VerificationMode {
@@ -370,6 +396,10 @@ func getVerificationMode(verificationMode VerificationModeType) s2av2pb.Validate
 		return s2av2pb.ValidatePeerCertificateChainReq_RESERVED_CUSTOM_VERIFICATION_MODE_4
 	case ReservedCustomVerificationMode5:
 		return s2av2pb.ValidatePeerCertificateChainReq_RESERVED_CUSTOM_VERIFICATION_MODE_5
+	case ReservedCustomVerificationMode6:
+		return s2av2pb.ValidatePeerCertificateChainReq_RESERVED_CUSTOM_VERIFICATION_MODE_6
+	case ReservedCustomVerificationMode7:
+		return s2av2pb.ValidatePeerCertificateChainReq_RESERVED_CUSTOM_VERIFICATION_MODE_7
 	default:
 		return s2av2pb.ValidatePeerCertificateChainReq_UNSPECIFIED
 	}

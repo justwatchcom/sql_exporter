@@ -18,7 +18,10 @@ package array
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"strings"
 	"sync/atomic"
 
@@ -36,27 +39,29 @@ type RecordReader interface {
 	Schema() *arrow.Schema
 
 	Next() bool
-	Record() arrow.Record
+	RecordBatch() arrow.RecordBatch
+	// Deprecated: Use [RecordBatch] instead.
+	Record() arrow.RecordBatch
 	Err() error
 }
 
 // simpleRecords is a simple iterator over a collection of records.
 type simpleRecords struct {
-	refCount int64
+	refCount atomic.Int64
 
 	schema *arrow.Schema
-	recs   []arrow.Record
-	cur    arrow.Record
+	recs   []arrow.RecordBatch
+	cur    arrow.RecordBatch
 }
 
 // NewRecordReader returns a simple iterator over the given slice of records.
-func NewRecordReader(schema *arrow.Schema, recs []arrow.Record) (RecordReader, error) {
+func NewRecordReader(schema *arrow.Schema, recs []arrow.RecordBatch) (RecordReader, error) {
 	rs := &simpleRecords{
-		refCount: 1,
-		schema:   schema,
-		recs:     recs,
-		cur:      nil,
+		schema: schema,
+		recs:   recs,
+		cur:    nil,
 	}
+	rs.refCount.Add(1)
 
 	for _, rec := range rs.recs {
 		rec.Retain()
@@ -75,16 +80,16 @@ func NewRecordReader(schema *arrow.Schema, recs []arrow.Record) (RecordReader, e
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (rs *simpleRecords) Retain() {
-	atomic.AddInt64(&rs.refCount, 1)
+	rs.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (rs *simpleRecords) Release() {
-	debug.Assert(atomic.LoadInt64(&rs.refCount) > 0, "too many releases")
+	debug.Assert(rs.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&rs.refCount, -1) == 0 {
+	if rs.refCount.Add(-1) == 0 {
 		if rs.cur != nil {
 			rs.cur.Release()
 		}
@@ -95,8 +100,11 @@ func (rs *simpleRecords) Release() {
 	}
 }
 
-func (rs *simpleRecords) Schema() *arrow.Schema { return rs.schema }
-func (rs *simpleRecords) Record() arrow.Record  { return rs.cur }
+func (rs *simpleRecords) Schema() *arrow.Schema          { return rs.schema }
+func (rs *simpleRecords) RecordBatch() arrow.RecordBatch { return rs.cur }
+
+// Deprecated: Use [RecordBatch] instead.
+func (rs *simpleRecords) Record() arrow.RecordBatch { return rs.RecordBatch() }
 func (rs *simpleRecords) Next() bool {
 	if len(rs.recs) == 0 {
 		return false
@@ -112,25 +120,38 @@ func (rs *simpleRecords) Err() error { return nil }
 
 // simpleRecord is a basic, non-lazy in-memory record batch.
 type simpleRecord struct {
-	refCount int64
+	refCount atomic.Int64
 
 	schema *arrow.Schema
+	meta   arrow.Metadata
 
 	rows int64
 	arrs []arrow.Array
 }
 
-// NewRecord returns a basic, non-lazy in-memory record batch.
+// NewRecordBatch returns a basic, non-lazy in-memory record batch.
 //
-// NewRecord panics if the columns and schema are inconsistent.
-// NewRecord panics if rows is larger than the height of the columns.
-func NewRecord(schema *arrow.Schema, cols []arrow.Array, nrows int64) arrow.Record {
+// NewRecordBatch panics if the columns and schema are inconsistent.
+// NewRecordBatch panics if rows is larger than the height of the columns.
+func NewRecordBatch(schema *arrow.Schema, cols []arrow.Array, nrows int64) arrow.RecordBatch {
+	return NewRecordBatchWithMetadata(schema, cols, nrows, arrow.Metadata{})
+}
+
+// NewRecordBatchWithMetadata returns a basic, non-lazy in-memory record batch
+// with custom metadata. The metadata is preserved during IPC serialization
+// at the Message level.
+//
+// NewRecordBatchWithMetadata panics if the columns and schema are inconsistent.
+// NewRecordBatchWithMetadata panics if rows is larger than the height of the columns.
+func NewRecordBatchWithMetadata(schema *arrow.Schema, cols []arrow.Array, nrows int64, meta arrow.Metadata) arrow.RecordBatch {
 	rec := &simpleRecord{
-		refCount: 1,
-		schema:   schema,
-		rows:     nrows,
-		arrs:     make([]arrow.Array, len(cols)),
+		schema: schema,
+		meta:   meta,
+		rows:   nrows,
+		arrs:   make([]arrow.Array, len(cols)),
 	}
+	rec.refCount.Add(1)
+
 	copy(rec.arrs, cols)
 	for _, arr := range rec.arrs {
 		arr.Retain()
@@ -154,7 +175,12 @@ func NewRecord(schema *arrow.Schema, cols []arrow.Array, nrows int64) arrow.Reco
 	return rec
 }
 
-func (rec *simpleRecord) SetColumn(i int, arr arrow.Array) (arrow.Record, error) {
+// Deprecated: Use [NewRecordBatch] instead.
+func NewRecord(schema *arrow.Schema, cols []arrow.Array, nrows int64) arrow.Record {
+	return NewRecordBatch(schema, cols, nrows)
+}
+
+func (rec *simpleRecord) SetColumn(i int, arr arrow.Array) (arrow.RecordBatch, error) {
 	if i < 0 || i >= len(rec.arrs) {
 		return nil, fmt.Errorf("arrow/array: column index out of range [0, %d): got=%d", len(rec.arrs), i)
 	}
@@ -177,7 +203,7 @@ func (rec *simpleRecord) SetColumn(i int, arr arrow.Array) (arrow.Record, error)
 	copy(arrs, rec.arrs)
 	arrs[i] = arr
 
-	return NewRecord(rec.schema, arrs, rec.rows), nil
+	return NewRecordBatchWithMetadata(rec.schema, arrs, rec.rows, rec.meta), nil
 }
 
 func (rec *simpleRecord) validate() error {
@@ -210,16 +236,16 @@ func (rec *simpleRecord) validate() error {
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (rec *simpleRecord) Retain() {
-	atomic.AddInt64(&rec.refCount, 1)
+	rec.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (rec *simpleRecord) Release() {
-	debug.Assert(atomic.LoadInt64(&rec.refCount) > 0, "too many releases")
+	debug.Assert(rec.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&rec.refCount, -1) == 0 {
+	if rec.refCount.Add(-1) == 0 {
 		for _, arr := range rec.arrs {
 			arr.Release()
 		}
@@ -228,6 +254,7 @@ func (rec *simpleRecord) Release() {
 }
 
 func (rec *simpleRecord) Schema() *arrow.Schema    { return rec.schema }
+func (rec *simpleRecord) Metadata() arrow.Metadata { return rec.meta }
 func (rec *simpleRecord) NumRows() int64           { return rec.rows }
 func (rec *simpleRecord) NumCols() int64           { return int64(len(rec.arrs)) }
 func (rec *simpleRecord) Columns() []arrow.Array   { return rec.arrs }
@@ -240,7 +267,7 @@ func (rec *simpleRecord) ColumnName(i int) string  { return rec.schema.Field(i).
 //
 // NewSlice panics if the slice is outside the valid range of the record array.
 // NewSlice panics if j < i.
-func (rec *simpleRecord) NewSlice(i, j int64) arrow.Record {
+func (rec *simpleRecord) NewSlice(i, j int64) arrow.RecordBatch {
 	arrs := make([]arrow.Array, len(rec.arrs))
 	for ii, arr := range rec.arrs {
 		arrs[ii] = NewSlice(arr, i, j)
@@ -250,7 +277,7 @@ func (rec *simpleRecord) NewSlice(i, j int64) arrow.Record {
 			arr.Release()
 		}
 	}()
-	return NewRecord(rec.schema, arrs, j-i)
+	return NewRecordBatchWithMetadata(rec.schema, arrs, j-i, rec.meta)
 }
 
 func (rec *simpleRecord) String() string {
@@ -273,23 +300,28 @@ func (rec *simpleRecord) MarshalJSON() ([]byte, error) {
 // RecordBuilder eases the process of building a Record, iteratively, from
 // a known Schema.
 type RecordBuilder struct {
-	refCount int64
-	mem      memory.Allocator
-	schema   *arrow.Schema
-	fields   []Builder
+	refCount    atomic.Int64
+	mem         memory.Allocator
+	schema      *arrow.Schema
+	fields      []Builder
+	checkpoints []*builderCheckpoint
 }
 
 // NewRecordBuilder returns a builder, using the provided memory allocator and a schema.
 func NewRecordBuilder(mem memory.Allocator, schema *arrow.Schema) *RecordBuilder {
 	b := &RecordBuilder{
-		refCount: 1,
-		mem:      mem,
-		schema:   schema,
-		fields:   make([]Builder, schema.NumFields()),
+		mem:    mem,
+		schema: schema,
+		fields: make([]Builder, schema.NumFields()),
 	}
+	b.refCount.Add(1)
 
 	for i := 0; i < schema.NumFields(); i++ {
 		b.fields[i] = NewBuilder(b.mem, schema.Field(i).Type)
+	}
+	b.checkpoints = make([]*builderCheckpoint, len(b.fields))
+	for i, field := range b.fields {
+		b.checkpoints[i] = newBuilderCheckpoint(field)
 	}
 
 	return b
@@ -298,18 +330,19 @@ func NewRecordBuilder(mem memory.Allocator, schema *arrow.Schema) *RecordBuilder
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (b *RecordBuilder) Retain() {
-	atomic.AddInt64(&b.refCount, 1)
+	b.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 func (b *RecordBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		for _, f := range b.fields {
 			f.Release()
 		}
 		b.fields = nil
+		b.checkpoints = nil
 	}
 }
 
@@ -323,15 +356,51 @@ func (b *RecordBuilder) Reserve(size int) {
 	}
 }
 
-// NewRecord creates a new record from the memory buffers and resets the
-// RecordBuilder so it can be used to build a new record.
+func (b *RecordBuilder) columnLenRange() (lower, upper int) {
+	if len(b.fields) > 0 {
+		lower = b.fields[0].Len()
+		upper = lower
+
+		for _, f := range b.fields[1:] {
+			lower = min(lower, f.Len())
+			upper = max(upper, f.Len())
+		}
+	}
+	return
+}
+
+// Resize adjusts the space allocated by all the field builders to n elements.
+// If n is greater than an individual builder Cap(), additional memory will be
+// allocated. If n is smaller, the allocated memory may reduced.
 //
-// The returned Record must be Release()'d after use.
+// As a special case, if n equals to -1, all field builders will be resized
+// to the size of the shortest one.
+func (b *RecordBuilder) Resize(n int) {
+	if n >= 0 {
+		for _, f := range b.fields {
+			f.Resize(n)
+		}
+	} else if n == -1 {
+		lower, upper := b.columnLenRange()
+		if lower != upper {
+			b.Resize(lower)
+		}
+	}
+}
+
+// NewRecordBatch creates a new record batch from the memory buffers and resets the
+// RecordBuilder so it can be used to build a new record batch.
 //
-// NewRecord panics if the fields' builder do not have the same length.
-func (b *RecordBuilder) NewRecord() arrow.Record {
+// The returned RecordBatch must be Release()'d after use.
+//
+// NewRecordBatch panics if the fields' builder do not have the same length.
+func (b *RecordBuilder) NewRecordBatch() arrow.RecordBatch {
+	lower, upper := b.columnLenRange()
+	if lower != upper {
+		panic(fmt.Errorf("arrow/array: some fields have excessive number of rows (want at most %d, have %d)", lower, upper))
+	}
+
 	cols := make([]arrow.Array, len(b.fields))
-	rows := int64(0)
 
 	defer func(cols []arrow.Array) {
 		for _, col := range cols {
@@ -344,22 +413,193 @@ func (b *RecordBuilder) NewRecord() arrow.Record {
 
 	for i, f := range b.fields {
 		cols[i] = f.NewArray()
-		irow := int64(cols[i].Len())
-		if i > 0 && irow != rows {
-			panic(fmt.Errorf("arrow/array: field %d has %d rows. want=%d", i, irow, rows))
-		}
-		rows = irow
 	}
 
-	return NewRecord(b.schema, cols, rows)
+	return NewRecordBatch(b.schema, cols, int64(lower))
 }
 
-// UnmarshalJSON for record builder will read in a single object and add the values
-// to each field in the recordbuilder, missing fields will get a null and unexpected
-// keys will be ignored. If reading in an array of records as a single batch, then use
-// a structbuilder and use RecordFromStruct.
-func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
+// Deprecated: Use [NewRecordBatch] instead.
+func (b *RecordBuilder) NewRecord() arrow.Record {
+	return b.NewRecordBatch()
+}
+
+type checkpointableBuilder interface {
+	newCheckpoint() checkpointState
+}
+
+type checkpointState interface {
+	capture()
+	restore()
+}
+
+// CheckpointState captures and restores builder state that is not represented by
+// the builder's length or storage builders. RecordBuilder reuses the same
+// checkpoint for each row, calling Capture before decoding and Restore after a
+// failed decode.
+type CheckpointState interface {
+	// Capture records the current state of the builder.
+	Capture()
+	// Restore returns the builder to the last captured state.
+	Restore()
+}
+
+// CheckpointableBuilder allows custom builders to participate in RecordBuilder
+// row rollback. The returned checkpoint is reused for every row.
+type CheckpointableBuilder interface {
+	// NewCheckpoint returns a reusable checkpoint for the builder.
+	NewCheckpoint() CheckpointState
+}
+
+type checkpointStateAdapter struct {
+	state CheckpointState
+}
+
+func (s *checkpointStateAdapter) capture() { s.state.Capture() }
+func (s *checkpointStateAdapter) restore() { s.state.Restore() }
+
+type storageBuilder interface {
+	StorageBuilder() Builder
+}
+
+type builderCheckpoint struct {
+	builder          Builder
+	length           int
+	children         []*builderCheckpoint
+	state            checkpointState
+	lastUnmarshalled interface{}
+	unmarshalled     bool
+	lastStr          *string
+}
+
+func (checkpoint *builderCheckpoint) syncChildren(builders []Builder) {
+	for i := len(checkpoint.children); i < len(builders); i++ {
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builders[i]))
+	}
+}
+
+func newBuilderCheckpoint(builder Builder) *builderCheckpoint {
+	checkpoint := &builderCheckpoint{
+		builder: builder,
+	}
+	if checkpointable, ok := builder.(checkpointableBuilder); ok {
+		checkpoint.state = checkpointable.newCheckpoint()
+	} else if checkpointable, ok := builder.(CheckpointableBuilder); ok {
+		checkpoint.state = &checkpointStateAdapter{state: checkpointable.NewCheckpoint()}
+	}
+
+	// Keep this switch in sync with builder types that own children. An omitted
+	// nested builder would restore its own state but leave its children changed.
+	switch builder := builder.(type) {
+	case *ListBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.values))
+	case *LargeListBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.values))
+	case *ListViewBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.values))
+	case *LargeListViewBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.values))
+	case *FixedSizeListBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.values))
+	case *MapBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.listBuilder))
+	case *StructBuilder:
+		for _, field := range builder.fields {
+			checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(field))
+		}
+	case *SparseUnionBuilder:
+		checkpoint.syncChildren(builder.children)
+	case *DenseUnionBuilder:
+		checkpoint.syncChildren(builder.children)
+	case storageBuilder:
+		checkpoint.children = append(checkpoint.children, newBuilderCheckpoint(builder.StorageBuilder()))
+	case *RunEndEncodedBuilder:
+		checkpoint.children = append(checkpoint.children,
+			newBuilderCheckpoint(builder.runEnds),
+			newBuilderCheckpoint(builder.values),
+		)
+	}
+
+	checkpoint.capture()
+	return checkpoint
+}
+
+func (checkpoint *builderCheckpoint) capture() {
+	switch builder := checkpoint.builder.(type) {
+	case *SparseUnionBuilder:
+		checkpoint.syncChildren(builder.children)
+	case *DenseUnionBuilder:
+		checkpoint.syncChildren(builder.children)
+	}
+
+	checkpoint.length = checkpoint.builder.Len()
+	if checkpoint.state != nil {
+		checkpoint.state.capture()
+	}
+	if builder, ok := checkpoint.builder.(*RunEndEncodedBuilder); ok {
+		checkpoint.lastUnmarshalled = builder.lastUnmarshalled
+		checkpoint.unmarshalled = builder.unmarshalled
+		checkpoint.lastStr = builder.lastStr
+	}
+	for _, child := range checkpoint.children {
+		child.capture()
+	}
+}
+
+func (checkpoint *builderCheckpoint) restore() {
+	if builder, ok := checkpoint.builder.(*RunEndEncodedBuilder); ok {
+		builder.length = checkpoint.length
+		builder.lastUnmarshalled = checkpoint.lastUnmarshalled
+		builder.unmarshalled = checkpoint.unmarshalled
+		builder.lastStr = checkpoint.lastStr
+	} else {
+		// Truncate the parent before restoring children. Some parent builders
+		// truncate their children as part of truncation, so restoring children
+		// first would overwrite their physical state again.
+		checkpoint.builder.truncate(checkpoint.length)
+	}
+	if checkpoint.state != nil {
+		checkpoint.state.restore()
+	}
+	for _, child := range checkpoint.children {
+		child.restore()
+	}
+}
+
+// UnmarshalOne reads one row (a JSON object) from the supplied decoder and
+// appends a value to each field in the RecordBuilder. Missing fields are
+// appended as nulls and unrecognized keys are silently ignored.
+//
+// Unlike UnmarshalJSON, this method receives an already-configured
+// json.Decoder, so options such as UseNumber set by the caller are honored
+// for nested field decoding. This is critical for preserving large integer
+// values (>2^53) that cannot be represented exactly as float64.
+func (b *RecordBuilder) UnmarshalOne(dec *json.Decoder) error {
+	if len(b.checkpoints) != len(b.fields) {
+		b.checkpoints = make([]*builderCheckpoint, len(b.fields))
+		for i, field := range b.fields {
+			b.checkpoints[i] = newBuilderCheckpoint(field)
+		}
+	} else {
+		for i, checkpoint := range b.checkpoints {
+			if checkpoint.builder != b.fields[i] {
+				b.checkpoints[i] = newBuilderCheckpoint(b.fields[i])
+			}
+		}
+	}
+	for _, checkpoint := range b.checkpoints {
+		checkpoint.capture()
+	}
+	err := b.unmarshalOne(dec)
+	if err != nil {
+		for _, checkpoint := range b.checkpoints {
+			checkpoint.restore()
+		}
+	}
+	return err
+}
+
+func (b *RecordBuilder) unmarshalOne(dec *json.Decoder) (err error) {
+
 	// should start with a '{'
 	t, err := dec.Token()
 	if err != nil {
@@ -369,6 +609,11 @@ func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
 	if delim, ok := t.(json.Delim); !ok || delim != '{' {
 		return fmt.Errorf("record should start with '{', not %s", t)
 	}
+	defer func() {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
 
 	keylist := make(map[string]bool)
 	for dec.More() {
@@ -397,6 +642,11 @@ func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	// consume the closing '}'
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+
 	for i := 0; i < b.schema.NumFields(); i++ {
 		if !keylist[b.schema.Field(i).Name] {
 			b.fields[i].AppendNull()
@@ -405,7 +655,115 @@ func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Unmarshal reads multiple rows from the decoder, calling UnmarshalOne in a
+// loop until dec.More() reports there are no more values. Like UnmarshalOne,
+// this honors decoder configuration such as UseNumber set by the caller.
+func (b *RecordBuilder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON for record builder will read in a single object and add the values
+// to each field in the recordbuilder, missing fields will get a null and unexpected
+// keys will be ignored. If reading in an array of records as a single batch, then use
+// a structbuilder and use RecordFromStruct.
+//
+// UseNumber is enabled on the internal decoder so that integer values too large
+// to be represented exactly as float64 (e.g. values beyond 2^53) are preserved.
+// Callers who need full control over decoder configuration should use
+// UnmarshalOne with a pre-configured json.Decoder instead.
+func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return b.UnmarshalOne(dec)
+}
+
+type iterReader struct {
+	refCount atomic.Int64
+
+	schema *arrow.Schema
+	cur    arrow.RecordBatch
+
+	next func() (arrow.RecordBatch, error, bool)
+	stop func()
+
+	err error
+}
+
+func (ir *iterReader) Schema() *arrow.Schema { return ir.schema }
+
+func (ir *iterReader) Retain() { ir.refCount.Add(1) }
+func (ir *iterReader) Release() {
+	debug.Assert(ir.refCount.Load() > 0, "too many releases")
+
+	if ir.refCount.Add(-1) == 0 {
+		ir.stop()
+		ir.schema, ir.next = nil, nil
+		if ir.cur != nil {
+			ir.cur.Release()
+		}
+	}
+}
+
+func (ir *iterReader) RecordBatch() arrow.RecordBatch { return ir.cur }
+
+// Deprecated: Use [RecordBatch] instead.
+func (ir *iterReader) Record() arrow.Record { return ir.RecordBatch() }
+func (ir *iterReader) Err() error           { return ir.err }
+
+func (ir *iterReader) Next() bool {
+	if ir.cur != nil {
+		ir.cur.Release()
+	}
+
+	var ok bool
+	ir.cur, ir.err, ok = ir.next()
+	if ir.err != nil {
+		ir.stop()
+		return false
+	}
+
+	return ok
+}
+
+// ReaderFromIter wraps a go iterator for arrow.RecordBatch + error into a RecordReader
+// interface object for ease of use.
+func ReaderFromIter(schema *arrow.Schema, itr iter.Seq2[arrow.RecordBatch, error]) RecordReader {
+	next, stop := iter.Pull2(itr)
+	rdr := &iterReader{
+		schema: schema,
+		next:   next,
+		stop:   stop,
+	}
+	rdr.refCount.Add(1)
+	return rdr
+}
+
+// IterFromReader converts a RecordReader interface into an iterator that
+// you can use range on. The semantics are still important, if a record
+// that is returned is desired to be utilized beyond the scope of an iteration
+// then Retain must be called on it.
+func IterFromReader(rdr RecordReader) iter.Seq2[arrow.RecordBatch, error] {
+	rdr.Retain()
+	return func(yield func(arrow.RecordBatch, error) bool) {
+		defer rdr.Release()
+		for rdr.Next() {
+			if !yield(rdr.RecordBatch(), nil) {
+				return
+			}
+		}
+
+		if rdr.Err() != nil {
+			yield(nil, rdr.Err())
+		}
+	}
+}
+
 var (
-	_ arrow.Record = (*simpleRecord)(nil)
-	_ RecordReader = (*simpleRecords)(nil)
+	_ arrow.RecordBatchWithMetadata = (*simpleRecord)(nil)
+	_ RecordReader                  = (*simpleRecords)(nil)
 )

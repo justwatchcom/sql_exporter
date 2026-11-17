@@ -4,51 +4,70 @@ package s3
 
 import (
 	"context"
-	"fmt"
-	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3cust "github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/middleware"
 	"github.com/aws/smithy-go/ptr"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// This operation is not supported by directory buckets. Enables notifications of
-// specified events for a bucket. For more information about event notifications,
-// see Configuring Event Notifications (https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html)
-// . Using this API, you can replace an existing notification configuration. The
+// This operation is not supported for directory buckets.
+//
+// Enables notifications of specified events for a bucket. For more information
+// about event notifications, see [Configuring Event Notifications].
+//
+// Using this API, you can replace an existing notification configuration. The
 // configuration is an XML file that defines the event types that you want Amazon
 // S3 to publish and the destination where you want Amazon S3 to publish an event
-// notification when it detects an event of the specified type. By default, your
-// bucket has no event notifications configured. That is, the notification
-// configuration will be an empty NotificationConfiguration .  This action
-// replaces the existing notification configuration with the configuration you
-// include in the request body. After Amazon S3 receives this request, it first
-// verifies that any Amazon Simple Notification Service (Amazon SNS) or Amazon
-// Simple Queue Service (Amazon SQS) destination exists, and that the bucket owner
-// has permission to publish to it by sending a test notification. In the case of
-// Lambda destinations, Amazon S3 verifies that the Lambda function permissions
-// grant Amazon S3 permission to invoke the function from the Amazon S3 bucket. For
-// more information, see Configuring Notifications for Amazon S3 Events (https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html)
-// . You can disable notifications by adding the empty NotificationConfiguration
-// element. For more information about the number of event notification
-// configurations that you can create per bucket, see Amazon S3 service quotas (https://docs.aws.amazon.com/general/latest/gr/s3.html#limits_s3)
-// in Amazon Web Services General Reference. By default, only the bucket owner can
-// configure notifications on a bucket. However, bucket owners can use a bucket
-// policy to grant permission to other users to set this configuration with the
-// required s3:PutBucketNotification permission. The PUT notification is an atomic
-// operation. For example, suppose your notification configuration includes SNS
-// topic, SQS queue, and Lambda function configurations. When you send a PUT
-// request with this configuration, Amazon S3 sends test messages to your SNS
-// topic. If the message fails, the entire PUT action will fail, and Amazon S3 will
-// not add the configuration to your bucket. If the configuration in the request
-// body includes only one TopicConfiguration specifying only the
-// s3:ReducedRedundancyLostObject event type, the response will also include the
-// x-amz-sns-test-message-id header containing the message ID of the test
-// notification sent to the topic. The following action is related to
-// PutBucketNotificationConfiguration :
-//   - GetBucketNotificationConfiguration (https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketNotificationConfiguration.html)
+// notification when it detects an event of the specified type.
+//
+// By default, your bucket has no event notifications configured. That is, the
+// notification configuration will be an empty NotificationConfiguration .
+//
+// This action replaces the existing notification configuration with the
+// configuration you include in the request body.
+//
+// After Amazon S3 receives this request, it first verifies that any Amazon Simple
+// Notification Service (Amazon SNS) or Amazon Simple Queue Service (Amazon SQS)
+// destination exists, and that the bucket owner has permission to publish to it by
+// sending a test notification. In the case of Lambda destinations, Amazon S3
+// verifies that the Lambda function permissions grant Amazon S3 permission to
+// invoke the function from the Amazon S3 bucket. For more information, see [Configuring Notifications for Amazon S3 Events].
+//
+// You can disable notifications by adding the empty NotificationConfiguration
+// element.
+//
+// For more information about the number of event notification configurations that
+// you can create per bucket, see [Amazon S3 service quotas]in Amazon Web Services General Reference.
+//
+// By default, only the bucket owner can configure notifications on a bucket.
+// However, bucket owners can use a bucket policy to grant permission to other
+// users to set this configuration with the required s3:PutBucketNotification
+// permission.
+//
+// The PUT notification is an atomic operation. For example, suppose your
+// notification configuration includes SNS topic, SQS queue, and Lambda function
+// configurations. When you send a PUT request with this configuration, Amazon S3
+// sends test messages to your SNS topic. If the message fails, the entire PUT
+// action will fail, and Amazon S3 will not add the configuration to your bucket.
+//
+// If the configuration in the request body includes only one TopicConfiguration
+// specifying only the s3:ReducedRedundancyLostObject event type, the response
+// will also include the x-amz-sns-test-message-id header containing the message
+// ID of the test notification sent to the topic.
+//
+// The following action is related to PutBucketNotificationConfiguration :
+//
+// [GetBucketNotificationConfiguration]
+//
+// You must URL encode any signed header values that contain spaces. For example,
+// if your header value is my file.txt , containing two spaces after my , you must
+// URL encode this value to my%20%20file.txt .
+//
+// [Configuring Notifications for Amazon S3 Events]: https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html
+// [Amazon S3 service quotas]: https://docs.aws.amazon.com/general/latest/gr/s3.html#limits_s3
+// [GetBucketNotificationConfiguration]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketNotificationConfiguration.html
+// [Configuring Event Notifications]: https://docs.aws.amazon.com/AmazonS3/latest/dev/NotificationHowTo.html
 func (c *Client) PutBucketNotificationConfiguration(ctx context.Context, params *PutBucketNotificationConfigurationInput, optFns ...func(*Options)) (*PutBucketNotificationConfigurationOutput, error) {
 	if params == nil {
 		params = &PutBucketNotificationConfigurationInput{}
@@ -90,6 +109,7 @@ type PutBucketNotificationConfigurationInput struct {
 }
 
 func (in *PutBucketNotificationConfigurationInput) bindEndpointParams(p *EndpointParameters) {
+
 	p.Bucket = in.Bucket
 	p.UseS3ExpressControlEndpoint = ptr.Bool(true)
 }
@@ -102,9 +122,6 @@ type PutBucketNotificationConfigurationOutput struct {
 }
 
 func (c *Client) addOperationPutBucketNotificationConfigurationMiddlewares(stack *middleware.Stack, options Options) (err error) {
-	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
-		return err
-	}
 	err = stack.Serialize.Add(&awsRestxml_serializeOpPutBucketNotificationConfiguration{}, middleware.After)
 	if err != nil {
 		return err
@@ -113,62 +130,29 @@ func (c *Client) addOperationPutBucketNotificationConfigurationMiddlewares(stack
 	if err != nil {
 		return err
 	}
-	if err := addProtocolFinalizerMiddlewares(stack, options, "PutBucketNotificationConfiguration"); err != nil {
-		return fmt.Errorf("add protocol finalizers: %v", err)
-	}
 
-	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
-		return err
-	}
-	if err = addSetLoggerMiddleware(stack, options); err != nil {
-		return err
-	}
-	if err = addClientRequestID(stack); err != nil {
-		return err
-	}
-	if err = addComputeContentLength(stack); err != nil {
-		return err
-	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
-		return err
-	}
-	if err = addRawResponseToMetadata(stack); err != nil {
-		return err
-	}
-	if err = addRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+	if err = addRecordResponseTiming(stack, options); err != nil {
 		return err
 	}
 	if err = addPutBucketContextMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addIsExpressUserAgent(stack); err != nil {
+		return err
+	}
+	if err = addCredentialSource(stack, options); err != nil {
+		return err
+	}
 	if err = addOpPutBucketNotificationConfigurationValidationMiddleware(stack); err != nil {
 		return err
 	}
-	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opPutBucketNotificationConfiguration(options.Region), middleware.Before); err != nil {
-		return err
-	}
 	if err = addMetadataRetrieverMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addPutBucketNotificationConfigurationUpdateEndpoint(stack, options); err != nil {
@@ -183,6 +167,9 @@ func (c *Client) addOperationPutBucketNotificationConfigurationMiddlewares(stack
 	if err = disableAcceptEncodingGzip(stack); err != nil {
 		return err
 	}
+	if err = s3cust.HandleResponseErrorWith200Status(stack); err != nil {
+		return err
+	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
 		return err
 	}
@@ -190,6 +177,9 @@ func (c *Client) addOperationPutBucketNotificationConfigurationMiddlewares(stack
 		return err
 	}
 	if err = addSerializeImmutableHostnameBucketMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -200,14 +190,6 @@ func (v *PutBucketNotificationConfigurationInput) bucket() (string, bool) {
 		return "", false
 	}
 	return *v.Bucket, true
-}
-
-func newServiceMetadataMiddleware_opPutBucketNotificationConfiguration(region string) *awsmiddleware.RegisterServiceMetadata {
-	return &awsmiddleware.RegisterServiceMetadata{
-		Region:        region,
-		ServiceID:     ServiceID,
-		OperationName: "PutBucketNotificationConfiguration",
-	}
 }
 
 // getPutBucketNotificationConfigurationBucketMember returns a pointer to string

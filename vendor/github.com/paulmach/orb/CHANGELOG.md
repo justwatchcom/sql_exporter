@@ -2,11 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.14.0](https://github.com/paulmach/orb/compare/v0.13.0...v0.14.0) - 2026-11-01
+
+### Fixed
+
+-   encoding/wkt: preserve EMPTY members when unmarshalling a collection by [@binggao1230](https://github.com/binggao1230) in https://github.com/paulmach/orb/pull/178
+-   encoding/wkb: prevent panic on overflowing point count by [@ChrisJr404](https://github.com/ChrisJr404) in https://github.com/paulmach/orb/pull/179
+-   resample: handle empty interval input by [@terminalchai](https://github.com/terminalchai) in https://github.com/paulmach/orb/pull/184
+-   geojson: clear stale geometry fields when decoding into reused objects by [@vitalivo](https://github.com/vitalivo) in https://github.com/paulmach/orb/pull/181
+-   projection: keep polar latitudes on the matching mercator edge by [@SashaMIT](https://github.com/SashaMIT) in https://github.com/paulmach/orb/pull/182
+-   bound: Handle empty bounds in extension and intersection by [@yuefdev](https://github.com/yuefdev) in https://github.com/paulmach/orb/pull/183
+
+## [v0.13.0](https://github.com/paulmach/orb/compare/v0.12.0...v0.13.0) - 2026-03-30
+
+### Fixed
+
+-   utilize go.mod for go version for ci by [@franzramadhan](https://github.com/franzramadhan) in https://github.com/paulmach/orb/pull/159
+-   adding subdirs so it can be found from the docs by [@OlafFlebbeBosch](https://github.com/OlafFlebbeBosch) in https://github.com/paulmach/orb/pull/172
+
+### Changed
+
+-   Update bson encoding library to mongo-driver/v2 by [@lukasbindreiter](https://github.com/lukasbindreiter) in https://github.com/paulmach/orb/pull/174
+-   iterface{} -> any and go.mod to 1.18 by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/177
+
+### Added
+
+-   geojson: add generic property support to features and collections by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/176
+
+## [v0.12.0](https://github.com/paulmach/orb/compare/v0.11.1...v0.12.0) - 2025-09-17
+
+### Fixed
+
+-   Fix typos by [@NathanBaulch](https://github.com/NathanBaulch) in https://github.com/paulmach/orb/pull/157
+-   Fix panic on reverse of empty linestrings by [@jo-me](https://github.com/jo-me) in https://github.com/paulmach/orb/pull/163
+-   fix: return precisely 0.0 from mercator.ToGeo on arm64 by [@davidjb](https://github.com/davidjb) in https://github.com/paulmach/orb/pull/165
+
+### Added
+
+-   geojson: handle extra/foreign members in feature by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/164
+-   encoding/mvt: Support for Marshalling to Proto Objects by [@kevinkreiser](https://github.com/kevinkreiser) in https://github.com/paulmach/orb/pull/154
+
 ## [v0.11.1](https://github.com/paulmach/orb/compare/v0.11.0...v0.11.1) - 2024-01-29
 
 ### Fixed
 
--   geojson: `null` json into non-pointer Feature/FeatureCollection will set them to empty by [@paulmach](https://github.com/paulmach)in https://github.com/paulmach/orb/pull/145
+-   geojson: `null` json into non-pointer Feature/FeatureCollection will set them to empty by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/145
 
 ## [v0.11.0](https://github.com/paulmach/orb/compare/v0.10.0...v0.11.0) - 2024-01-11
 
@@ -73,7 +113,7 @@ This tag is broken, please use v0.7.1 instead.
 
 ### Breaking Changes
 
--   tilecover now returns an error (vs. panicing) on non-closed 2d geometry by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/87
+-   tilecover now returns an error (vs. panicking) on non-closed 2d geometry by [@paulmach](https://github.com/paulmach) in https://github.com/paulmach/orb/pull/87
 
     This changes the signature of many of the methods in the [maptile/tilecover](https://github.com/paulmach/orb/tree/master/maptile/tilecover) package.
     To emulate the old behavior replace:

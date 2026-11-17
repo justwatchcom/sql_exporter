@@ -1,6 +1,3 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
@@ -11,12 +8,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
-	"github.com/Azure/azure-sdk-for-go/sdk/internal/log"
-	"github.com/Azure/azure-sdk-for-go/sdk/internal/uuid"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/internal/shared"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -24,6 +15,13 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/internal/log"
+	"github.com/Azure/azure-sdk-for-go/sdk/internal/uuid"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/internal/shared"
 )
 
 const (
@@ -45,28 +43,34 @@ func createBatchID() (string, error) {
 // buildSubRequest is used for building the sub-request. Example:
 // DELETE /container0/blob0 HTTP/1.1
 // x-ms-date: Thu, 14 Jun 2018 16:46:54 GMT
-// Authorization: SharedKey account:G4jjBXA7LI/RnWKIOQ8i9xH4p76pAQ+4Fs4R1VxasaE=
+// Authorization: SharedKey account:<redacted>
 // Content-Length: 0
-func buildSubRequest(req *policy.Request) []byte {
+func buildSubRequest(req *policy.Request) ([]byte, error) {
 	var batchSubRequest strings.Builder
 	blobPath := req.Raw().URL.EscapedPath()
 	if len(req.Raw().URL.RawQuery) > 0 {
 		blobPath += "?" + req.Raw().URL.RawQuery
 	}
 
-	batchSubRequest.WriteString(fmt.Sprintf("%s %s %s%s", req.Raw().Method, blobPath, httpVersion, httpNewline))
+	fmt.Fprintf(&batchSubRequest, "%s %s %s%s", req.Raw().Method, blobPath, httpVersion, httpNewline)
 
 	for k, v := range req.Raw().Header {
 		if strings.EqualFold(k, shared.HeaderXmsVersion) {
 			continue
 		}
 		if len(v) > 0 {
-			batchSubRequest.WriteString(fmt.Sprintf("%v: %v%v", k, v[0], httpNewline))
+			if strings.ContainsAny(k, "\r\n") {
+				return nil, fmt.Errorf("invalid CR/LF in batch subrequest header name %q", k)
+			}
+			if strings.ContainsAny(v[0], "\r\n") {
+				return nil, fmt.Errorf("invalid CR/LF in batch subrequest header value for %q", k)
+			}
+			fmt.Fprintf(&batchSubRequest, "%v: %v%v", k, v[0], httpNewline)
 		}
 	}
 
-	batchSubRequest.WriteString(httpNewline)
-	return []byte(batchSubRequest.String())
+	fmt.Fprint(&batchSubRequest, httpNewline)
+	return []byte(batchSubRequest.String()), nil
 }
 
 // CreateBatchRequest creates a new batch request using the sub-requests present in the BlobBatchBuilder.
@@ -80,7 +84,7 @@ func buildSubRequest(req *policy.Request) []byte {
 //
 //	DELETE /container0/blob0 HTTP/1.1
 //	x-ms-date: Thu, 14 Jun 2018 16:46:54 GMT
-//	Authorization: SharedKey account:G4jjBXA7LI/RnWKIOQ8i9xH4p76pAQ+4Fs4R1VxasaE=
+//	Authorization: SharedKey account:<redacted>
 //	Content-Length: 0
 func CreateBatchRequest(bb *BlobBatchBuilder) ([]byte, string, error) {
 	batchID, err := createBatchID()
@@ -120,7 +124,11 @@ func CreateBatchRequest(bb *BlobBatchBuilder) ([]byte, string, error) {
 			return nil, "", err
 		}
 
-		_, err = partWriter.Write(buildSubRequest(req))
+		subReqBytes, err := buildSubRequest(req)
+		if err != nil {
+			return nil, "", err
+		}
+		_, err = partWriter.Write(subReqBytes)
 		if err != nil {
 			return nil, "", err
 		}

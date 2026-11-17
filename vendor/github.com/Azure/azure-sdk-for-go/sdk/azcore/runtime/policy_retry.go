@@ -1,6 +1,3 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/log"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/sanitizer"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/shared"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/internal/errorinfo"
@@ -59,28 +57,53 @@ func setDefaults(o *policy.RetryOptions) {
 }
 
 func calcDelay(o policy.RetryOptions, try int32) time.Duration { // try is >=1; never 0
-	delay := time.Duration((1<<try)-1) * o.RetryDelay
+	// avoid overflow when shifting left
+	factor := time.Duration(math.MaxInt64)
+	if try < 63 {
+		factor = time.Duration(int64(1<<try) - 1)
+	}
 
-	// Introduce some jitter:  [0.0, 1.0) / 2 = [0.0, 0.5) + 0.8 = [0.8, 1.3)
-	delay = time.Duration(delay.Seconds() * (rand.Float64()/2 + 0.8) * float64(time.Second)) // NOTE: We want math/rand; not crypto/rand
-	if delay > o.MaxRetryDelay {
+	delay := factor * o.RetryDelay
+	if delay < factor {
+		// overflow has happened so set to max value
+		delay = time.Duration(math.MaxInt64)
+	}
+
+	// Introduce jitter:  [0.0, 1.0) / 2 = [0.0, 0.5) + 0.8 = [0.8, 1.3)
+	jitterMultiplier := rand.Float64()/2 + 0.8 // NOTE: We want math/rand; not crypto/rand
+
+	delayFloat := float64(delay) * jitterMultiplier
+	if delayFloat > float64(math.MaxInt64) {
+		// the jitter pushed us over MaxInt64, so just use MaxInt64
+		delay = time.Duration(math.MaxInt64)
+	} else {
+		delay = time.Duration(delayFloat)
+	}
+
+	if delay > o.MaxRetryDelay { // MaxRetryDelay is backfilled with non-negative value
 		delay = o.MaxRetryDelay
 	}
+
 	return delay
 }
 
 // NewRetryPolicy creates a policy object configured using the specified options.
 // Pass nil to accept the default values; this is the same as passing a zero-value options.
 func NewRetryPolicy(o *policy.RetryOptions) policy.Policy {
+	return newRetryPolicy(o, sanitizer.New(sanitizer.Options{}))
+}
+
+func newRetryPolicy(o *policy.RetryOptions, s *sanitizer.Sanitizer) policy.Policy {
 	if o == nil {
 		o = &policy.RetryOptions{}
 	}
-	p := &retryPolicy{options: *o}
+	p := &retryPolicy{options: *o, sanitizer: s}
 	return p
 }
 
 type retryPolicy struct {
-	options policy.RetryOptions
+	options   policy.RetryOptions
+	sanitizer *sanitizer.Sanitizer
 }
 
 func (p *retryPolicy) Do(req *policy.Request) (resp *http.Response, err error) {
@@ -97,12 +120,16 @@ func (p *retryPolicy) Do(req *policy.Request) (resp *http.Response, err error) {
 		// wrap the body so we control when it's actually closed.
 		// do this outside the for loop so defers don't accumulate.
 		rwbody = &retryableRequestBody{body: req.Body()}
-		defer rwbody.realClose()
+		defer func() {
+			// Match net/http behavior: after a request has produced either a response
+			// or a transport error, request body close errors are not surfaced to callers.
+			_ = rwbody.realClose()
+		}()
 	}
 	try := int32(1)
 	for {
 		resp = nil // reset
-		log.Writef(log.EventRetryPolicy, "=====> Try=%d", try)
+		log.Writef(log.EventRetryPolicy, "=====> Try=%d for %s %s", try, req.Raw().Method, p.sanitizer.GetSanitizedURL(*req.Raw().URL))
 
 		// For each try, seek to the beginning of the Body stream. We do this even for the 1st try because
 		// the stream may not be at offset 0 when we first get it and we want the same behavior for the
@@ -116,13 +143,14 @@ func (p *retryPolicy) Do(req *policy.Request) (resp *http.Response, err error) {
 			req.Raw().Body = rwbody
 		}
 
+		var clone *policy.Request
 		if options.TryTimeout == 0 {
-			clone := req.Clone(req.Raw().Context())
+			clone = req.Clone(req.Raw().Context())
 			resp, err = clone.Next()
 		} else {
 			// Set the per-try time for this particular retry operation and then Do the operation.
 			tryCtx, tryCancel := context.WithTimeout(req.Raw().Context(), options.TryTimeout)
-			clone := req.Clone(tryCtx)
+			clone = req.Clone(tryCtx)
 			resp, err = clone.Next() // Make the request
 			// if the body was already downloaded or there was an error it's safe to cancel the context now
 			if err != nil {
@@ -136,8 +164,8 @@ func (p *retryPolicy) Do(req *policy.Request) (resp *http.Response, err error) {
 		}
 		if err == nil {
 			log.Writef(log.EventRetryPolicy, "response %d", resp.StatusCode)
-		} else {
-			log.Writef(log.EventRetryPolicy, "error %v", err)
+		} else if log.Should(log.EventRetryPolicy) {
+			log.Writef(log.EventRetryPolicy, "error %s", p.sanitizer.GetSanitizedURLString(err.Error(), clone.Raw().URL))
 		}
 
 		if ctxErr := req.Raw().Context().Err(); ctxErr != nil {
@@ -201,6 +229,7 @@ func (p *retryPolicy) Do(req *policy.Request) (resp *http.Response, err error) {
 
 // WithRetryOptions adds the specified RetryOptions to the parent context.
 // Use this to specify custom RetryOptions at the API-call level.
+//
 // Deprecated: use [policy.WithRetryOptions] instead.
 func WithRetryOptions(parent context.Context, options policy.RetryOptions) context.Context {
 	return policy.WithRetryOptions(parent, options)

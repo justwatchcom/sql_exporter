@@ -10,9 +10,7 @@ TEXT ·_cast_type_numeric_neon(SB), $0-40
     MOVD len+32(FP), R4
 
 
-    WORD $0xa9bf7bfd // stp    x29, x30, [sp, #-16]!
     WORD $0x7100181f // cmp    w0, #6
-    WORD $0x910003fd // mov    x29, sp
     BGT LBB0_17
 
     WORD $0x71000c1f // cmp    w0, #3
@@ -4446,7 +4444,6 @@ LBB0_892:
     WORD $0xb800452b // str    w11, [x9], #4
     BNE LBB0_892
 LBB0_893:
-    WORD $0xa8c17bfd // ldp    x29, x30, [sp], #16
     RET
 LBB0_894:
     WORD $0x927b6909 // and x9, x8, #0xffffffe0

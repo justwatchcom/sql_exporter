@@ -22,6 +22,7 @@ import (
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/float16"
 )
 
 var castNumericUnsafe func(itype, otype arrow.Type, in, out []byte, len int) = castNumericGo
@@ -32,7 +33,19 @@ func DoStaticCast[InT, OutT numeric](in []InT, out []OutT) {
 	}
 }
 
-func reinterpret[T numeric](b []byte, len int) (res []T) {
+func DoFloat16Cast[InT numeric](in []InT, out []float16.Num) {
+	for i, v := range in {
+		out[i] = float16.New(float32(v))
+	}
+}
+
+func DoFloat16CastToNumber[OutT numeric](in []float16.Num, out []OutT) {
+	for i, v := range in {
+		out[i] = OutT(v.Float32())
+	}
+}
+
+func reinterpret[T numeric | float16.Num](b []byte, len int) (res []T) {
 	return unsafe.Slice((*T)(unsafe.Pointer(&b[0])), len)
 }
 
@@ -54,10 +67,39 @@ func castNumberToNumberUnsafeImpl[T numeric](outT arrow.Type, in []T, out []byte
 		DoStaticCast(in, reinterpret[int64](out, len(in)))
 	case arrow.UINT64:
 		DoStaticCast(in, reinterpret[uint64](out, len(in)))
+	case arrow.FLOAT16:
+		DoFloat16Cast(in, reinterpret[float16.Num](out, len(in)))
 	case arrow.FLOAT32:
 		DoStaticCast(in, reinterpret[float32](out, len(in)))
 	case arrow.FLOAT64:
 		DoStaticCast(in, reinterpret[float64](out, len(in)))
+	}
+}
+
+func castFloat16ToNumberUnsafeImpl(outT arrow.Type, in []float16.Num, out []byte) {
+	switch outT {
+	case arrow.INT8:
+		DoFloat16CastToNumber(in, reinterpret[int8](out, len(in)))
+	case arrow.UINT8:
+		DoFloat16CastToNumber(in, reinterpret[uint8](out, len(in)))
+	case arrow.INT16:
+		DoFloat16CastToNumber(in, reinterpret[int16](out, len(in)))
+	case arrow.UINT16:
+		DoFloat16CastToNumber(in, reinterpret[uint16](out, len(in)))
+	case arrow.INT32:
+		DoFloat16CastToNumber(in, reinterpret[int32](out, len(in)))
+	case arrow.UINT32:
+		DoFloat16CastToNumber(in, reinterpret[uint32](out, len(in)))
+	case arrow.INT64:
+		DoFloat16CastToNumber(in, reinterpret[int64](out, len(in)))
+	case arrow.UINT64:
+		DoFloat16CastToNumber(in, reinterpret[uint64](out, len(in)))
+	case arrow.FLOAT16:
+		copy(reinterpret[float16.Num](out, len(in)), in)
+	case arrow.FLOAT32:
+		DoFloat16CastToNumber(in, reinterpret[float32](out, len(in)))
+	case arrow.FLOAT64:
+		DoFloat16CastToNumber(in, reinterpret[float64](out, len(in)))
 	}
 }
 
@@ -79,6 +121,8 @@ func castNumericGo(itype, otype arrow.Type, in, out []byte, len int) {
 		castNumberToNumberUnsafeImpl(otype, reinterpret[int64](in, len), out)
 	case arrow.UINT64:
 		castNumberToNumberUnsafeImpl(otype, reinterpret[uint64](in, len), out)
+	case arrow.FLOAT16:
+		castFloat16ToNumberUnsafeImpl(otype, reinterpret[float16.Num](in, len), out)
 	case arrow.FLOAT32:
 		castNumberToNumberUnsafeImpl(otype, reinterpret[float32](in, len), out)
 	case arrow.FLOAT64:

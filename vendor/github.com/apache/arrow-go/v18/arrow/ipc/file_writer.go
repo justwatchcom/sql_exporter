@@ -41,8 +41,8 @@ type fileWriter struct {
 	streamWriter
 
 	schema *arrow.Schema
-	dicts  []fileBlock
-	recs   []fileBlock
+	dicts  []dataBlock
+	recs   []dataBlock
 }
 
 func (w *fileWriter) Start() error {
@@ -63,13 +63,13 @@ func (w *fileWriter) Start() error {
 }
 
 func (w *fileWriter) WritePayload(p Payload) error {
-	blk := fileBlock{Offset: w.pos, Meta: 0, Body: p.size}
+	blk := fileBlock{offset: w.pos, meta: 0, body: p.size}
 	n, err := writeIPCPayload(w, p)
 	if err != nil {
 		return err
 	}
 
-	blk.Meta = int32(n)
+	blk.meta = int32(n)
 
 	switch flatbuf.MessageHeader(p.msg) {
 	case flatbuf.MessageHeaderDictionaryBatch:
@@ -203,6 +203,12 @@ func (p *Payload) SerializeBody(w io.Writer) error {
 	return nil
 }
 
+// WritePayload serializes the payload in IPC format
+// into the provided writer.
+func (p *Payload) WritePayload(w io.Writer) (int, error) {
+	return writeIPCPayload(w, *p)
+}
+
 func (p *Payload) Release() {
 	if p.meta != nil {
 		p.meta.Release()
@@ -226,6 +232,13 @@ func (ps payloads) Release() {
 }
 
 // FileWriter is an Arrow file writer.
+//
+// FileWriter is not safe for concurrent use. It writes to the underlying
+// io.Writer without any synchronization, so concurrent calls to Write or Close
+// can interleave output and corrupt the file. Because an arbitrary io.Writer
+// cannot be assumed to be safe for concurrent use, callers that produce records
+// from multiple goroutines must serialize writes themselves, for example by
+// sending records over a channel to a single goroutine that owns the FileWriter.
 type FileWriter struct {
 	w io.Writer
 
@@ -233,15 +246,17 @@ type FileWriter struct {
 
 	headerStarted bool
 	footerWritten bool
+	closed        bool
+	closeErr      error
 
 	pw PayloadWriter
 
 	schema          *arrow.Schema
 	mapper          dictutils.Mapper
-	codec           flatbuf.CompressionType
-	compressNP      int
+	compression     compressionSettings
 	compressors     []compressor
-	minSpaceSavings *float64
+	encoder         *recordEncoder
+	minSpaceSavings float64
 
 	// map of the last written dictionaries by id
 	// so we can avoid writing the same dictionary over and over
@@ -262,8 +277,7 @@ func NewFileWriter(w io.Writer, opts ...Option) (*FileWriter, error) {
 		pw:              &fileWriter{streamWriter: streamWriter{w: w}, schema: cfg.schema},
 		mem:             cfg.alloc,
 		schema:          cfg.schema,
-		codec:           cfg.codec,
-		compressNP:      cfg.compressNP,
+		compression:     compressionSettings{codec: cfg.codec, zstdLevel: cfg.zstdLevel, compressNP: cfg.compressNP},
 		minSpaceSavings: cfg.minSpaceSavings,
 		compressors:     make([]compressor, cfg.compressNP),
 	}
@@ -271,10 +285,35 @@ func NewFileWriter(w io.Writer, opts ...Option) (*FileWriter, error) {
 	return &f, err
 }
 
+func (f *FileWriter) getRecordEncoder() *recordEncoder {
+	if f.encoder == nil {
+		f.encoder = newRecordEncoder(
+			f.mem,
+			0,
+			kMaxNestingDepth,
+			true,
+			f.compression,
+			f.minSpaceSavings,
+			f.compressors,
+		)
+	}
+	return f.encoder
+}
+
 func (f *FileWriter) Close() error {
+	defer func() { f.encoder = nil }()
+	defer releaseCompressors(f.compressors)
+
+	if f.closed {
+		return f.closeErr
+	}
+	f.closed = true
+	defer f.releaseDictionaries()
+
 	err := f.checkStarted()
 	if err != nil {
-		return fmt.Errorf("arrow/ipc: could not write empty file: %w", err)
+		f.closeErr = fmt.Errorf("arrow/ipc: could not write empty file: %w", err)
+		return f.closeErr
 	}
 
 	if f.footerWritten {
@@ -283,14 +322,26 @@ func (f *FileWriter) Close() error {
 
 	err = f.pw.Close()
 	if err != nil {
-		return fmt.Errorf("arrow/ipc: could not close payload writer: %w", err)
+		f.closeErr = fmt.Errorf("arrow/ipc: could not close payload writer: %w", err)
+		return f.closeErr
 	}
 	f.footerWritten = true
 
 	return nil
 }
 
-func (f *FileWriter) Write(rec arrow.Record) error {
+func (f *FileWriter) releaseDictionaries() {
+	for _, d := range f.lastWrittenDicts {
+		d.Release()
+	}
+	f.lastWrittenDicts = nil
+}
+
+func (f *FileWriter) Write(rec arrow.RecordBatch) error {
+	if f.closed {
+		return errFileWriterClosed
+	}
+
 	schema := rec.Schema()
 	if schema == nil || !schema.Equal(f.schema) {
 		return errInconsistentSchema
@@ -300,13 +351,8 @@ func (f *FileWriter) Write(rec arrow.Record) error {
 		return fmt.Errorf("arrow/ipc: could not write header: %w", err)
 	}
 
-	const allow64b = true
-	var (
-		data = Payload{msg: MessageRecordBatch}
-		enc  = newRecordEncoder(
-			f.mem, 0, kMaxNestingDepth, allow64b, f.codec, f.compressNP, f.minSpaceSavings, f.compressors,
-		)
-	)
+	data := Payload{msg: MessageRecordBatch}
+	enc := f.getRecordEncoder()
 	defer data.Release()
 
 	err := writeDictionaryPayloads(f.mem, rec, true, false, &f.mapper, f.lastWrittenDicts, f.pw, enc)

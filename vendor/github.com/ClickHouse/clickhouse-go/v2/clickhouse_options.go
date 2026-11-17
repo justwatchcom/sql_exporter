@@ -1,20 +1,3 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package clickhouse
 
 import (
@@ -22,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,6 +14,8 @@ import (
 	"time"
 
 	"github.com/ClickHouse/ch-go/compress"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/churl"
 )
 
 type CompressionMethod byte
@@ -77,13 +63,33 @@ var compressionMap = map[string]CompressionMethod{
 
 type Auth struct { // has_control_character
 	Database string
+
 	Username string
 	Password string
 }
 
+// ClusterCredentials configures interserver-secret authentication.
+type ClusterCredentials struct {
+	// Name is the configured cluster name.
+	Name string
+	// Secret is the shared secret. Empty disables interserver mode.
+	Secret string
+}
+
+// String redacts Secret.
+func (c ClusterCredentials) String() string {
+	if c.Secret == "" {
+		return fmt.Sprintf("clickhouse.ClusterCredentials{Name:%q}", c.Name)
+	}
+	return fmt.Sprintf("clickhouse.ClusterCredentials{Name:%q, Secret:[REDACTED %d bytes]}", c.Name, len(c.Secret))
+}
+
+// GoString redacts Secret for Go-syntax formatting.
+func (c ClusterCredentials) GoString() string { return c.String() }
+
 type Compression struct {
 	Method CompressionMethod
-	// this only applies to lz4, lz4hc, zlib, and brotli compression algorithms
+	// this only applies to lz4, lz4hc, zlib, zstd, and brotli compression algorithms
 	Level int
 }
 
@@ -123,7 +129,7 @@ func ParseDSN(dsn string) (*Options, error) {
 
 type Dial func(ctx context.Context, addr string, opt *Options) (DialResult, error)
 type DialResult struct {
-	conn *connect
+	conn nativeTransport
 }
 
 type HTTPProxy func(*http.Request) (*url.URL, error)
@@ -132,13 +138,38 @@ type Options struct {
 	Protocol   Protocol
 	ClientInfo ClientInfo
 
-	TLS                  *tls.Config
-	Addr                 []string
-	Auth                 Auth
-	DialContext          func(ctx context.Context, addr string) (net.Conn, error)
-	DialStrategy         func(ctx context.Context, connID int, options *Options, dial Dial) (DialResult, error)
-	Debug                bool
-	Debugf               func(format string, v ...any) // only works when Debug is true
+	TLS  *tls.Config
+	Addr []string
+	Auth Auth
+	// Cluster configures native interserver-secret authentication.
+	Cluster      ClusterCredentials
+	DialContext  func(ctx context.Context, addr string) (net.Conn, error)
+	DialStrategy func(ctx context.Context, connID int, options *Options, dial Dial) (DialResult, error)
+
+	// Deprecated: Use Logger instead. Debug enables legacy debug logging to stdout.
+	// For structured logging with levels, use the Logger field.
+	Debug bool
+
+	// Deprecated: Use Logger instead. Debugf provides a custom debug logging function.
+	// For structured logging with levels and custom handlers, use the Logger field with
+	// a custom slog.Handler.
+	Debugf func(format string, v ...any)
+
+	// Logger provides structured logging using Go's standard log/slog package.
+	// If nil, no logging occurs (default). To enable logging, provide a configured
+	// slog.Logger:
+	//
+	//   logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	//       Level: slog.LevelDebug,
+	//   }))
+	//   opts := &clickhouse.Options{
+	//       Logger: logger,
+	//   }
+	//
+	// For backward compatibility, if Debug=true and Debugf is set, those will be used
+	// instead of Logger.
+	Logger *slog.Logger
+
 	Settings             Settings
 	Compression          *Compression
 	DialTimeout          time.Duration // default 30 second
@@ -156,14 +187,27 @@ type Options struct {
 	// HTTPProxy specifies an HTTP proxy URL to use for requests made by the client.
 	HTTPProxyURL *url.URL
 
-	scheme      string
+	// GetJWT should return a JWT for authentication with ClickHouse Cloud.
+	// This is called per connection/request, so you may cache the token in your app if needed.
+	// Use this instead of Auth.Username and Auth.Password if you're using JWT auth.
+	GetJWT GetJWTFunc
+
+	scheme string
+
+	// ReadTimeout is the maximum duration the client will wait for ClickHouse
+	// to respond to a single Read call for bytes over the connection.
+	// Can be overridden with context.WithDeadline.
 	ReadTimeout time.Duration
+
+	// Set a custom transport for the http client.
+	// The default transport configured by the library is passed in as an argument.
+	TransportFunc func(*http.Transport) (http.RoundTripper, error)
 }
 
 func (o *Options) fromDSN(in string) error {
-	dsn, err := url.Parse(in)
+	dsn, err := churl.Parse(in)
 	if err != nil {
-		return err
+		return redactURLError(err, in, churl.Parse)
 	}
 
 	if dsn.Host == "" {
@@ -179,14 +223,19 @@ func (o *Options) fromDSN(in string) error {
 	}
 	o.Addr = append(o.Addr, strings.Split(dsn.Host, ",")...)
 	var (
-		secure     bool
-		params     = dsn.Query()
-		skipVerify bool
+		secure        bool
+		params        = dsn.Query()
+		skipVerify    bool
+		tlsServerName string
 	)
 	o.Auth.Database = strings.TrimPrefix(dsn.Path, "/")
 
 	for v := range params {
 		switch v {
+		case "hosts":
+			o.Addr = append(parseHostList(params.Get(v)), o.Addr...)
+		case "alt_hosts":
+			o.Addr = append(o.Addr, parseHostList(params.Get(v))...)
 		case "debug":
 			o.Debug, _ = strconv.ParseBool(params.Get(v))
 		case "compress":
@@ -271,6 +320,11 @@ func (o *Options) fromDSN(in string) error {
 					return fmt.Errorf("clickhouse [dsn parse]:verify: %s", err)
 				}
 			}
+		case "tls_server_name":
+			tlsServerName = strings.TrimSpace(params.Get(v))
+			if tlsServerName == "" {
+				return fmt.Errorf("clickhouse [dsn parse]: tls_server_name must not be empty")
+			}
 		case "connection_open_strategy":
 			switch params.Get(v) {
 			case "in_order":
@@ -302,6 +356,8 @@ func (o *Options) fromDSN(in string) error {
 			o.Auth.Username = params.Get(v)
 		case "password":
 			o.Auth.Password = params.Get(v)
+		case "database":
+			o.Auth.Database = params.Get(v)
 		case "client_info_product":
 			chunks := strings.Split(params.Get(v), ",")
 
@@ -314,29 +370,41 @@ func (o *Options) fromDSN(in string) error {
 				})
 			}
 		case "http_proxy":
-			proxyURL, err := url.Parse(params.Get(v))
+			rawProxyURL := params.Get(v)
+			proxyURL, err := url.Parse(rawProxyURL)
 			if err != nil {
-				return fmt.Errorf("clickhouse [dsn parse]: http_proxy: %s", err)
+				return fmt.Errorf("clickhouse [dsn parse]: http_proxy: %w", redactURLError(err, rawProxyURL, url.Parse))
 			}
 			o.HTTPProxyURL = proxyURL
+		case "http_path":
+			path := params.Get(v)
+			if path != "" && !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			o.HttpUrlPath = path
 		default:
-			switch p := strings.ToLower(params.Get(v)); p {
+			raw := params.Get(v)
+			switch p := strings.ToLower(raw); p {
 			case "true":
 				o.Settings[v] = int(1)
 			case "false":
 				o.Settings[v] = int(0)
 			default:
-				if n, err := strconv.Atoi(p); err == nil {
+				if n, err := strconv.Atoi(raw); err == nil {
 					o.Settings[v] = n
 				} else {
-					o.Settings[v] = p
+					o.Settings[v] = raw
 				}
 			}
 		}
 	}
+	if tlsServerName != "" && !secure {
+		return fmt.Errorf("clickhouse [dsn parse]: tls_server_name requires secure=true")
+	}
 	if secure {
 		o.TLS = &tls.Config{
 			InsecureSkipVerify: skipVerify,
+			ServerName:         tlsServerName,
 		}
 	}
 	o.scheme = dsn.Scheme
@@ -355,6 +423,147 @@ func (o *Options) fromDSN(in string) error {
 		o.Protocol = Native
 	}
 	return nil
+}
+
+const redactedSecret = "xxxxx"
+
+// redactURLError removes credentials from a *url.Error, because its URL field
+// holds the raw input of the failed parse (for example, the full DSN). The
+// caller often logs this error. Other errors are returned unchanged.
+//
+// raw is the original input of the failed parse. Redact raw and not the URL
+// field of the error, because the parser can cut the input at a "#" before it
+// sets the URL field. Then a password with an unescaped "#" can stay in the
+// error without its "@" delimiter.
+//
+// parse is the function that failed. It parses the redacted input again to
+// find if the inner error depends on the credentials.
+func redactURLError(err error, raw string, parse func(string) (*url.URL, error)) error {
+	var uerr *url.Error
+	if !errors.As(err, &uerr) {
+		return err
+	}
+	redacted := redactRawURL(raw)
+	inner := uerr.Err
+	if inner != nil && !sameInnerError(inner, parse, redacted) {
+		// A malformed URL can put part of a password in the inner error,
+		// for example an unescaped "/" in the password gives `invalid port`.
+		// Over-masking can occur, thus the message says "may contain".
+		inner = errors.New("invalid URL (details hidden because they may contain credentials; URL-encode the username, password and http_proxy values)")
+	}
+	return &url.Error{Op: uerr.Op, URL: redacted, Err: inner}
+}
+
+// sameInnerError reports whether parsing the redacted input gives the same
+// inner error. If so, the error does not depend on the credentials and is safe
+// to show. This does not need to know where the parser splits the input.
+func sameInnerError(inner error, parse func(string) (*url.URL, error), redacted string) bool {
+	_, err := parse(redacted)
+	var uerr *url.Error
+	if !errors.As(err, &uerr) || uerr.Err == nil {
+		return false
+	}
+	return uerr.Err.Error() == inner.Error()
+}
+
+// redactRawURL masks the userinfo password, the `password` query parameter and
+// the credentials in the `http_proxy` query parameter of a raw URL. It works
+// on the raw string, because the URL did not parse. When the URL is malformed,
+// it masks too much rather than too little.
+func redactRawURL(raw string) string {
+	// Mask the query first, because a query value can contain an unescaped
+	// "@" that the userinfo step below would use as its delimiter.
+	s := raw
+	if q := strings.Index(s, "?"); q >= 0 {
+		s = s[:q+1] + redactQuery(s[q+1:])
+	}
+	start := 0
+	if i := strings.Index(s, "://"); i >= 0 {
+		start = i + len("://")
+	}
+	// Use the last "@", because a password can contain an unescaped "@".
+	if at := strings.LastIndex(s[start:], "@"); at >= 0 {
+		at += start
+		if colon := strings.Index(s[start:at], ":"); colon >= 0 {
+			passStart := start + colon + 1
+			s = s[:passStart] + redactedSecret + s[at:]
+		}
+	}
+	return s
+}
+
+// redactQuery masks the credentials in a raw query. Like url.ParseQuery, it
+// splits only at "&", thus a value can contain "?" and "#". It decodes each
+// key, because the driver reads the decoded key (for example, `pass%77ord` is
+// `password`).
+func redactQuery(query string) string {
+	var (
+		segments = strings.Split(query, "&")
+		out      = make([]string, 0, len(segments))
+		masking  bool
+	)
+	for _, segment := range segments {
+		i, key, ok := credentialParam(segment)
+		switch {
+		case ok && key == "password":
+			segment, masking = segment[:i]+redactedSecret, true
+		case ok:
+			segment, masking = segment[:i]+redactProxyValue(segment[i:]), false
+		case masking && !strings.Contains(segment, "="):
+			// A segment with no "=" is not a parameter. After a password,
+			// it is the part of the password after an unescaped "&".
+			continue
+		default:
+			masking = false
+		}
+		out = append(out, segment)
+	}
+	return strings.Join(out, "&")
+}
+
+// credentialParam finds a `password` or `http_proxy` parameter in a query
+// segment, and returns the index of its value and its key in lowercase. It
+// also looks directly after each "?", because the query starts at the first
+// "?" and a password in the userinfo can contain a "?". Then the parameter is
+// not at the start of a segment.
+func credentialParam(segment string) (int, string, bool) {
+	for p := 0; p >= 0; {
+		if key, _, ok := strings.Cut(segment[p:], "="); ok {
+			if k, err := url.QueryUnescape(key); err == nil {
+				key = k
+			}
+			if key = strings.ToLower(key); key == "password" || key == "http_proxy" {
+				return p + strings.Index(segment[p:], "=") + 1, key, true
+			}
+		}
+		if q := strings.Index(segment[p:], "?"); q >= 0 {
+			p += q + 1
+		} else {
+			p = -1
+		}
+	}
+	return 0, "", false
+}
+
+// redactProxyValue masks the credentials in the raw value of the `http_proxy`
+// query parameter. The value is usually escaped, thus it decodes the value
+// first. If the value does not decode, it masks all of the value.
+func redactProxyValue(value string) string {
+	proxyURL, err := url.QueryUnescape(value)
+	if err != nil {
+		return redactedSecret
+	}
+	return url.QueryEscape(redactRawURL(proxyURL))
+}
+
+func parseHostList(value string) []string {
+	var hosts []string
+	for _, host := range strings.Split(value, ",") {
+		if host = strings.TrimSpace(host); host != "" {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
 }
 
 // receive copy of Options, so we don't modify original - so its reusable
@@ -383,7 +592,7 @@ func (o Options) setDefaults() *Options {
 	if o.MaxCompressionBuffer <= 0 {
 		o.MaxCompressionBuffer = 10485760
 	}
-	if o.Addr == nil || len(o.Addr) == 0 {
+	if len(o.Addr) == 0 {
 		switch o.Protocol {
 		case Native:
 			o.Addr = []string{"localhost:9000"}
@@ -392,4 +601,44 @@ func (o Options) setDefaults() *Options {
 		}
 	}
 	return &o
+}
+
+func (o *Options) validate() error {
+	if o.Cluster.Secret != "" {
+		if o.Auth.Username == "" {
+			return ErrClusterSecretRequiresUsername
+		}
+		if o.Cluster.Name == "" {
+			return ErrClusterSecretRequiresName
+		}
+		if o.Protocol != Native {
+			return ErrClusterSecretNeedsNative
+		}
+		if o.GetJWT != nil {
+			return ErrClusterSecretWithJWT
+		}
+	}
+	return nil
+}
+
+// logger returns the appropriate logger based on the Options configuration.
+// Priority order:
+// 1. If Debug=true and Debugf is set, use legacy Debugf (backward compatibility)
+// 2. If Logger is set, use the provided logger
+// 3. If Debug=true but no Debugf is provided, use a default stdout logger
+// 4. Otherwise, use a noop logger (no logging)
+func (o *Options) logger() *slog.Logger {
+	if o.Debug && o.Debugf != nil {
+		return newDebugfLogger(o.Debugf)
+	}
+
+	if o.Logger != nil {
+		return o.Logger
+	}
+
+	if o.Debug {
+		return newStdoutDebugLogger()
+	}
+
+	return newNoopLogger()
 }

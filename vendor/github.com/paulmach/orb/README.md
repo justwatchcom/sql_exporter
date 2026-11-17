@@ -10,7 +10,7 @@ They each provide their own README with extra info.
 -   **GeoJSON** - support as part of the [`geojson`](geojson) sub-package.
 -   **Mapbox Vector Tile** - encoding and decoding as part of the [`encoding/mvt`](encoding/mvt) sub-package.
 -   **Direct to type from DB query results** - by scanning WKB data directly into types.
--   **Rich set of sub-packages** - including [`clipping`](clip), [`simplifing`](simplify), [`quadtree`](quadtree) and more.
+-   **Rich set of sub-packages** - including [`clipping`](clip), [`simplifying`](simplify), [`quadtree`](quadtree) and more.
 
 ## Type definitions
 
@@ -89,10 +89,18 @@ Features are defined as:
 
 ```go
 type Feature struct {
-    ID         interface{}  `json:"id,omitempty"`
+    ID         any          `json:"id,omitempty"`
     Type       string       `json:"type"`
     Geometry   orb.Geometry `json:"geometry"`
     Properties Properties   `json:"properties"`
+}
+
+// or a generic version with user defined properties type:
+type FeatureOf[P] struct {
+    ID         any          `json:"id,omitempty"`
+    Type       string       `json:"type"`
+    Geometry   orb.Geometry `json:"geometry"`
+    Properties P            `json:"properties"`
 }
 ```
 
@@ -105,6 +113,20 @@ fc, err := geojson.UnmarshalFeatureCollection(data)
 for _, f := range fc {
     f.Geometry = clip.Geometry(bound, f.Geometry)
 }
+```
+
+An example using generic properties:
+
+```go
+type MyProperties struct {
+    Name string `json:"name"`
+    Age int     `json:"age"`
+}
+
+fc := geojson.FeatureCollectionOf[MyProperties]{}
+err := json.Unmarshal(rawJSON, &fc)
+
+fc.Features[0].Properties.Name // == "Alice"
 ```
 
 The library supports third party "encoding/json" replacements
@@ -142,7 +164,7 @@ layers.RemoveEmpty(1.0, 2.0)
 // encoding using the Mapbox Vector Tile protobuf encoding.
 data, err := mvt.Marshal(layers) // this data is NOT gzipped.
 
-// Sometimes MVT data is stored and transfered gzip compressed. In that case:
+// Sometimes MVT data is stored and transferred gzip compressed. In that case:
 data, err := mvt.MarshalGzipped(layers)
 ```
 
@@ -173,8 +195,10 @@ For more information see the readme in the [encoding/ewkb](encoding/ewkb) packag
 -   [`encoding/wkb`](encoding/wkb) - well-known binary as well as helpers to decode from the database queries
 -   [`encoding/ewkb`](encoding/ewkb) - extended well-known binary format that includes the SRID
 -   [`encoding/wkt`](encoding/wkt) - well-known text encoding
+-   [`geo`](geo) - algorithms for WGS84 geometry
 -   [`geojson`](geojson) - working with geojson and the types in this package
 -   [`maptile`](maptile) - working with mercator map tiles and quadkeys
+-   [`planar`](planar) - algorithms for planar geometry
 -   [`project`](project) - project geometries between geo and planar contexts
 -   [`quadtree`](quadtree) - quadtree implementation using the types in this package
 -   [`resample`](resample) - resample points in a line string geometry

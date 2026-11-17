@@ -16,12 +16,19 @@ const (
 	snowflakeConnectionName = "SNOWFLAKE_DEFAULT_CONNECTION_NAME"
 	snowflakeHome           = "SNOWFLAKE_HOME"
 	defaultTokenPath        = "/snowflake/session/token"
+
+	othersCanReadFilePermission  = os.FileMode(0044)
+	othersCanWriteFilePermission = os.FileMode(0022)
+	executableFilePermission     = os.FileMode(0111)
+
+	skipWarningForReadPermissionsEnv = "SF_SKIP_WARNING_FOR_READ_PERMISSIONS_ON_CONFIG_FILE"
 )
 
 // LoadConnectionConfig returns connection configs loaded from the toml file.
 // By default, SNOWFLAKE_HOME(toml file path) is os.snowflakeHome/.snowflake
 // and SNOWFLAKE_DEFAULT_CONNECTION_NAME(DSN) is 'default'
 func loadConnectionConfig() (*Config, error) {
+	logger.Trace("Loading connection configuration from the local files.")
 	cfg := &Config{
 		Params:        make(map[string]*string),
 		Authenticator: AuthTypeSnowflake, // Default to snowflake
@@ -31,6 +38,7 @@ func loadConnectionConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	logger.Debugf("Looking for connection file in directory %v", snowflakeConfigDir)
 	tomlFilePath := path.Join(snowflakeConfigDir, "connections.toml")
 	err = validateFilePermission(tomlFilePath)
 	if err != nil {
@@ -52,6 +60,7 @@ func loadConnectionConfig() (*Config, error) {
 	if !ok {
 		return nil, err
 	}
+	logger.Trace("Trying to parse the config file")
 	err = parseToml(cfg, connectionConfig)
 	if err != nil {
 		return nil, err
@@ -69,20 +78,17 @@ func parseToml(cfg *Config, connectionMap map[string]interface{}) error {
 			return err
 		}
 	}
-	if shouldReadTokenFromFile(cfg) {
-		v, err := readToken("")
-		if err != nil {
-			return err
-		}
-		cfg.Token = v
-	}
 	return nil
 }
 
 func handleSingleParam(cfg *Config, key string, value interface{}) error {
 	var err error
-	var v, tokenPath string
-	switch strings.ToLower(key) {
+
+	// We normalize the key to handle both snake_case and camelCase.
+	normalizedKey := strings.ReplaceAll(strings.ToLower(key), "_", "")
+
+	// the cases in switch statement should be in lower case and no _
+	switch normalizedKey {
 	case "user", "username":
 		cfg.User, err = parseString(value)
 	case "password":
@@ -126,6 +132,7 @@ func handleSingleParam(cfg *Config, key string, value interface{}) error {
 	case "application":
 		cfg.Application, err = parseString(value)
 	case "authenticator":
+		var v string
 		v, err = parseString(value)
 		if err = checkParsingError(err, key, value); err != nil {
 			return err
@@ -146,6 +153,7 @@ func handleSingleParam(cfg *Config, key string, value interface{}) error {
 	case "token":
 		cfg.Token, err = parseString(value)
 	case "privatekey":
+		var v string
 		v, err = parseString(value)
 		if err = checkParsingError(err, key, value); err != nil {
 			return err
@@ -166,6 +174,10 @@ func handleSingleParam(cfg *Config, key string, value interface{}) error {
 		cfg.ClientStoreTemporaryCredential, err = parseConfigBool(value)
 	case "tracing":
 		cfg.Tracing, err = parseString(value)
+	case "logquerytext":
+		cfg.LogQueryText, err = parseBool(value)
+	case "logqueryparameters":
+		cfg.LogQueryParameters, err = parseBool(value)
 	case "tmpdirpath":
 		cfg.TmpDirPath, err = parseString(value)
 	case "disablequerycontextcache":
@@ -178,29 +190,45 @@ func handleSingleParam(cfg *Config, key string, value interface{}) error {
 		cfg.DisableConsoleLogin, err = parseConfigBool(value)
 	case "disablesamlurlcheck":
 		cfg.DisableSamlURLCheck, err = parseConfigBool(value)
-	case "oauth_authorization_url":
+	case "oauthauthorizationurl":
 		cfg.OauthAuthorizationURL, err = parseString(value)
-	case "oauth_client_id":
+	case "oauthclientid":
 		cfg.OauthClientID, err = parseString(value)
-	case "oauth_client_secret":
+	case "oauthclientsecret":
 		cfg.OauthClientSecret, err = parseString(value)
-	case "oauth_token_request_url":
+	case "oauthtokenrequesturl":
 		cfg.OauthTokenRequestURL, err = parseString(value)
-	case "oauth_redirect_uri":
+	case "oauthredirecturi":
 		cfg.OauthRedirectURI, err = parseString(value)
-	case "oauth_scope":
+	case "oauthscope":
 		cfg.OauthScope, err = parseString(value)
-
-	case "token_file_path":
-		tokenPath, err = parseString(value)
+	case "workloadidentityprovider":
+		cfg.WorkloadIdentityProvider, err = parseString(value)
+	case "workloadidentityentraresource":
+		cfg.WorkloadIdentityEntraResource, err = parseString(value)
+	case "workloadidentityimpersonatinpath":
+		cfg.WorkloadIdentityImpersonationPath, err = parseStrings(value)
+	case "tokenfilepath":
+		cfg.TokenFilePath, err = parseString(value)
 		if err = checkParsingError(err, key, value); err != nil {
 			return err
 		}
-		v, err := readToken(tokenPath)
-		if err != nil {
-			return err
-		}
-		cfg.Token = v
+	case "connectiondiagnosticsenabled":
+		cfg.ConnectionDiagnosticsEnabled, err = parseBool(value)
+	case "connectiondiagnosticsallowlistfile":
+		cfg.ConnectionDiagnosticsAllowlistFile, err = parseString(value)
+	case "proxyhost":
+		cfg.ProxyHost, err = parseString(value)
+	case "proxyport":
+		cfg.ProxyPort, err = parseInt(value)
+	case "proxyuser":
+		cfg.ProxyUser, err = parseString(value)
+	case "proxypassword":
+		cfg.ProxyPassword, err = parseString(value)
+	case "proxyprotocol":
+		cfg.ProxyProtocol, err = parseString(value)
+	case "noproxy":
+		cfg.NoProxy, err = parseString(value)
 	default:
 		param, err := parseString(value)
 		if err = checkParsingError(err, key, value); err != nil {
@@ -218,8 +246,10 @@ func checkParsingError(err error, key string, value interface{}) error {
 			Message:     errMsgFailedToParseTomlFile,
 			MessageArgs: []interface{}{key, value},
 		}
+		logger.Errorf("Parsed key: %s, value: %v is not an option for the connection config", key, value)
 		return err
 	}
+	logger.Warnf("Parsed key: %s, value: %v — cannot be parsed as string", key, value)
 	return nil
 }
 
@@ -301,6 +331,14 @@ func parseString(i interface{}) (string, error) {
 	return v, nil
 }
 
+func parseStrings(i interface{}) ([]string, error) {
+	s, ok := i.(string)
+	if !ok {
+		return nil, errors.New("failed to convert the value to string")
+	}
+	return strings.Split(s, ","), nil
+}
+
 func getTomlFilePath(filePath string) (string, error) {
 	if len(filePath) == 0 {
 		homeDir, err := os.UserHomeDir()
@@ -327,20 +365,39 @@ func validateFilePermission(filePath string) error {
 	if isWindows {
 		return nil
 	}
+
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return err
 	}
-	if permission := fileInfo.Mode().Perm(); permission != os.FileMode(0600) {
+
+	permission := fileInfo.Mode().Perm()
+
+	if !shouldSkipWarningForReadPermissions() && permission&othersCanReadFilePermission != 0 {
+		logger.Warnf("file '%v' is readable by someone other than the owner. Your Permission: %v. If you want "+
+			"to disable this warning, either remove read permissions from group and others or set the environment "+
+			"variable %v to true", filePath, permission, skipWarningForReadPermissionsEnv)
+	}
+
+	if permission&executableFilePermission != 0 {
 		return &SnowflakeError{
 			Number:      ErrCodeInvalidFilePermission,
-			Message:     errMsgInvalidPermissionToTomlFile,
-			MessageArgs: []interface{}{permission},
+			Message:     errMsgInvalidExecutablePermissionToFile,
+			MessageArgs: []interface{}{filePath, permission},
 		}
 	}
+
+	if permission&othersCanWriteFilePermission != 0 {
+		return &SnowflakeError{
+			Number:      ErrCodeInvalidFilePermission,
+			Message:     errMsgInvalidWritablePermissionToFile,
+			MessageArgs: []interface{}{filePath, permission},
+		}
+	}
+
 	return nil
 }
 
-func shouldReadTokenFromFile(cfg *Config) bool {
-	return cfg != nil && cfg.Authenticator == AuthTypeOAuth && len(cfg.Token) == 0
+func shouldSkipWarningForReadPermissions() bool {
+	return os.Getenv(skipWarningForReadPermissionsEnv) != ""
 }

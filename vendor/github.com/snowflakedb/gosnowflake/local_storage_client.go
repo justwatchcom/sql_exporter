@@ -14,7 +14,7 @@ import (
 type localUtil struct {
 }
 
-func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool, _ *Config) (cloudClient, error) {
+func (util *localUtil) createClient(_ *execResponseStageInfo, _ bool, _ *Config, _ *snowflakeTelemetry) (cloudClient, error) {
 	return nil, nil
 }
 
@@ -28,7 +28,11 @@ func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() {
+			if err = f.Close(); err != nil {
+				logger.Warnf("failed to close the file %v: %v", meta.realSrcFileName, err)
+			}
+		}()
 		frd = bufio.NewReader(f)
 	}
 
@@ -47,7 +51,11 @@ func (util *localUtil) uploadOneFileWithRetry(meta *fileMetadata) error {
 	if err != nil {
 		return err
 	}
-	defer output.Close()
+	defer func() {
+		if err = output.Close(); err != nil {
+			logger.Warnf("failed to close the file %v: %v", meta.dstFileName, err)
+		}
+	}()
 	data := make([]byte, meta.uploadSize)
 	for {
 		n, err := frd.Read(data)

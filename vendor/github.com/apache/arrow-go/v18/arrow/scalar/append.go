@@ -44,6 +44,7 @@ type builder[T primitives | []byte] interface {
 type binaryBuilder interface {
 	builder[[]byte]
 	ReserveData(int)
+	Type() arrow.DataType
 }
 
 func appendPrimitive[T primitives, B builder[T]](bldr B, scalars []Scalar) {
@@ -57,6 +58,24 @@ func appendPrimitive[T primitives, B builder[T]](bldr B, scalars []Scalar) {
 }
 
 func appendBinary(bldr binaryBuilder, scalars []Scalar) {
+	if _, view := bldr.Type().(arrow.BinaryViewDataType); view {
+		// View builders limit each value, not their total, to 2 GiB, so
+		// reserve one value at a time as Append does. Inline values need no
+		// data buffer.
+		for _, sc := range scalars {
+			s := sc.(BinaryScalar)
+			if !s.IsValid() {
+				bldr.AppendNull()
+				continue
+			}
+			if !arrow.IsViewInline(len(s.Data())) {
+				bldr.ReserveData(len(s.Data()))
+			}
+			bldr.UnsafeAppend(s.Data())
+		}
+		return
+	}
+
 	var dataSize int
 	for _, s := range scalars {
 		s := s.(BinaryScalar)
@@ -74,6 +93,187 @@ func appendBinary(bldr binaryBuilder, scalars []Scalar) {
 			bldr.AppendNull()
 		}
 	}
+}
+
+type extbuilder interface {
+	array.Builder
+	StorageBuilder() array.Builder
+}
+
+func appendToBldr(bldr array.Builder, scalars []Scalar) error {
+	if len(scalars) == 0 {
+		return nil
+	}
+
+	ty := bldr.Type()
+	bldr.Reserve(len(scalars))
+	switch bldr := bldr.(type) {
+	case extbuilder:
+		baseScalars := make([]Scalar, len(scalars))
+		for i, sc := range scalars {
+			baseScalars[i] = sc.(*Extension).Value
+		}
+
+		return appendToBldr(bldr.StorageBuilder(), baseScalars)
+	case *array.BooleanBuilder:
+		appendPrimitive(bldr, scalars)
+	case *array.Decimal32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Decimal64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Decimal128Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Decimal256Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.FixedSizeBinaryBuilder:
+		for _, sc := range scalars {
+			s := sc.(*FixedSizeBinary)
+			if s.Valid {
+				bldr.UnsafeAppend(s.Value.Bytes())
+			} else {
+				bldr.AppendNull()
+			}
+		}
+	case *array.Int8Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Uint8Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Int16Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Uint16Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Int32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Uint32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Int64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Uint64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Float16Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Float32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Float64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Date32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Date64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Time32Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.Time64Builder:
+		appendPrimitive(bldr, scalars)
+	case *array.DayTimeIntervalBuilder:
+		appendPrimitive(bldr, scalars)
+	case *array.MonthIntervalBuilder:
+		appendPrimitive(bldr, scalars)
+	case *array.MonthDayNanoIntervalBuilder:
+		appendPrimitive(bldr, scalars)
+	case *array.DurationBuilder:
+		appendPrimitive(bldr, scalars)
+	case *array.TimestampBuilder:
+		appendPrimitive(bldr, scalars)
+	case array.StringLikeBuilder:
+		appendBinary(bldr, scalars)
+	case *array.BinaryBuilder:
+		appendBinary(bldr, scalars)
+	case *array.BinaryViewBuilder:
+		appendBinary(bldr, scalars)
+	case array.ListLikeBuilder:
+		var numChildren int
+		for _, s := range scalars {
+			if !s.IsValid() {
+				continue
+			}
+			numChildren += s.(ListScalar).GetList().Len()
+		}
+		bldr.ValueBuilder().Reserve(numChildren)
+
+		for _, s := range scalars {
+			if !s.IsValid() {
+				bldr.AppendNull()
+				continue
+			}
+			bldr.Append(true)
+			list := s.(ListScalar).GetList()
+			for i := 0; i < list.Len(); i++ {
+				sc, err := GetScalar(list, i)
+				if err != nil {
+					return err
+				}
+				if err := Append(bldr.ValueBuilder(), sc); err != nil {
+					return err
+				}
+			}
+		}
+	case *array.StructBuilder:
+		for _, sc := range scalars {
+			s := sc.(*Struct)
+			for i := 0; i < bldr.NumField(); i++ {
+				if !s.Valid || s.Value[i] == nil {
+					bldr.FieldBuilder(i).AppendNull()
+				} else {
+					if err := Append(bldr.FieldBuilder(i), s.Value[i]); err != nil {
+						return err
+					}
+				}
+			}
+			bldr.UnsafeAppendBoolToBitmap(s.Valid)
+		}
+	case *array.SparseUnionBuilder:
+		ty := ty.(*arrow.SparseUnionType)
+		for i := 0; i < bldr.NumChildren(); i++ {
+			bldr.Child(i).Reserve(len(scalars))
+		}
+
+		for _, s := range scalars {
+			// for each scalar
+			// 1. append the type code
+			// 2. append the value to the corresponding child
+			// 3. append null to the other children
+			s := s.(*SparseUnion)
+			bldr.Append(s.TypeCode)
+			for i := range ty.Fields() {
+				child := bldr.Child(i)
+				if s.ChildID == i && s.Valid {
+					if err := Append(child, s.Value[i]); err != nil {
+						return err
+					}
+				} else {
+					child.AppendNull()
+				}
+			}
+		}
+	case *array.DenseUnionBuilder:
+		ty := ty.(*arrow.DenseUnionType)
+		for i := 0; i < bldr.NumChildren(); i++ {
+			bldr.Child(i).Reserve(len(scalars))
+		}
+
+		for _, s := range scalars {
+			s := s.(*DenseUnion)
+			fieldIndex := ty.ChildIDs()[s.TypeCode]
+			bldr.Append(s.TypeCode)
+
+			for i := range ty.Fields() {
+				child := bldr.Child(i)
+				if i == fieldIndex {
+					if s.Valid {
+						if err := Append(child, s.Value); err != nil {
+							return err
+						}
+					} else {
+						child.AppendNull()
+					}
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("%w: append scalar for type %s", arrow.ErrNotImplemented, ty)
+	}
+
+	return nil
 }
 
 // Append requires the passed in builder and scalar to have the same datatype
@@ -103,161 +303,5 @@ func AppendSlice(bldr array.Builder, scalars []Scalar) error {
 		}
 	}
 
-	bldr.Reserve(len(scalars))
-	switch bldr := bldr.(type) {
-	case *array.BooleanBuilder:
-		appendPrimitive[bool](bldr, scalars)
-	case *array.Decimal128Builder:
-		appendPrimitive[decimal128.Num](bldr, scalars)
-	case *array.Decimal256Builder:
-		appendPrimitive[decimal256.Num](bldr, scalars)
-	case *array.FixedSizeBinaryBuilder:
-		for _, sc := range scalars {
-			s := sc.(*FixedSizeBinary)
-			if s.Valid {
-				bldr.UnsafeAppend(s.Value.Bytes())
-			} else {
-				bldr.UnsafeAppendBoolToBitmap(false)
-			}
-		}
-	case *array.Int8Builder:
-		appendPrimitive[int8](bldr, scalars)
-	case *array.Uint8Builder:
-		appendPrimitive[uint8](bldr, scalars)
-	case *array.Int16Builder:
-		appendPrimitive[int16](bldr, scalars)
-	case *array.Uint16Builder:
-		appendPrimitive[uint16](bldr, scalars)
-	case *array.Int32Builder:
-		appendPrimitive[int32](bldr, scalars)
-	case *array.Uint32Builder:
-		appendPrimitive[uint32](bldr, scalars)
-	case *array.Int64Builder:
-		appendPrimitive[int64](bldr, scalars)
-	case *array.Uint64Builder:
-		appendPrimitive[uint64](bldr, scalars)
-	case *array.Float16Builder:
-		appendPrimitive[float16.Num](bldr, scalars)
-	case *array.Float32Builder:
-		appendPrimitive[float32](bldr, scalars)
-	case *array.Float64Builder:
-		appendPrimitive[float64](bldr, scalars)
-	case *array.Date32Builder:
-		appendPrimitive[arrow.Date32](bldr, scalars)
-	case *array.Date64Builder:
-		appendPrimitive[arrow.Date64](bldr, scalars)
-	case *array.Time32Builder:
-		appendPrimitive[arrow.Time32](bldr, scalars)
-	case *array.Time64Builder:
-		appendPrimitive[arrow.Time64](bldr, scalars)
-	case *array.DayTimeIntervalBuilder:
-		appendPrimitive[arrow.DayTimeInterval](bldr, scalars)
-	case *array.MonthIntervalBuilder:
-		appendPrimitive[arrow.MonthInterval](bldr, scalars)
-	case *array.MonthDayNanoIntervalBuilder:
-		appendPrimitive[arrow.MonthDayNanoInterval](bldr, scalars)
-	case *array.DurationBuilder:
-		appendPrimitive[arrow.Duration](bldr, scalars)
-	case *array.TimestampBuilder:
-		appendPrimitive[arrow.Timestamp](bldr, scalars)
-	case array.StringLikeBuilder:
-		appendBinary(bldr, scalars)
-	case *array.BinaryBuilder:
-		appendBinary(bldr, scalars)
-	case array.ListLikeBuilder:
-		var numChildren int
-		for _, s := range scalars {
-			if !s.IsValid() {
-				continue
-			}
-			numChildren += s.(ListScalar).GetList().Len()
-		}
-		bldr.ValueBuilder().Reserve(numChildren)
-
-		for _, s := range scalars {
-			bldr.Append(s.IsValid())
-			if s.IsValid() {
-				list := s.(ListScalar).GetList()
-				for i := 0; i < list.Len(); i++ {
-					sc, err := GetScalar(list, i)
-					if err != nil {
-						return err
-					}
-					if err := Append(bldr.ValueBuilder(), sc); err != nil {
-						return err
-					}
-				}
-			}
-		}
-	case *array.StructBuilder:
-		for _, sc := range scalars {
-			s := sc.(*Struct)
-			for i := 0; i < bldr.NumField(); i++ {
-				if !s.Valid || s.Value[i] == nil {
-					bldr.FieldBuilder(i).UnsafeAppendBoolToBitmap(false)
-				} else {
-					if err := Append(bldr.FieldBuilder(i), s.Value[i]); err != nil {
-						return err
-					}
-				}
-			}
-			bldr.UnsafeAppendBoolToBitmap(s.Valid)
-		}
-	case *array.SparseUnionBuilder:
-		ty := ty.(*arrow.SparseUnionType)
-		for i := 0; i < bldr.NumChildren(); i++ {
-			bldr.Child(i).Reserve(len(scalars))
-		}
-
-		for _, s := range scalars {
-			// for each scalar
-			// 1. append the type code
-			// 2. append the value to the corresponding child
-			// 3. append null to the other children
-			s := s.(*SparseUnion)
-			bldr.Append(s.TypeCode)
-			for i := range ty.Fields() {
-				child := bldr.Child(i)
-				if s.ChildID == i {
-					if s.Valid {
-						if err := Append(child, s.Value[i]); err != nil {
-							return err
-						}
-					} else {
-						child.UnsafeAppendBoolToBitmap(false)
-					}
-				} else {
-					child.UnsafeAppendBoolToBitmap(false)
-				}
-			}
-		}
-	case *array.DenseUnionBuilder:
-		ty := ty.(*arrow.DenseUnionType)
-		for i := 0; i < bldr.NumChildren(); i++ {
-			bldr.Child(i).Reserve(len(scalars))
-		}
-
-		for _, s := range scalars {
-			s := s.(*DenseUnion)
-			fieldIndex := ty.ChildIDs()[s.TypeCode]
-			bldr.Append(s.TypeCode)
-
-			for i := range ty.Fields() {
-				child := bldr.Child(i)
-				if i == fieldIndex {
-					if s.Valid {
-						if err := Append(child, s.Value); err != nil {
-							return err
-						}
-					} else {
-						child.UnsafeAppendBoolToBitmap(false)
-					}
-				}
-			}
-		}
-	default:
-		return fmt.Errorf("%w: append scalar for type %s", arrow.ErrNotImplemented, ty)
-	}
-
-	return nil
+	return appendToBldr(bldr, scalars)
 }

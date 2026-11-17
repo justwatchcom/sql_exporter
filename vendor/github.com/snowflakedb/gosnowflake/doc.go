@@ -69,6 +69,10 @@ The following connection parameters are supported:
     account parameter. For details, see the description of the account
     parameter.
 
+  - --> Important note: for the database object and other objects (schema, role, etc), please always adhere to the rules for Snowflake Object Identifiers; especially https://docs.snowflake.com/en/sql-reference/identifiers-syntax#double-quoted-identifiers.
+    As mentioned in the docs, if you have e.g. a database with mIxEDcAsE naming, as you needed to create it with enclosing it in double quotes, similarly you'll need to reference it
+    also with double quotes when specifying it in the connection string / DSN. In practice, this means you'll need to escape the second pair of double quotes, which are part of the database name, and not the String notation.
+
   - database: Specifies the database to use by default in the client session
     (can be changed after login).
 
@@ -94,37 +98,77 @@ The following connection parameters are supported:
     0 (zero) specifies that the driver should wait indefinitely. The default is 0 seconds.
     The query request gives up after the timeout length if the HTTP response is success.
 
-  - authenticator: Specifies the authenticator to use for authenticating user credentials:
+  - authenticator: Specifies the authenticator to use for authenticating user credentials.
+    See "Authenticator Values" section below for supported values.
 
-  - To use the internal Snowflake authenticator, specify snowflake (Default). If you want to cache your MFA logins, use AuthTypeUsernamePasswordMFA authenticator.
-
-  - To authenticate through Okta, specify https://<okta_account_name>.okta.com (URL prefix for Okta).
-
-  - To authenticate using your IDP via a browser, specify externalbrowser.
-
-  - To authenticate via OAuth, specify oauth and provide an OAuth Access Token (see the token parameter below).
+  - singleAuthenticationPrompt: specifies whether only one authentication should be performed at the same time for authentications that needs human interactions (like MFA or OAuth authorization code).
+    By default it is true.
 
   - application: Identifies your application to Snowflake Support.
 
   - disableOCSPChecks: false by default. Set to true to bypass the Online
     Certificate Status Protocol (OCSP) certificate revocation check.
+    OCSP module caches responses internally. If your application is long running, you can enable cache clearing by calling StartOCSPCacheClearer and disable by calling StopOCSPCacheClearer.
     IMPORTANT: Change the default value for testing or emergency situations only.
 
   - insecureMode: deprecated. Use disableOCSPChecks instead.
 
   - token: a token that can be used to authenticate. Should be used in conjunction with the "oauth" authenticator.
 
-  - client_session_keep_alive: Set to true have a heartbeat in the background every hour to keep the connection alive
-    such that the connection session will never expire. Care should be taken in using this option as it opens up
-    the access forever as long as the process is alive.
+  - client_session_keep_alive: Set to true have a heartbeat in the background every hour by default or the value of
+    client_session_keep_alive_heartbeat_frequency, if set, to keep the connection alive such that the connection session
+    will never expire. Care should be taken in using this option as it opens up the access forever as long as the process is alive.
+
+  - client_session_keep_alive_heartbeat_frequency: Number of seconds in-between client attempts to update the token for the session.
+    > The default is 3600 seconds
+    > Minimum value is 900 seconds. A smaller value will be reset to 900 seconds.
+    > Maximum value is 3600 seconds. A larger value will be reset to 3600 seconds.
+    > This parameter is only valid if client_session_keep_alive is set to true.
 
   - ocspFailOpen: true by default. Set to false to make OCSP check fail closed mode.
+
+  - certRevocationCheckMode (enabled, advisory, disabled): Specifies the certificate revocation check mode.
+    When enabled, the driver performs a certificate revocation check using CRL.
+    When advisory, the driver performs a certificate revocation check using CRL, but fails the connection only if the certificate is revoked.
+    If the status cannot be determined, the connection is established.
+    When disabled, the driver does not perform a certificate revocation check.
+    Keep in mind that the certificate revocation check with CRLs is a heavy task, both for memory and CPU.
+    The default is disabled.
+
+  - crlAllowCertificatesWithoutCrlURL: if a certificate does not have a CRL URL, the driver will
+    allow the connection to be established.
+    The default is false.
+
+  - SNOWFLAKE_CRL_CACHE_VALIDITY_TIME (environment variable): specifies the validity time of the CRL cache in seconds.
+
+  - crlInMemoryCacheDisabled: set to disable in-memory caching of CRLs.
+
+  - crlOnDiskCacheDisabled: set to disable on-disk caching of CRLs (on-disk cache may help with cold starts).
+
+  - crlDownloadMaxSize: maximum size (in bytes) of a CRL to download. Default is 200MB.
+
+  - SNOWFLAKE_CRL_ON_DISK_CACHE_DIR (environment variable): set to customize the directory for on-disk caching of CRLs.
+
+  - SNOWFLAKE_CRL_ON_DISK_CACHE_REMOVAL_DELAY (environment variable): set the delay (in seconds) for removing the on-disk cache (for debuggability).
+
+  - crlHTTPClientTimeout: customize the HTTP client timeout for downloading CRLs.
 
   - validateDefaultParameters: true by default. Set to false to disable checks on existence and privileges check for
     Database, Schema, Warehouse and Role when setting up the connection
 
+    --> Important note: with the default true value, the connection will fail as the validation fails, if you specify a non-existent database/schema/etc name.
+    This is particularly important when you have a miXedCaSE-named object (e.g. database) and you forgot to properly double quote it.
+    This behaviour is still preferable as it provides a very clear, fail-fast indication of the configuration error. If you would still like to forego this validation,
+    which ensures that the driver always connects with proper database, schema etc. and creates a proper context for it, you can set this configuration to false to allow connection with invalid object identifiers.
+
+    In this case (with this default validation deliberately turned off) the driver cannot guarantee that the actual behaviour inside the session will match with the one you'd expect, i.e. not actually using the database you expect, and so on.
+
   - tracing: Specifies the logging level to be used. Set to error by default.
     Valid values are trace, debug, info, print, warning, error, fatal, panic.
+
+  - logQueryText: when set to true, the full query text will be logged. Be aware that it may include sensitive information. Default value is false.
+
+  - logQueryParameters: when set to true, the parameters will be logged. Requires logQueryText to be enabled first. Be aware that it may include sensitive information. Default value is false.
 
   - disableQueryContextCache: disables parsing of query context returned from server and resending it to server as well.
     Default value is false.
@@ -150,6 +194,35 @@ Session-level parameters can also be set by using the SQL command "ALTER SESSION
 (https://docs.snowflake.com/en/sql-reference/sql/alter-session.html).
 
 Alternatively, use OpenWithConfig() function to create a database handle with the specified Config.
+
+# Authenticator values
+
+  - To use the internal Snowflake authenticator, specify snowflake (Default).
+
+  - To use programmatic access tokens, specify programmatic_access_token.
+
+  - If you want to cache your MFA logins, specify username_password_mfa. You can pass TOTP in a separate passcode parameter or append it to the password setting in which case you need to set passcodeInPassword = true.
+
+  - To authenticate through Okta, specify https://<okta_account_name>.okta.com (URL prefix for Okta).
+
+  - To authenticate using your IDP via a browser, specify externalbrowser.
+
+  - To authenticate via OAuth with token, specify oauth and provide an OAuth Access Token (see the token parameter below).
+
+  - To authenticate via full OAuth flow, specify oauth_authorization_code or oauth_client_credentials and fill relevant parameters (oauthClientId, oauthClientSecret, oauthAuthorizationUrl, oauthTokenRequestUrl, oauthRedirectUri, oauthScope).
+    Specify URLs if you want to use external OAuth2 IdP, otherwise Snowflake will be used as a default IdP.
+    If oauthScope is not configured, the role is used (giving session:role:<roleName> scope).
+    For more information, please reach to official Snowflake documentation.
+
+  - To authenticate via workload identity, specify workload_identity.
+
+    This option requires workloadIdentityProvider option to be set (AWS, GCP, AZURE, OIDC).
+
+    When workloadIdentityProvider=AZURE, workloadIdentityEntraResource can be optionally set to customize entra resource used to fetch JWT token.
+
+    When workloadIdentityProvider=GCP or AWS, workloadIdentityImpersonationPath can be optionally set to customize impersonation path. This is a comma separated list. For GCP the last parameter is a target service account and the rest are chained delegation. For AWS this is the list of role ARNs to assume.
+
+    For more details, refer to the usage guide: https://docs.snowflake.com/en/user-guide/workload-identity-federation
 
 # Connection Config
 
@@ -177,6 +250,25 @@ With two environment variables, `SNOWFLAKE_HOME` (`connections.toml` file direct
 the driver will search the config file and load the connection. You can find how to use this connection way at ./cmd/tomlfileconnection
 or Snowflake doc: https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/connecting/specify-credentials
 
+If the connection.toml file is readable by others, a warning will be logged. To disable it you need to set the environment variable `SF_SKIP_WARNING_FOR_READ_PERMISSIONS_ON_CONFIG_FILE` to true.
+
+It you wish to specify a custom transporter (e.g. to provide a custom TLS config to be used with your custom truststore) pass it through the `NewConnector`. Example:
+
+	tlsConfig := &tls.Config{
+	    // your custom fields here
+	}
+
+	config := Config{
+	    Transporter: &http.Transport{
+	        TLSClientConfig: tlsConfig,
+	    },
+	}
+
+	connector := NewConnector(SnowflakeDriver{}, *cfg)
+	db := sql.OpenDB(connector)
+
+As an alternative, you can use the `RegisterTLSConfig` / `DeregisterTLSConfig` functions as seen in the unit tests: https://github.com/snowflakedb/gosnowflake/blob/v1.16.0/transport_test.go#L127
+
 # Proxy
 
 The Go Snowflake Driver honors the environment variables HTTP_PROXY, HTTPS_PROXY and NO_PROXY for the forward proxy setting.
@@ -192,6 +284,20 @@ NO_PROXY does not support wildcards. Each value specified should be one of the f
 If more than one value is specified, values should be separated by commas, for example:
 
 	no_proxy=localhost,.my_company.com,xy12345.snowflakecomputing.com,192.168.1.15,192.168.1.16
+
+In addition to environment variables, the Go Snowflake Driver also supports configuring the proxy via connection parameters.
+When these parameters are provided in the connection string or DSN, they take precedence and any environment proxy settings (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) will be ignored.
+
+| Parameter       | Description                                                                 | Default |
+|-----------------|-----------------------------------------------------------------------------|---------|
+| `proxyHost`     | Hostname or IP address of the proxy server.                                 |         |
+| `proxyPort`     | Port number of the proxy server.                                            |         |
+| `proxyUser`     | Username for proxy authentication.                                          |         |
+| `proxyPassword` | Password for proxy authentication.                                          |         |
+| `proxyProtocol` | Protocol to use for proxy connection. Valid values: `http`, `https`.        | `http`  |
+| `NoProxy“       | Comma-separated list of hosts that should bypass the proxy.                 |         |
+
+For more details, please refer to the example in ./cmd/proxyconnection.
 
 # Logging
 
@@ -314,6 +420,21 @@ query/command by Ctrl+C, add a os.Interrupt trap in context to execute methods t
 	... (Ctrl+C to cancel the query)
 
 See cmd/selectmany.go for the full example.
+
+# OpenTelemetry headers
+
+A context containing OpenTelemetry headers for distributed tracing can be
+created. Each query, both synchronous and asynchronous, run with this context
+will include the Trace ID and Span ID as metadata. If you are instrumenting your
+program with OpenTelemetry and exporting telemetry data to Snowflake, then
+queries run with this context will be properly nested under the appropriate
+parent span. This can be viewed in the Traces and Logs tab in Snowsight.
+
+For example:
+
+	ctx, parent_span := tracer.Start(context.Background(), "parent_span")
+	defer parent_span.End()
+	rows, err := db.QueryContext(ctx, query)
 
 # Supported Data Types
 
@@ -650,6 +771,15 @@ of the returned value:
 	            fmt.Println(bigIntPtr)
 	    }
 	}
+
+# Using decfloats
+
+By default, DECFLOAT values are returned as string values.
+If you want to retrieve them as numbers, you have to use the WithDecfloatMappingEnabled context.
+If higher precision is enabled, the driver will return them as *big.Float values.
+Otherwise, they will be returned as float64 values.
+Keep in mind that both float64 and *big.Float are not able to precisely represent some DECFLOAT values.
+If precision is important, you have to use string representation and use your own library to parse it.
 
 # Arrow batches
 
@@ -1227,6 +1357,24 @@ and before retrieving the results. For a more elaborative example please see cmd
 			...
 		}
 
+==> Some considerations related to the KeepSessionAlive configuration option in context of asynchronous query execution
+
+When SQL Go connection is being closed, it performs the following actions:
+
+* stops the scheduled heartbeats (CLIENT_SESSION_KEEP_ALIVE), if it was enabled
+
+* cleans up all the http connections which are already idle - doesn't touch the ones which are in active use currently
+
+* if Config.KeepSessionAlive is false (default), then actively logs out the current Snowflake session.
+
+!! Caveat: If there are any queries which are currently executing in the same Snowflake session (e.g. async queries sent with WithAsyncMode()), then those queries are automatically cancelled from the client side a couple minutes later after the Close() call, as a Snowflake session which has been actively logged out from, cannot sustain any queries.
+
+You can govern this behaviour with setting Config.KeepSessionAlive to true; when the corresponding Snowflake session will be kept alive for a long time (determined by the Snowflake engine) even after an explicit Connection.Close() call past the time when the last running query in the session finished executing.
+
+The behaviour is also dependent on ABORT_DETACHED_QUERY parameter, please see the detailed explanation in the parameter description at https://docs.snowflake.com/en/sql-reference/parameters#abort-detached-query.
+
+As a consequence, best practice would be to isolate all long-running async tasks (especially ones supposed to be continued after the connection is closed) into a separate connection.
+
 # Support For PUT and GET
 
 The Go Snowflake Driver supports the PUT and GET commands.
@@ -1325,5 +1473,84 @@ If you wish to ignore those errors instead, you can set `RaisePutGetError: false
 
 	ctx := WithFileTransferOptions(context.Background(), &SnowflakeFileTransferOptions{RaisePutGetError: false})
 	db.ExecContext(ctx, "PUT ...")
+
+# Minicore (Native Library)
+
+The Go Snowflake Driver includes an embedded native library called "minicore" that verifies loading of native Rust extensions on various platforms. By default, minicore is enabled and loaded dynamically at runtime.
+
+## Disabling Minicore
+
+There are two ways to disable minicore:
+
+1. **At runtime using environment variable:**
+
+	Set the SF_DISABLE_MINICORE environment variable to "true" to disable minicore loading:
+
+	  export SF_DISABLE_MINICORE=true
+
+	This is useful when you want to disable minicore for a specific run without recompiling.
+
+2. **At compile time using build tags:**
+
+	Build with the -tags minicore_disabled flag to completely exclude minicore from the binary:
+
+	  go build -tags minicore_disabled ./...
+
+	This is required for static linking (e.g., CGO_ENABLED=0) because minicore relies on
+	dynamic library loading (dlopen) which is incompatible with static binaries.
+
+	Benefits of compile-time disable:
+	  - Smaller binary size (no embedded native libraries)
+	  - No CGO dependency for POSIX systems
+	  - Compatible with static linking
+
+	Example for fully static build:
+
+	  CGO_ENABLED=0 go build -tags minicore_disabled ./...
+
+When minicore is disabled (either at runtime or compile time), the driver continues to work
+normally but without the additional functionality provided by the native library.
+
+## Static Linking
+
+On Linux, if the binary is fully statically linked (e.g., built with
+-linkmode external -extldflags '-static'), the driver automatically detects this
+and skips minicore loading. Calling dlopen from a statically linked glibc binary
+would crash with SIGFPE, so the driver inspects the ELF header for a dynamic
+linker (PT_INTERP) and gracefully skips minicore if none is found.
+
+When minicore is disabled (either at runtime, at compile time, or automatically
+due to static linking), the driver continues to work normally but without the
+additional functionality provided by the native library.
+
+# Connectivity diagnostics
+
+==> Relevant configuration
+
+- `ConnectionDiagnosticsEnabled` (default: false) - main flag to enable the diagnostics
+
+- `ConnectionDiagnosticsAllowlistFile` - specify `/path/to/allowlist.json` to use a specific allowlist file which the driver should parse. If not specified, the driver tries to open `allowlist.json` from the current directory.
+The `ConnectionDiagnosticsAllowlistFile` is only taken into consideration when `ConnectionDiagnosticsEnabled=true`
+
+==> Flow of operation when `ConnectionDiagnosticsEnabled=true`
+
+1. upon initial startup, driver opens and reads the `allowlist.json` to determine which hosts it needs to connect to, and then for each entry in the allowlist
+
+2. perform a DNS resolution test to see if the hostname is resolvable
+
+3. driver logs an Error, when encountering a _public_ IP address for a host which looks to be a _private_ link hostname
+
+4. checks if proxy is used in the connection
+
+5. sets up a connection; for which we use the same transport which is driven by the driver's config (custom transport, or when OCSP disabled then OCSP-less transport, or by default, the OCSP-enabled transport)
+
+6. for HTTP endpoints, issues a HTTP GET request and see if it connects
+
+7. for HTTPS endpoints, the same , plus
+  - verifies if HTTPS connectivity is set up correctly
+  - parses the certificate chain and logs information on each certificate (on DEBUG loglevel, dump the whole cert)
+  - if (implicitly) configured from `CertRevocationCheckMode` being `advisory` or `enabled`, also tries to connect to the CRL endpoints
+
+8. the driver exits after performing diagnostics. If you want to use the driver 'normally' after performing connection diagnostics, set `ConnectionDiagnosticsEnabled=false` or remove it from the config
 */
 package gosnowflake

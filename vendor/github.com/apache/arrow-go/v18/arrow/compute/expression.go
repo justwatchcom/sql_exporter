@@ -23,10 +23,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/apache/arrow-go/v18/internal/utils/maphash"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -84,9 +85,9 @@ func printDatum(datum Datum) string {
 		}
 
 		switch datum.Type().ID() {
-		case arrow.STRING, arrow.LARGE_STRING:
+		case arrow.STRING, arrow.LARGE_STRING, arrow.STRING_VIEW:
 			return strconv.Quote(datum.Value.(scalar.BinaryScalar).String())
-		case arrow.BINARY, arrow.FIXED_SIZE_BINARY, arrow.LARGE_BINARY:
+		case arrow.BINARY, arrow.FIXED_SIZE_BINARY, arrow.LARGE_BINARY, arrow.BINARY_VIEW:
 			return `"` + strings.ToUpper(hex.EncodeToString(datum.Value.(scalar.BinaryScalar).Data())) + `"`
 		}
 
@@ -331,7 +332,7 @@ func (c *Call) Hash() uint64 {
 		return c.cachedHash
 	}
 
-	var h maphash.Hash
+	var h maphash.MapHash
 	h.SetSeed(hashSeed)
 
 	h.WriteString(c.funcName)
@@ -376,7 +377,52 @@ func (c *Call) Equals(other Expression) bool {
 	if opt, ok := c.options.(FunctionOptionsEqual); ok {
 		return opt.Equals(rhs.options)
 	}
-	return reflect.DeepEqual(c.options, rhs.options)
+	return equalFunctionOptions(c.options, rhs.options)
+}
+
+func equalFunctionOptions(lhs, rhs FunctionOptions) bool {
+	if left, ok := cumulativeOptions(lhs); ok {
+		right, ok := cumulativeOptions(rhs)
+		if !ok {
+			return false
+		}
+		if left == nil || right == nil {
+			return left == nil && right == nil
+		}
+		return left.SkipNulls == right.SkipNulls && equalOptionalScalar(left.Start, right.Start)
+	}
+
+	if lhs == nil || rhs == nil {
+		return lhs == nil && rhs == nil
+	}
+	return reflect.DeepEqual(lhs, rhs)
+}
+
+func cumulativeOptions(opts FunctionOptions) (*CumulativeOptions, bool) {
+	switch opts := opts.(type) {
+	case CumulativeOptions:
+		return &opts, true
+	case *CumulativeOptions:
+		return opts, true
+	default:
+		return nil, false
+	}
+}
+
+func equalOptionalScalar(lhs, rhs scalar.Scalar) bool {
+	if isNilScalar(lhs) || isNilScalar(rhs) {
+		return isNilScalar(lhs) && isNilScalar(rhs)
+	}
+	return scalar.Equals(lhs, rhs)
+}
+
+func isNilScalar(value scalar.Scalar) bool {
+	if value == nil {
+		return true
+	}
+
+	reflected := reflect.ValueOf(value)
+	return reflected.Kind() == reflect.Ptr && reflected.IsNil()
 }
 
 func (c *Call) Release() {
@@ -411,11 +457,9 @@ type MakeStructOptions struct {
 
 func (MakeStructOptions) TypeName() string { return "MakeStructOptions" }
 
-type NullOptions struct {
-	NanIsNull bool `compute:"nan_is_null"`
-}
-
-func (NullOptions) TypeName() string { return "NullOptions" }
+// NullOptions configures is_null. With NanIsNull, NaN values of float16,
+// float32 and float64 arrays and dictionaries are reported as null.
+type NullOptions = kernels.NullOptions
 
 type StrptimeOptions struct {
 	Format string         `compute:"format"`
@@ -490,6 +534,7 @@ func Cast(ex Expression, dt arrow.DataType) Expression {
 	return NewCall("cast", []Expression{ex}, opts)
 }
 
+// Deprecated: Use SetOptions instead
 type SetLookupOptions struct {
 	ValueSet  Datum `compute:"value_set"`
 	SkipNulls bool  `compute:"skip_nulls"`
@@ -531,6 +576,10 @@ var (
 	funcOptsTypes  = []FunctionOptions{
 		SetLookupOptions{}, ArithmeticOptions{}, CastOptions{},
 		FilterOptions{}, NullOptions{}, StrptimeOptions{}, MakeStructOptions{},
+		DictionaryEncodeOptions{},
+		CumulativeOptions{},
+		ScalarAggregateOptions{}, CountOptions{},
+		MatchSubstringOptions{},
 	}
 )
 
@@ -549,7 +598,7 @@ func NewLiteral(arg interface{}) Expression {
 }
 
 func NullLiteral(dt arrow.DataType) Expression {
-	return &Literal{Literal: NewDatum(scalar.MakeNullScalar(dt))}
+	return &Literal{Literal: &ScalarDatum{Value: scalar.MakeNullScalar(dt)}}
 }
 
 // NewRef constructs a parameter expression which refers to a specific field
@@ -563,9 +612,38 @@ func NewFieldRef(field string) Expression {
 }
 
 // NewCall constructs an expression that represents a specific function call with
-// the given arguments and options.
+// the given arguments and options. Cumulative start scalars are retained for
+// the lifetime of the expression.
 func NewCall(name string, args []Expression, opts FunctionOptions) Expression {
-	return &Call{funcName: name, args: args, options: opts}
+	return &Call{funcName: name, args: args, options: cloneExpressionOptions(opts)}
+}
+
+func cloneExpressionOptions(opts FunctionOptions) FunctionOptions {
+	switch opts := opts.(type) {
+	case CumulativeOptions:
+		opts.Start = retainExpressionScalar(opts.Start)
+		return opts
+	case *CumulativeOptions:
+		if opts == nil {
+			return nil
+		}
+		cloned := *opts
+		cloned.Start = retainExpressionScalar(cloned.Start)
+		return cloned
+	default:
+		return opts
+	}
+}
+
+func retainExpressionScalar(value scalar.Scalar) scalar.Scalar {
+	if isNilScalar(value) {
+		return nil
+	}
+
+	if releasable, ok := value.(scalar.Releasable); ok {
+		releasable.Retain()
+	}
+	return value
 }
 
 // Project is shorthand for `make_struct` to produce a record batch output
@@ -613,12 +691,12 @@ func GreaterEqual(lhs, rhs Expression) Expression {
 // IsNull creates an expression that returns true if the passed in expression is
 // null. Optionally treating NaN as null if desired.
 func IsNull(lhs Expression, nanIsNull bool) Expression {
-	return NewCall("less", []Expression{lhs}, &NullOptions{nanIsNull})
+	return NewCall("is_null", []Expression{lhs}, &NullOptions{NanIsNull: nanIsNull})
 }
 
 // IsValid is the inverse of IsNull
 func IsValid(lhs Expression) Expression {
-	return NewCall("is_valid", []Expression{lhs}, nil)
+	return NewCall("is_not_null", []Expression{lhs}, nil)
 }
 
 type binop func(lhs, rhs Expression) Expression
@@ -686,7 +764,7 @@ func SerializeOptions(opts FunctionOptions, mem memory.Allocator) (*memory.Buffe
 	}
 	defer arr.Release()
 
-	batch := array.NewRecord(arrow.NewSchema([]arrow.Field{{Type: arr.DataType(), Nullable: true}}, nil), []arrow.Array{arr}, 1)
+	batch := array.NewRecordBatch(arrow.NewSchema([]arrow.Field{{Type: arr.DataType(), Nullable: true}}, nil), []arrow.Array{arr}, 1)
 	defer batch.Release()
 
 	buf := &bufferWriteSeeker{mem: mem}
@@ -710,6 +788,11 @@ func SerializeExpr(expr Expression, mem memory.Allocator) (*memory.Buffer, error
 		metaValue []string
 		visit     func(Expression) error
 	)
+	defer func() {
+		for _, col := range cols {
+			col.Release()
+		}
+	}()
 
 	addScalar := func(s scalar.Scalar) (string, error) {
 		ret := len(cols)
@@ -745,7 +828,9 @@ func SerializeExpr(expr Expression, mem memory.Allocator) (*memory.Buffer, error
 			metaValue = append(metaValue, e.funcName)
 
 			for _, arg := range e.args {
-				visit(arg)
+				if err := visit(arg); err != nil {
+					return err
+				}
 			}
 
 			if e.options != nil {
@@ -781,11 +866,10 @@ func SerializeExpr(expr Expression, mem memory.Allocator) (*memory.Buffer, error
 	fields := make([]arrow.Field, len(cols))
 	for i, c := range cols {
 		fields[i].Type = c.DataType()
-		defer c.Release()
 	}
 
 	metadata := arrow.NewMetadata(metaKey, metaValue)
-	rec := array.NewRecord(arrow.NewSchema(fields, &metadata), cols, 1)
+	rec := array.NewRecordBatch(arrow.NewSchema(fields, &metadata), cols, 1)
 	defer rec.Release()
 
 	buf := &bufferWriteSeeker{mem: mem}
@@ -821,8 +905,8 @@ func DeserializeExpr(mem memory.Allocator, buf *memory.Buffer) (Expression, erro
 
 	var (
 		getone   func() (Expression, error)
-		index    int = 0
-		metadata     = batch.Schema().Metadata()
+		index    = 0
+		metadata = batch.Schema().Metadata()
 	)
 
 	getscalar := func(i string) (scalar.Scalar, error) {
@@ -877,14 +961,26 @@ func DeserializeExpr(mem memory.Allocator, buf *memory.Buffer) (Expression, erro
 							return nil, errors.New("options scalar typename must be binary")
 						}
 
-						optionsVal := reflect.New(funcOptionsMap[string(typname.(*scalar.Binary).Data())]).Interface()
-						if err := scalar.FromScalar(optsScalar.(*scalar.Struct), optionsVal); err != nil {
+						typeName := string(typname.(*scalar.Binary).Data())
+						optionsType, ok := funcOptionsMap[typeName]
+						if !ok {
+							return nil, fmt.Errorf("%w: unknown function options type %q", arrow.ErrInvalid, typeName)
+						}
+
+						optionsVal := reflect.New(optionsType).Interface()
+						if err := scalar.FromScalarWithAllocator(optsScalar.(*scalar.Struct), optionsVal, mem); err != nil {
 							return nil, err
 						}
 						opts = optionsVal.(FunctionOptions)
 					}
 					index += 2
-					return NewCall(val, args, opts), nil
+					expr := NewCall(val, args, opts)
+					if _, ok := cumulativeOptions(opts); ok {
+						if r, ok := opts.(releasable); ok {
+							r.Release()
+						}
+					}
+					return expr, nil
 				}
 
 				arg, err := getone()

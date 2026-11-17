@@ -8,6 +8,7 @@ import (
 )
 
 // InternalClient is implemented by HTTPClient
+// Deprecated: this will be removed in a future release.
 type InternalClient interface {
 	Get(context.Context, *url.URL, map[string]string, time.Duration) (*http.Response, error)
 	Post(context.Context, *url.URL, map[string]string, []byte, time.Duration, currentTimeProvider) (*http.Response, error)

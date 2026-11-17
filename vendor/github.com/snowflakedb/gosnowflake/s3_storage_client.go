@@ -6,17 +6,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"strings"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"io"
+	"net/http"
+	"os"
+	"strings"
 )
 
 const (
@@ -31,7 +30,8 @@ const (
 )
 
 type snowflakeS3Client struct {
-	cfg *Config
+	cfg       *Config
+	telemetry *snowflakeTelemetry
 }
 
 type s3Location struct {
@@ -42,13 +42,18 @@ type s3Location struct {
 // S3LoggingMode allows to configure which logs should be included.
 // By default no logs are included.
 // See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#ClientLogMode for allowed values.
+// Deprecated: will be moved to DSN/Config in a future release.
 var S3LoggingMode aws.ClientLogMode
 
-func (util *snowflakeS3Client) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool) (cloudClient, error) {
+func (util *snowflakeS3Client) createClient(info *execResponseStageInfo, useAccelerateEndpoint bool, telemetry *snowflakeTelemetry) (cloudClient, error) {
 	stageCredentials := info.Creds
 	s3Logger := logging.LoggerFunc(s3LoggingFunc)
 	endPoint := getS3CustomEndpoint(info)
 
+	transport, err := newTransportFactory(util.cfg, telemetry).createTransport(util.cfg.transportConfigFor(transportTypeCloudProvider))
+	if err != nil {
+		return nil, err
+	}
 	return s3.New(s3.Options{
 		Region: info.Region,
 		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(
@@ -58,7 +63,7 @@ func (util *snowflakeS3Client) createClient(info *execResponseStageInfo, useAcce
 		BaseEndpoint:  endPoint,
 		UseAccelerate: useAccelerateEndpoint,
 		HTTPClient: &http.Client{
-			Transport: getTransport(util.cfg),
+			Transport: transport,
 		},
 		ClientLogMode: S3LoggingMode,
 		Logger:        s3Logger,
@@ -66,10 +71,11 @@ func (util *snowflakeS3Client) createClient(info *execResponseStageInfo, useAcce
 }
 
 // to be used with S3 transferAccelerateConfigWithUtil
-func (util *snowflakeS3Client) createClientWithConfig(info *execResponseStageInfo, useAccelerateEndpoint bool, cfg *Config) (cloudClient, error) {
+func (util *snowflakeS3Client) createClientWithConfig(info *execResponseStageInfo, useAccelerateEndpoint bool, cfg *Config, telemetry *snowflakeTelemetry) (cloudClient, error) {
 	// copy snowflakeFileTransferAgent's config onto the cloud client so we could decide which Transport to use
 	util.cfg = cfg
-	return util.createClient(info, useAccelerateEndpoint)
+	util.telemetry = telemetry
+	return util.createClient(info, useAccelerateEndpoint, telemetry)
 }
 
 func getS3CustomEndpoint(info *execResponseStageInfo) *string {
@@ -111,7 +117,7 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 	var s3Cli s3HeaderAPI
 	s3Cli, ok := meta.client.(*s3.Client)
 	if !ok {
-		return nil, fmt.Errorf("could not parse client to s3.Client")
+		return nil, errors.New("could not parse client to s3.Client")
 	}
 	// for testing only
 	if meta.mockHeader != nil {
@@ -125,18 +131,18 @@ func (util *snowflakeS3Client) getFileHeader(meta *fileMetadata, filename string
 		if errors.As(err, &ae) {
 			if ae.ErrorCode() == notFound {
 				meta.resStatus = notFoundFile
-				return nil, fmt.Errorf("could not find file")
+				return nil, errors.New("could not find file")
 			} else if ae.ErrorCode() == expiredToken {
 				meta.resStatus = renewToken
-				return nil, fmt.Errorf("received expired token. renewing")
+				return nil, errors.New("received expired token. renewing")
 			}
 			meta.resStatus = errStatus
 			meta.lastError = err
-			return nil, fmt.Errorf("error while retrieving header")
+			return nil, fmt.Errorf("error while retrieving header, errorCode=%v. %w", ae.ErrorCode(), err)
 		}
 		meta.resStatus = errStatus
 		meta.lastError = err
-		return nil, fmt.Errorf("unexpected error while retrieving header: %v", err)
+		return nil, fmt.Errorf("unexpected error while retrieving header: %w", err)
 	}
 
 	meta.resStatus = uploaded
@@ -226,6 +232,11 @@ func (util *snowflakeS3Client) uploadFile(
 		if err != nil {
 			return nil, err
 		}
+		defer func() {
+			if err = file.Close(); err != nil {
+				logger.Warnf("failed to close %v file: %v", dataFile, err)
+			}
+		}()
 		return uploader.Upload(ctx, &s3.PutObjectInput{
 			Bucket:   &s3loc.bucketName,
 			Key:      &s3path,
@@ -249,7 +260,7 @@ func (util *snowflakeS3Client) uploadFile(
 		}
 		meta.lastError = err
 		meta.resStatus = needRetry
-		return err
+		return fmt.Errorf("error while uploading file. %w", err)
 	}
 	meta.dstFileSize = meta.uploadSize
 	meta.resStatus = uploaded
@@ -264,7 +275,8 @@ type s3DownloadAPI interface {
 func (util *snowflakeS3Client) nativeDownloadFile(
 	meta *fileMetadata,
 	fullDstFileName string,
-	maxConcurrency int64) error {
+	maxConcurrency int64,
+	partSize int64) error {
 	s3Obj, _ := util.getS3Object(meta, meta.srcFileName)
 	client, ok := meta.client.(*s3.Client)
 	if !ok {
@@ -272,36 +284,46 @@ func (util *snowflakeS3Client) nativeDownloadFile(
 			Message: "failed to cast to s3 client",
 		}
 	}
+	logger.Debugf("S3 Client: Send Get Request to the Bucket: %v", meta.stageInfo.Location)
 
-	f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	var downloader s3DownloadAPI
 	downloader = manager.NewDownloader(client, func(u *manager.Downloader) {
 		u.Concurrency = int(maxConcurrency)
+		u.PartSize = int64Max(partSize, manager.DefaultDownloadPartSize)
 	})
 	// for testing only
 	if meta.mockDownloader != nil {
 		downloader = meta.mockDownloader
 	}
 
-	_, err = withCloudStorageTimeout(util.cfg, func(ctx context.Context) (any, error) {
-		if meta.options.GetFileToStream {
+	_, err := withCloudStorageTimeout(util.cfg, func(ctx context.Context) (any, error) {
+		if meta.options != nil && meta.options.GetFileToStream {
 			buf := manager.NewWriteAtBuffer([]byte{})
-			_, err = downloader.Download(ctx, buf, &s3.GetObjectInput{
+			if _, err := downloader.Download(ctx, buf, &s3.GetObjectInput{
 				Bucket: s3Obj.Bucket,
 				Key:    s3Obj.Key,
-			})
+			}); err != nil {
+				return nil, err
+			}
 			meta.dstStream = bytes.NewBuffer(buf.Bytes())
 		} else {
-			_, err = downloader.Download(ctx, f, &s3.GetObjectInput{
+			f, err := os.OpenFile(fullDstFileName, os.O_CREATE|os.O_WRONLY, readWriteFileMode)
+			if err != nil {
+				return nil, err
+			}
+			defer func() {
+				if err = f.Close(); err != nil {
+					logger.Warnf("failed to close %v file: %v", fullDstFileName, err)
+				}
+			}()
+			if _, err = downloader.Download(ctx, f, &s3.GetObjectInput{
 				Bucket: s3Obj.Bucket,
 				Key:    s3Obj.Key,
-			})
+			}); err != nil {
+				return nil, err
+			}
 		}
-		return nil, err
+		return nil, nil
 	})
 
 	if err != nil {
@@ -317,11 +339,11 @@ func (util *snowflakeS3Client) nativeDownloadFile(
 			}
 			meta.lastError = err
 			meta.resStatus = errStatus
-			return err
+			return fmt.Errorf("error while downloading file, errorCode=%v. %w", ae.ErrorCode(), err)
 		}
 		meta.lastError = err
 		meta.resStatus = needRetry
-		return err
+		return fmt.Errorf("error while downloading file. %w", err)
 	}
 	meta.resStatus = downloaded
 	return nil

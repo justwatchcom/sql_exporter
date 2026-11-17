@@ -3,6 +3,7 @@ package jose
 import (
 	"crypto/hmac"
 	"errors"
+	"fmt"
 )
 
 func init() {
@@ -25,14 +26,21 @@ func (alg *HmacUsingSha) Name() string {
 }
 
 func (alg *HmacUsingSha) Verify(securedInput, signature []byte, key interface{}) error {	
-	
-	actualSig,_ := alg.Sign(securedInput, key)
+	if privKey,ok:=key.([]byte); ok {		
+		actualSig, err := alg.Sign(securedInput, privKey)
 
-	if !hmac.Equal(signature, actualSig) { 
-		return errors.New("HmacUsingSha.Verify(): Signature is invalid")
+		if err != nil {
+			return fmt.Errorf("HmacUsingSha.Verify(): Signature validation failed: %w", err)
+		}
+
+		if !hmac.Equal(signature, actualSig) { 
+			return errors.New("HmacUsingSha.Verify(): Signature is invalid")
+		}
+		
+		return nil
 	}
-	
-	return nil
+
+	return errors.New("HmacUsingSha.Verify(): expects key to be '[]byte' array")	
 }
 
 func (alg *HmacUsingSha) Sign(securedInput []byte, key interface{}) (signature []byte, err error) {

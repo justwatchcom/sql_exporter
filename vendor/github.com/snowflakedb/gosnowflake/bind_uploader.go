@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -263,11 +264,12 @@ func getBindValues(bindings []driver.NamedValue, params map[string]*string) (map
 					return nil, err
 				}
 			}
-			if t == nullType || t == unSupportedType {
-				t = textType // if null or not supported, pass to GS as text
-			} else if t == nilObjectType || t == mapType || t == nilMapType {
+			switch t {
+			case nullType, unSupportedType:
+				t = textType
+			case nilObjectType, mapType, nilMapType:
 				t = objectType
-			} else if t == nilArrayType {
+			case nilArrayType:
 				t = arrayType
 			}
 			bindValues[bindingName(binding, idx)] = execBindParameter{
@@ -317,11 +319,11 @@ func supportedArrayBind(nv *driver.NamedValue) bool {
 	switch reflect.TypeOf(nv.Value) {
 	case reflect.TypeOf(&intArray{}), reflect.TypeOf(&int32Array{}),
 		reflect.TypeOf(&int64Array{}), reflect.TypeOf(&float64Array{}),
-		reflect.TypeOf(&float32Array{}), reflect.TypeOf(&boolArray{}),
-		reflect.TypeOf(&stringArray{}), reflect.TypeOf(&byteArray{}),
-		reflect.TypeOf(&timestampNtzArray{}), reflect.TypeOf(&timestampLtzArray{}),
-		reflect.TypeOf(&timestampTzArray{}), reflect.TypeOf(&dateArray{}),
-		reflect.TypeOf(&timeArray{}):
+		reflect.TypeOf(&float32Array{}), reflect.TypeOf(&decfloatArray{}),
+		reflect.TypeOf(&boolArray{}), reflect.TypeOf(&stringArray{}),
+		reflect.TypeOf(&byteArray{}), reflect.TypeOf(&timestampNtzArray{}),
+		reflect.TypeOf(&timestampLtzArray{}), reflect.TypeOf(&timestampTzArray{}),
+		reflect.TypeOf(&dateArray{}), reflect.TypeOf(&timeArray{}):
 		return true
 	case reflect.TypeOf([]uint8{}):
 		// internal binding ts mode
@@ -337,14 +339,26 @@ func supportedArrayBind(nv *driver.NamedValue) bool {
 		}
 		return false
 	default:
-		// TODO SNOW-176486 variant, object, array
-
 		// Support for bulk array binding insertion using []interface{}
 		if isInterfaceArrayBinding(nv.Value) {
 			return true
 		}
 		return false
 	}
+}
+
+func supportedDecfloatBind(nv *driver.NamedValue) bool {
+	if nv.Value == nil {
+		return false
+	}
+
+	val := reflect.Indirect(reflect.ValueOf(nv.Value))
+
+	if !val.IsValid() {
+		return false
+	}
+
+	return val.Type() == reflect.TypeOf(big.Float{})
 }
 
 func supportedNullBind(nv *driver.NamedValue) bool {

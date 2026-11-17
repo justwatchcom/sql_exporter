@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
@@ -37,7 +36,7 @@ type Null struct {
 // NewNull returns a new Null array value of size n.
 func NewNull(n int) *Null {
 	a := &Null{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	data := NewData(
 		arrow.Null, n,
 		[]*memory.Buffer{nil},
@@ -53,7 +52,7 @@ func NewNull(n int) *Null {
 // NewNullData returns a new Null array value, from data.
 func NewNullData(data arrow.ArrayData) *Null {
 	a := &Null{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -77,11 +76,15 @@ func (a *Null) String() string {
 
 func (a *Null) setData(data *Data) {
 	a.array.setData(data)
-	a.array.nullBitmapBytes = nil
-	a.array.data.nulls = a.array.data.length
+	a.nullBitmapBytes = nil
+	a.data.nulls = a.data.length
 }
 
 func (a *Null) GetOneForMarshal(i int) interface{} {
+	return nil
+}
+
+func (a *Null) ValueAsAny(i int) any {
 	return nil
 }
 
@@ -95,7 +98,9 @@ type NullBuilder struct {
 
 // NewNullBuilder returns a builder, using the provided memory allocator.
 func NewNullBuilder(mem memory.Allocator) *NullBuilder {
-	return &NullBuilder{builder: builder{refCount: 1, mem: mem}}
+	nb := &NullBuilder{builder: builder{mem: mem}}
+	nb.refCount.Add(1)
+	return nb
 }
 
 func (b *NullBuilder) Type() arrow.DataType { return arrow.Null }
@@ -103,9 +108,9 @@ func (b *NullBuilder) Type() arrow.DataType { return arrow.Null }
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *NullBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -114,8 +119,8 @@ func (b *NullBuilder) Release() {
 }
 
 func (b *NullBuilder) AppendNull() {
-	b.builder.length++
-	b.builder.nulls++
+	b.length++
+	b.nulls++
 }
 
 func (b *NullBuilder) AppendNulls(n int) {
@@ -200,6 +205,7 @@ func (b *NullBuilder) Unmarshal(dec *json.Decoder) error {
 
 func (b *NullBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err

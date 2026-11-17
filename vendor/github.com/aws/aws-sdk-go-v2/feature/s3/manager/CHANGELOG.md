@@ -1,3 +1,894 @@
+# v1.23.25 (2026-11-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.24 (2026-11-10)
+
+* **Dependency Update**: Update to smithy-go v1.28.9.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.23 (2026-11-09)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.22 (2026-11-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.21 (2026-11-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.20 (2026-11-04)
+
+* **Dependency Update**: Update to smithy-go v1.28.8.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.19 (2026-10-30)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.18 (2026-10-27)
+
+* **Dependency Update**: Update to smithy-go v1.28.7.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.17 (2026-10-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.16 (2026-10-22)
+
+* **Bug Fix**: Update smithy-go to v1.28.6
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.15 (2026-10-21)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.14 (2026-10-09.2)
+
+* **Dependency Update**: Update to smithy-go v1.28.5.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.13 (2026-10-08)
+
+* **Dependency Update**: Update to smithy-go v1.28.4.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.12 (2026-10-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.11 (2026-09-30)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.10 (2026-09-24)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.9 (2026-09-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.8 (2026-09-21)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.7 (2026-09-14)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.6 (2026-09-11)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.5 (2026-09-09)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.4 (2026-09-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.3 (2026-09-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.2 (2026-08-31.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.1 (2026-08-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.23.0 (2026-08-27)
+
+* **Feature**: Support connection read timeouts in the SDK. This is currently available on an opt-in basis by setting env `AWS_ENABLE_DEFAULT_SOCKET_TIMEOUT_2026=true`.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.46 (2026-08-26)
+
+* **Dependency Update**: Update to smithy-go v1.28.0.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.45 (2026-08-25)
+
+* **Dependency Update**: Update to smithy-go v1.27.10.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.44 (2026-08-20)
+
+* **Bug Fix**: Fix flaky test from feature/s3/manager upload retry
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.43 (2026-08-14)
+
+* **Dependency Update**: Update to smithy-go v1.27.8.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.42 (2026-08-10)
+
+* **Dependency Update**: Update to smithy-go v1.27.7.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.41 (2026-08-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.40 (2026-08-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.39 (2026-08-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.38 (2026-07-31.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+* **Dependency Update**: Upgrade to smithy-go v1.27.6 to fix various serde issues in HTTP binding services.
+
+# v1.22.37 (2026-07-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.36 (2026-07-28)
+
+* **Dependency Update**: Update to smithy-go v1.27.5.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.35 (2026-07-21)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.34 (2026-07-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.33 (2026-07-13)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.32 (2026-07-08.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.31 (2026-07-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.30 (2026-07-01)
+
+* **Bug Fix**: Bump smithy-go to 1.27.3, fix JSON encorder for document.Number, endpoint host label format validation and CBOR union serialization on new serde
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.29 (2026-06-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.28 (2026-06-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.27 (2026-06-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.26 (2026-06-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.25 (2026-06-04)
+
+* **Dependency Update**: Update to smithy-go v1.27.1 to fix several union-related deserialization bugs in schema-serde-enabled services.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.24 (2026-06-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.23 (2026-06-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.22 (2026-05-29)
+
+* **Dependency Update**: Update to smithy-go v1.26.0.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.21 (2026-05-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.20 (2026-05-27)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.19 (2026-05-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.18 (2026-05-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.17 (2026-04-29)
+
+* **Dependency Update**: Update to smithy-go v1.25.1.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.16 (2026-04-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.15 (2026-04-17)
+
+* **Dependency Update**: Bump smithy-go to 1.25.0 to support endpointBdd trait
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.14 (2026-04-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.13 (2026-04-07)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.12 (2026-04-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.11 (2026-03-31)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.10 (2026-03-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.9 (2026-03-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.8 (2026-03-13)
+
+* **Bug Fix**: Replace usages of the old ioutil/ package throughout the SDK.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.7 (2026-03-12)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.6 (2026-03-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.5 (2026-03-03)
+
+* **Bug Fix**: Modernize non codegen files with go fix
+* **Dependency Update**: Bump minimum Go version to 1.24
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.4 (2026-02-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.3 (2026-02-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.2 (2026-02-18)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.1 (2026-02-17)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.22.0 (2026-02-05)
+
+* **Feature**: Deprecate feature/s3/manager, superceded by feature/s3/transfermanager. See https://github.com/aws/aws-sdk-go-v2/discussions/3306
+
+# v1.21.1 (2026-01-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.21.0 (2026-01-20)
+
+* **Feature**: Optimize allocation for transfer manager v1 uploader so no extra memory is used in buffer pool for single upload.
+
+# v1.20.19 (2026-01-09)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.18 (2025-12-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.17 (2025-12-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.16 (2025-12-15)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.15 (2025-12-09)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.14 (2025-12-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.13 (2025-12-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+* **Dependency Update**: Upgrade to smithy-go v1.24.0. Notably this version of the library reduces the allocation footprint of the middleware system. We observe a ~10% reduction in allocations per SDK call with this change.
+
+# v1.20.12 (2025-11-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.11 (2025-11-21)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.10 (2025-11-20)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.9 (2025-11-19.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.8 (2025-11-19)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.7 (2025-11-12)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.6 (2025-11-11)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.5 (2025-11-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.4 (2025-11-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.3 (2025-11-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+* **Dependency Update**: Upgrade to smithy-go v1.23.2 which should convey some passive reduction of overall allocations, especially when not using the metrics system.
+
+# v1.20.2 (2025-10-30)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.1 (2025-10-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.20.0 (2025-10-27)
+
+* **Feature**: Add durability checks to validate part count and range for upload/download. You can disable this with `DisableValidateParts` in upload/download options, though doing so is not recommended because it damages the durability posture of your application.
+
+# v1.19.15 (2025-10-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.14 (2025-10-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.13 (2025-10-16)
+
+* **Dependency Update**: Bump minimum Go version to 1.23.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.12 (2025-10-07)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.11 (2025-10-02)
+
+* **Bug Fix**: Add missing ChecksumType field to UploadOutput.
+
+# v1.19.10 (2025-09-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.9 (2025-09-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.8 (2025-09-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.7 (2025-09-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.6 (2025-09-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.5 (2025-09-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.4 (2025-08-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.3 (2025-08-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.2 (2025-08-27)
+
+* **Dependency Update**: Update to smithy-go v1.23.0.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.1 (2025-08-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.19.0 (2025-08-21)
+
+* **Feature**: Add control for request checksum calculation.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.5 (2025-08-20)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.4 (2025-08-11)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.3 (2025-08-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.2 (2025-07-30)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.1 (2025-07-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.18.0 (2025-07-28)
+
+* **Feature**: Add support for HTTP interceptors.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.85 (2025-07-19)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.84 (2025-07-15)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.83 (2025-07-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.82 (2025-06-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.81 (2025-06-18)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.80 (2025-06-17)
+
+* **Dependency Update**: Update to smithy-go v1.22.4.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.79 (2025-06-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.78 (2025-06-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.77 (2025-05-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.76 (2025-05-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.75 (2025-05-05)
+
+* **Bug Fix**: Enable user to call GetBucketRegion without credential config
+
+# v1.17.74 (2025-04-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.73 (2025-04-23)
+
+* **Bug Fix**: Abort multi part download if the object is modified during download
+
+# v1.17.72 (2025-04-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.71 (2025-04-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.70 (2025-03-31)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.69 (2025-03-27)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.68 (2025-03-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.67 (2025-03-24)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.66 (2025-03-11)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.65 (2025-03-04.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.64 (2025-02-27)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.63 (2025-02-18)
+
+* **Bug Fix**: Bump go version to 1.22
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.62 (2025-02-14)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.61 (2025-02-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.60 (2025-02-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.59 (2025-02-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.58 (2025-02-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.57 (2025-01-31)
+
+* **Bug Fix**: Fix incorrect reference to old s3manager in comments.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.56 (2025-01-30)
+
+* **Bug Fix**: Fix incorrect reference to old s3manager in comments.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.55 (2025-01-29)
+
+* **Bug Fix**: Fix incorrect reference to old s3manager in comments.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.54 (2025-01-24)
+
+* **Bug Fix**: Fix incorrect reference to old s3manager in comments.
+* **Dependency Update**: Updated to the latest SDK module versions
+* **Dependency Update**: Upgrade to smithy-go v1.22.2.
+
+# v1.17.53 (2025-01-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.52 (2025-01-17)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.51 (2025-01-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.50 (2025-01-15)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.49 (2025-01-14)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.48 (2025-01-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.47 (2025-01-09)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.46 (2025-01-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.45 (2025-01-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.44 (2024-12-19)
+
+* **Bug Fix**: Fix improper use of printf-style functions.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.43 (2024-12-03.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.42 (2024-12-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.41 (2024-11-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.40 (2024-11-21)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.39 (2024-11-18)
+
+* **Dependency Update**: Update to smithy-go v1.22.1.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.38 (2024-11-14)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.37 (2024-11-07)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.36 (2024-11-06)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.35 (2024-10-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.34 (2024-10-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.33 (2024-10-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.32 (2024-10-11)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.31 (2024-10-09)
+
+* **Bug Fix**: Fixup some integration tests.
+
+# v1.17.30 (2024-10-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.29 (2024-10-07)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.28 (2024-10-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.27 (2024-10-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.26 (2024-10-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.25 (2024-09-27)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.24 (2024-09-25)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.23 (2024-09-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.22 (2024-09-20)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.21 (2024-09-18)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.20 (2024-09-17)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.19 (2024-09-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.18 (2024-09-04)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.17 (2024-09-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.16 (2024-08-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.15 (2024-08-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.14 (2024-08-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.13 (2024-08-22)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.12 (2024-08-20)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.11 (2024-08-15)
+
+* **Dependency Update**: Bump minimum Go version to 1.21.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.10 (2024-08-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.9 (2024-07-24)
+
+* **Documentation**: Clarify region hint and credential usage in HeadBucketRegion.
+
+# v1.17.8 (2024-07-18)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.7 (2024-07-10.2)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.6 (2024-07-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.5 (2024-07-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.4 (2024-07-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.3 (2024-06-28)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.2 (2024-06-26)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.1 (2024-06-19)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.17.0 (2024-06-18)
+
+* **Feature**: Track usage of various AWS SDK features in user-agent string.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.25 (2024-06-17)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.24 (2024-06-07)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.23 (2024-06-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.22 (2024-06-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.21 (2024-05-23)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.20 (2024-05-16)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.19 (2024-05-15)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.18 (2024-05-14)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.17 (2024-05-10)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.16.16 (2024-05-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
 # v1.16.15 (2024-04-05)
 
 * **Dependency Update**: Updated to the latest SDK module versions

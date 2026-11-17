@@ -1,20 +1,21 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
 package exported
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/shared"
 )
@@ -67,6 +68,43 @@ func (ov opValues) get(value any) bool {
 	return ok
 }
 
+// NewRequestFromRequest creates a new policy.Request with an existing *http.Request
+// Exported as runtime.NewRequestFromRequest().
+func NewRequestFromRequest(req *http.Request) (*Request, error) {
+	// populate values so that the same instance is propagated across policies
+	policyReq := &Request{req: req, values: opValues{}}
+
+	if req.Body != nil {
+		// we can avoid a body copy here if the underlying stream is already a
+		// ReadSeekCloser.
+		readSeekCloser, isReadSeekCloser := req.Body.(io.ReadSeekCloser)
+
+		if !isReadSeekCloser {
+			// since this is an already populated http.Request we want to copy
+			// over its body, if it has one.
+			bodyBytes, err := io.ReadAll(req.Body)
+
+			if err != nil {
+				return nil, err
+			}
+
+			if err := req.Body.Close(); err != nil {
+				return nil, err
+			}
+
+			readSeekCloser = NopCloser(bytes.NewReader(bodyBytes))
+		}
+
+		// SetBody also takes care of updating the http.Request's body
+		// as well, so they should stay in-sync from this point.
+		if err := policyReq.SetBody(readSeekCloser, req.Header.Get("Content-Type")); err != nil {
+			return nil, err
+		}
+	}
+
+	return policyReq, nil
+}
+
 // NewRequest creates a new Request with the specified input.
 // Exported as runtime.NewRequest().
 func NewRequest(ctx context.Context, httpMethod string, endpoint string) (*Request, error) {
@@ -77,10 +115,31 @@ func NewRequest(ctx context.Context, httpMethod string, endpoint string) (*Reque
 	if req.URL.Host == "" {
 		return nil, errors.New("no Host in request URL")
 	}
-	if !(req.URL.Scheme == "http" || req.URL.Scheme == "https") {
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 		return nil, fmt.Errorf("unsupported protocol scheme %s", req.URL.Scheme)
 	}
-	return &Request{req: req}, nil
+	// populate values so that the same instance is propagated across policies
+	return &Request{req: req, values: opValues{}}, nil
+}
+
+// NewRequestForNextLink creates a new policy.Request with the specified input.
+// This helper is for use in paged operations that use the "next link" pattern.
+//   - endpoint is the service endpoint (e.g. https://contoso.com)
+//   - nextLink the absolute or relative URL to the next page of items
+//
+// When nextLink is an absolute URL, its value is used to create the request to the next page.
+// If nextLink is a relative URL, it will be joined with the specified endpoint.
+//
+// Exported as runtime.NewRequestForNextLink().
+func NewRequestForNextLink(ctx context.Context, httpMethod, endpoint, nextLink string) (*Request, error) {
+	nextLink, err := EncodeQueryParams(nextLink, true)
+	if err != nil {
+		return nil, err
+	}
+	if !hasScheme(nextLink) {
+		nextLink = JoinPaths(endpoint, nextLink)
+	}
+	return NewRequest(ctx, httpMethod, nextLink)
 }
 
 // Body returns the original body specified when the Request was created.
@@ -220,4 +279,90 @@ func SetBody(req *Request, body io.ReadSeekCloser, contentType string, clobberCo
 		req.req.Header.Set(shared.HeaderContentType, contentType)
 	}
 	return nil
+}
+
+// JoinPaths concatenates multiple URL path segments into one path,
+// inserting path separation characters as required. JoinPaths will preserve
+// query parameters in the root path.
+// Exported as runtime.JoinPaths
+func JoinPaths(root string, paths ...string) string {
+	if len(paths) == 0 {
+		return root
+	}
+
+	qps := ""
+	if strings.Contains(root, "?") {
+		splitPath := strings.Split(root, "?")
+		root, qps = splitPath[0], splitPath[1]
+	}
+
+	p := path.Join(paths...)
+	// path.Join will remove any trailing slashes.
+	// if one was provided, preserve it.
+	if strings.HasSuffix(paths[len(paths)-1], "/") && !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+
+	if qps != "" {
+		if strings.Contains(p, "?") {
+			p = p + "&" + qps
+		} else {
+			p = p + "?" + qps
+		}
+	}
+
+	if strings.HasSuffix(root, "/") && strings.HasPrefix(p, "/") {
+		root = root[:len(root)-1]
+	} else if !strings.HasSuffix(root, "/") && !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "?") {
+		p = "/" + p
+	}
+	return root + p
+}
+
+// EncodeQueryParams will parse and encode any query parameters in the specified URL.
+// Any semicolons will automatically be escaped.
+// When encodeSpaces is true all spaces that were form-encoded to + are replaced with %20.
+// Exported as runtime.EncodeQueryParams
+func EncodeQueryParams(u string, encodeSpaces bool) (string, error) {
+	before, after, found := strings.Cut(u, "?")
+	if !found {
+		return u, nil
+	}
+	// starting in Go 1.17, url.ParseQuery will reject semicolons in query params.
+	// so, we must escape them first. note that this assumes that semicolons aren't
+	// being used as query param separators which is per the current RFC.
+	// for more info:
+	// https://github.com/golang/go/issues/25192
+	// https://github.com/golang/go/issues/50034
+	qp, err := url.ParseQuery(strings.ReplaceAll(after, ";", "%3B"))
+	if err != nil {
+		return "", err
+	}
+	encoded := qp.Encode()
+	if encodeSpaces {
+		encoded = strings.ReplaceAll(encoded, "+", "%20")
+	}
+	return before + "?" + encoded, nil
+}
+
+// hasScheme reports whether s begins with a URI scheme, i.e. is an absolute URI.
+// Per RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":".
+// This avoids the allocations of url.Parse when we only need to know if the URI is absolute.
+func hasScheme(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			// always valid
+		case c == ':':
+			return i > 0
+		case i == 0:
+			return false
+		case c >= '0' && c <= '9', c == '+', c == '-', c == '.':
+			// valid after the first character
+		default:
+			return false
+		}
+	}
+	return false
 }

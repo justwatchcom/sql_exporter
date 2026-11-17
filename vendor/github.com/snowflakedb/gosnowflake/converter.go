@@ -29,6 +29,11 @@ const format = "2006-01-02 15:04:05.999999999"
 const numberDefaultPrecision = 38
 const jsonFormatStr = "json"
 
+const numberMaxPrecisionInBits = 127
+
+// 38 (max precision) + 1 (for possible '-') + 1 (for possible '.')
+const decfloatPrintingPrec = 40
+
 type timezoneType int
 
 var errNativeArrowWithoutProperContext = errors.New("structured types must be enabled to use with native arrow")
@@ -139,15 +144,35 @@ func goTypeToSnowflake(v driver.Value, tsmode snowflakeType) snowflakeType {
 }
 
 // snowflakeTypeToGo translates Snowflake data type to Go data type.
-func snowflakeTypeToGo(ctx context.Context, dbtype snowflakeType, scale int64, fields []fieldMetadata) reflect.Type {
+func snowflakeTypeToGo(ctx context.Context, dbtype snowflakeType, precision int64, scale int64, fields []fieldMetadata) reflect.Type {
 	structuredTypesEnabled := structuredTypesEnabled(ctx)
 	switch dbtype {
 	case fixedType:
+		if higherPrecisionEnabled(ctx) {
+			if scale == 0 {
+				if precision >= 19 {
+					return reflect.TypeOf(&big.Int{})
+				}
+				return reflect.TypeOf(int64(0))
+			}
+			return reflect.TypeOf(&big.Float{})
+		}
 		if scale == 0 {
+			if precision >= 19 {
+				return reflect.TypeOf("")
+			}
 			return reflect.TypeOf(int64(0))
 		}
 		return reflect.TypeOf(float64(0))
 	case realType:
+		return reflect.TypeOf(float64(0))
+	case decfloatType:
+		if !decfloatMappingEnabled(ctx) {
+			return reflect.TypeOf("")
+		}
+		if higherPrecisionEnabled(ctx) {
+			return reflect.TypeOf(&big.Float{})
+		}
 		return reflect.TypeOf(float64(0))
 	case textType, variantType:
 		return reflect.TypeOf("")
@@ -262,6 +287,11 @@ func valueToString(v driver.Value, tsmode snowflakeType, params map[string]*stri
 		}
 	}
 
+	if tsmode == decfloatType && v1.Type() == reflect.TypeOf(big.Float{}) {
+		s := v.(*big.Float).Text('g', decfloatPrintingPrec)
+		return bindingValue{&s, "", nil}, nil
+	}
+
 	switch v1.Kind() {
 	case reflect.Bool:
 		s := strconv.FormatBool(v1.Bool())
@@ -356,7 +386,7 @@ func arrayToString(v driver.Value, tsmode snowflakeType, params map[string]*stri
 		for idx, t := range times {
 			arr[idx] = t.Format(goFormat)
 		}
-		res, err := json.Marshal(v)
+		res, err := json.Marshal(arr)
 		if err != nil {
 			return bindingValue{nil, jsonFormatStr, &bindingSchema{
 				Typ:      "array",
@@ -563,7 +593,7 @@ func mapToString(v driver.Value, tsmode snowflakeType, params map[string]*string
 			}
 			err = iter.Value().Interface().(StructuredObjectWriter).Write(&sowc)
 			if err != nil {
-				return bindingValue{}, nil
+				return bindingValue{}, err
 			}
 			m[stringOrIntToString(iter.Key())] = sowc.values
 			if valueMetadata == nil {
@@ -968,8 +998,44 @@ func stringToValue(ctx context.Context, dest *driver.Value, srcColumnMeta execRe
 		}
 		*dest = v
 		return nil
-	case "text", "fixed", "real", "variant":
+	case "text", "real", "variant":
 		*dest = *srcValue
+		return nil
+	case "fixed":
+		if higherPrecisionEnabled(ctx) {
+			if srcColumnMeta.Scale == 0 {
+				if srcColumnMeta.Precision >= 19 {
+					bigInt := big.NewInt(0)
+					bigInt.SetString(*srcValue, 10)
+					*dest = *bigInt
+					return nil
+				}
+				*dest = *srcValue
+				return nil
+			}
+			bigFloat, _, err := big.ParseFloat(*srcValue, 10, numberMaxPrecisionInBits, big.AwayFromZero)
+			if err != nil {
+				return err
+			}
+			*dest = *bigFloat
+			return nil
+		}
+		*dest = *srcValue
+		return nil
+	case "decfloat":
+		if !decfloatMappingEnabled(ctx) {
+			*dest = *srcValue
+			return nil
+		}
+		bf := new(big.Float).SetPrec(127)
+		if _, ok := bf.SetString(*srcValue); !ok {
+			return fmt.Errorf("cannot convert %v to %T", *srcValue, bf)
+		}
+		if higherPrecisionEnabled(ctx) {
+			*dest = *bf
+		} else {
+			*dest, _ = bf.Float64()
+		}
 		return nil
 	case "date":
 		v, err := strconv.ParseInt(*srcValue, 10, 64)
@@ -1527,23 +1593,25 @@ func arrowToValue(ctx context.Context, rowIdx int, srcColumnMeta fieldMetadata, 
 		// e.g. NUMBER, DECIMAL/NUMERIC, INT/INTEGER
 		switch numericValue := srcValue.(type) {
 		case *array.Decimal128:
-			return arrowDecimal128ToValue(numericValue, rowIdx, higherPrecision, int(srcColumnMeta.Scale)), nil
+			return arrowDecimal128ToValue(numericValue, rowIdx, higherPrecision, srcColumnMeta), nil
 		case *array.Int64:
-			return arrowInt64ToValue(numericValue, rowIdx, higherPrecision, int(srcColumnMeta.Scale)), nil
+			return arrowInt64ToValue(numericValue, rowIdx, higherPrecision, srcColumnMeta), nil
 		case *array.Int32:
-			return arrowInt32ToValue(numericValue, rowIdx, higherPrecision, int(srcColumnMeta.Scale)), nil
+			return arrowInt32ToValue(numericValue, rowIdx, higherPrecision, srcColumnMeta), nil
 		case *array.Int16:
-			return arrowInt16ToValue(numericValue, rowIdx, higherPrecision, int(srcColumnMeta.Scale)), nil
+			return arrowInt16ToValue(numericValue, rowIdx, higherPrecision, srcColumnMeta), nil
 		case *array.Int8:
-			return arrowInt8ToValue(numericValue, rowIdx, higherPrecision, int(srcColumnMeta.Scale)), nil
+			return arrowInt8ToValue(numericValue, rowIdx, higherPrecision, srcColumnMeta), nil
 		}
 		return nil, fmt.Errorf("unsupported data type")
-	case booleanType:
-		return arrowBoolToValue(srcValue.(*array.Boolean), rowIdx), nil
 	case realType:
 		// Snowflake data types that are floating-point numbers will fall in this category
 		// e.g. FLOAT/REAL/DOUBLE
 		return arrowRealToValue(srcValue.(*array.Float64), rowIdx), nil
+	case decfloatType:
+		return arrowDecFloatToValue(ctx, srcValue.(*array.Struct), rowIdx)
+	case booleanType:
+		return arrowBoolToValue(srcValue.(*array.Boolean), rowIdx), nil
 	case textType, variantType:
 		strings := srcValue.(*array.String)
 		if !srcValue.IsNull(rowIdx) {
@@ -1684,7 +1752,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 		case *array.Decimal128:
 			if higherPrecision && fieldMetadata.Scale == 0 {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (*big.Int, error) {
-					bigInt := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					bigInt := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if bigInt == nil {
 						return nil, nil
 					}
@@ -1693,7 +1761,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 				})
 			} else if higherPrecision && fieldMetadata.Scale != 0 {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (*big.Float, error) {
-					bigFloat := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					bigFloat := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if bigFloat == nil {
 						return nil, nil
 					}
@@ -1704,7 +1772,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 			} else if !higherPrecision && fieldMetadata.Scale == 0 {
 				if arrayValuesNullableEnabled(ctx) {
 					return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullInt64, error) {
-						v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+						v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 						if v == nil {
 							return sql.NullInt64{Valid: false}, nil
 						}
@@ -1717,7 +1785,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 					})
 				}
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (int64, error) {
-					v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if v == nil {
 						return 0, errNullValueInArray()
 					}
@@ -1726,7 +1794,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 			} else {
 				if arrayValuesNullableEnabled(ctx) {
 					return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullFloat64, error) {
-						v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+						v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 						if v == nil {
 							return sql.NullFloat64{Valid: false}, nil
 						}
@@ -1739,7 +1807,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 					})
 				}
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (float64, error) {
-					v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					v := arrowDecimal128ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if v == nil {
 						return 0, errNullValueInArray()
 					}
@@ -1750,7 +1818,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 		case *array.Int64:
 			if arrayValuesNullableEnabled(ctx) {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullInt64, error) {
-					resInt := arrowInt64ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					resInt := arrowInt64ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if resInt == nil {
 						return sql.NullInt64{Valid: false}, nil
 					}
@@ -1758,7 +1826,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 				})
 			}
 			return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (int64, error) {
-				resInt := arrowInt64ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+				resInt := arrowInt64ToValue(typedValues, j, higherPrecision, fieldMetadata)
 				if resInt == nil {
 					return 0, errNullValueInArray()
 				}
@@ -1768,7 +1836,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 		case *array.Int32:
 			if arrayValuesNullableEnabled(ctx) {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullInt32, error) {
-					resInt := arrowInt32ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					resInt := arrowInt32ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if resInt == nil {
 						return sql.NullInt32{Valid: false}, nil
 					}
@@ -1777,7 +1845,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 				})
 			}
 			return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (int32, error) {
-				resInt := arrowInt32ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+				resInt := arrowInt32ToValue(typedValues, j, higherPrecision, fieldMetadata)
 				if resInt == nil {
 					return 0, errNullValueInArray()
 				}
@@ -1786,7 +1854,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 		case *array.Int16:
 			if arrayValuesNullableEnabled(ctx) {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullInt16, error) {
-					resInt := arrowInt16ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					resInt := arrowInt16ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if resInt == nil {
 						return sql.NullInt16{Valid: false}, nil
 					}
@@ -1795,7 +1863,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 				})
 			}
 			return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (int16, error) {
-				resInt := arrowInt16ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+				resInt := arrowInt16ToValue(typedValues, j, higherPrecision, fieldMetadata)
 				if resInt == nil {
 					return 0, errNullValueInArray()
 				}
@@ -1805,7 +1873,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 		case *array.Int8:
 			if arrayValuesNullableEnabled(ctx) {
 				return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (sql.NullByte, error) {
-					resInt := arrowInt8ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+					resInt := arrowInt8ToValue(typedValues, j, higherPrecision, fieldMetadata)
 					if resInt == nil {
 						return sql.NullByte{Valid: false}, nil
 					}
@@ -1813,7 +1881,7 @@ func buildListFromNativeArrow(ctx context.Context, rowIdx int, fieldMetadata fie
 				})
 			}
 			return mapStructuredArrayNativeArrowRows(offsets, rowIdx, func(j int) (int8, error) {
-				resInt := arrowInt8ToValue(typedValues, j, higherPrecision, fieldMetadata.Scale)
+				resInt := arrowInt8ToValue(typedValues, j, higherPrecision, fieldMetadata)
 				if resInt == nil {
 					return 0, errNullValueInArray()
 				}
@@ -2234,25 +2302,25 @@ func buildTimeFromNativeArrowArray[K comparable](mapNullValuesEnabled bool, offs
 }
 
 func mapStructuredMapNativeArrowFixedValue[V any](valueMetadata fieldMetadata, j int, items arrow.Array, higherPrecision bool, defaultValue V) (V, error) {
-	v, err := extractNumberFromArrow(&items, j, higherPrecision, valueMetadata.Scale)
+	v, err := extractNumberFromArrow(&items, j, higherPrecision, valueMetadata)
 	if err != nil {
 		return defaultValue, err
 	}
 	return v.(V), nil
 }
 
-func extractNumberFromArrow(values *arrow.Array, j int, higherPrecision bool, scale int) (snowflakeValue, error) {
+func extractNumberFromArrow(values *arrow.Array, j int, higherPrecision bool, srcColumnMeta fieldMetadata) (snowflakeValue, error) {
 	switch typedValues := (*values).(type) {
 	case *array.Decimal128:
-		return arrowDecimal128ToValue(typedValues, j, higherPrecision, scale), nil
+		return arrowDecimal128ToValue(typedValues, j, higherPrecision, srcColumnMeta), nil
 	case *array.Int64:
-		return arrowInt64ToValue(typedValues, j, higherPrecision, scale), nil
+		return arrowInt64ToValue(typedValues, j, higherPrecision, srcColumnMeta), nil
 	case *array.Int32:
-		return arrowInt32ToValue(typedValues, j, higherPrecision, scale), nil
+		return arrowInt32ToValue(typedValues, j, higherPrecision, srcColumnMeta), nil
 	case *array.Int16:
-		return arrowInt16ToValue(typedValues, j, higherPrecision, scale), nil
+		return arrowInt16ToValue(typedValues, j, higherPrecision, srcColumnMeta), nil
 	case *array.Int8:
-		return arrowInt8ToValue(typedValues, j, higherPrecision, scale), nil
+		return arrowInt8ToValue(typedValues, j, higherPrecision, srcColumnMeta), nil
 	}
 	return 0, fmt.Errorf("unknown number type: %T", values)
 }
@@ -2280,15 +2348,15 @@ func arrowToStructuredType(ctx context.Context, structs *array.Struct, fieldMeta
 			v = structs.Field(colIdx).ValueStr(rowIdx)
 			switch typedValues := structs.Field(colIdx).(type) {
 			case *array.Decimal128:
-				v = arrowDecimal128ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx].Scale)
+				v = arrowDecimal128ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx])
 			case *array.Int64:
-				v = arrowInt64ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx].Scale)
+				v = arrowInt64ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx])
 			case *array.Int32:
-				v = arrowInt32ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx].Scale)
+				v = arrowInt32ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx])
 			case *array.Int16:
-				v = arrowInt16ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx].Scale)
+				v = arrowInt16ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx])
 			case *array.Int8:
-				v = arrowInt8ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx].Scale)
+				v = arrowInt8ToValue(typedValues, rowIdx, higherPrecision, fieldMetadata[colIdx])
 			}
 		case booleanType:
 			v = arrowBoolToValue(structs.Field(colIdx).(*array.Boolean), rowIdx)
@@ -2344,68 +2412,71 @@ func arrowStringToValue(srcValue *array.String, rowIdx int) snowflakeValue {
 	return srcValue.Value(rowIdx)
 }
 
-func arrowDecimal128ToValue(srcValue *array.Decimal128, rowIdx int, higherPrecision bool, scale int) snowflakeValue {
+func arrowDecimal128ToValue(srcValue *array.Decimal128, rowIdx int, higherPrecision bool, srcColumnMeta fieldMetadata) snowflakeValue {
 	if !srcValue.IsNull(rowIdx) {
 		num := srcValue.Value(rowIdx)
-		if scale == 0 {
+		if srcColumnMeta.Scale == 0 {
 			if higherPrecision {
 				return num.BigInt()
 			}
 			return num.ToString(0)
 		}
-		f := decimalToBigFloat(num, int64(scale))
+		f := decimalToBigFloat(num, int64(srcColumnMeta.Scale))
 		if higherPrecision {
 			return f
 		}
-		return fmt.Sprintf("%.*f", scale, f)
+		return fmt.Sprintf("%.*f", srcColumnMeta.Scale, f)
 	}
 	return nil
 }
 
-func arrowInt64ToValue(srcValue *array.Int64, rowIdx int, higherPrecision bool, scale int) snowflakeValue {
+func arrowInt64ToValue(srcValue *array.Int64, rowIdx int, higherPrecision bool, srcColumnMeta fieldMetadata) snowflakeValue {
 	if !srcValue.IsNull(rowIdx) {
 		val := srcValue.Value(rowIdx)
-		return arrowIntToValue(scale, higherPrecision, val)
+		return arrowIntToValue(srcColumnMeta, higherPrecision, val)
 	}
 	return nil
 }
 
-func arrowInt32ToValue(srcValue *array.Int32, rowIdx int, higherPrecision bool, scale int) snowflakeValue {
+func arrowInt32ToValue(srcValue *array.Int32, rowIdx int, higherPrecision bool, srcColumnMeta fieldMetadata) snowflakeValue {
 	if !srcValue.IsNull(rowIdx) {
 		val := srcValue.Value(rowIdx)
-		return arrowIntToValue(scale, higherPrecision, int64(val))
+		return arrowIntToValue(srcColumnMeta, higherPrecision, int64(val))
 	}
 	return nil
 }
 
-func arrowInt16ToValue(srcValue *array.Int16, rowIdx int, higherPrecision bool, scale int) snowflakeValue {
+func arrowInt16ToValue(srcValue *array.Int16, rowIdx int, higherPrecision bool, srcColumnMeta fieldMetadata) snowflakeValue {
 	if !srcValue.IsNull(rowIdx) {
 		val := srcValue.Value(rowIdx)
-		return arrowIntToValue(scale, higherPrecision, int64(val))
+		return arrowIntToValue(srcColumnMeta, higherPrecision, int64(val))
 	}
 	return nil
 }
 
-func arrowInt8ToValue(srcValue *array.Int8, rowIdx int, higherPrecision bool, scale int) snowflakeValue {
+func arrowInt8ToValue(srcValue *array.Int8, rowIdx int, higherPrecision bool, srcColumnMeta fieldMetadata) snowflakeValue {
 	if !srcValue.IsNull(rowIdx) {
 		val := srcValue.Value(rowIdx)
-		return arrowIntToValue(scale, higherPrecision, int64(val))
+		return arrowIntToValue(srcColumnMeta, higherPrecision, int64(val))
 	}
 	return nil
 }
 
-func arrowIntToValue(scale int, higherPrecision bool, val int64) snowflakeValue {
-	if scale == 0 {
+func arrowIntToValue(srcColumnMeta fieldMetadata, higherPrecision bool, val int64) snowflakeValue {
+	if srcColumnMeta.Scale == 0 {
 		if higherPrecision {
-			return int64(val)
+			if srcColumnMeta.Precision >= 19 {
+				return big.NewInt(val)
+			}
+			return val
 		}
 		return fmt.Sprintf("%d", val)
 	}
 	if higherPrecision {
-		f := intToBigFloat(int64(val), int64(scale))
+		f := intToBigFloat(val, int64(srcColumnMeta.Scale))
 		return f
 	}
-	return fmt.Sprintf("%.*f", scale, float64(val)/math.Pow10(int(scale)))
+	return fmt.Sprintf("%.*f", srcColumnMeta.Scale, float64(val)/math.Pow10(srcColumnMeta.Scale))
 }
 
 func arrowRealToValue(srcValue *array.Float64, rowIdx int) snowflakeValue {
@@ -2413,6 +2484,67 @@ func arrowRealToValue(srcValue *array.Float64, rowIdx int) snowflakeValue {
 		return srcValue.Value(rowIdx)
 	}
 	return nil
+}
+
+func arrowDecFloatToValue(ctx context.Context, srcValue *array.Struct, rowIdx int) (snowflakeValue, error) {
+	if !srcValue.IsNull(rowIdx) {
+		exponent := srcValue.Field(0).(*array.Int16).Value(rowIdx)
+		mantissaBytes := srcValue.Field(1).(*array.Binary).Value(rowIdx)
+		mantissaInt, err := parseTwosComplementBigEndian(mantissaBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse mantissa bytes: %s, error: %v", hex.EncodeToString(mantissaBytes), err)
+		}
+		if decfloatMappingEnabled(ctx) {
+			mantissa := new(big.Float).SetPrec(127).SetInt(mantissaInt)
+			if result, ok := new(big.Float).SetPrec(127).SetString(fmt.Sprintf("%ve%v", mantissa.Text('G', 38), exponent)); ok {
+				return result, nil
+			}
+			return nil, fmt.Errorf("failed to create decfloat from mantissa %s and exponent %d", mantissa.Text('G', 38), exponent)
+		}
+		mantissaStr := mantissaInt.String()
+		if mantissaStr == "0" {
+			return "0", nil
+		}
+		negative := mantissaStr[0] == '-'
+		mantissaUnsigned := strings.TrimLeft(mantissaStr, "-")
+		mantissaLen := len(mantissaUnsigned)
+		if mantissaLen > 1 {
+			mantissaUnsigned = mantissaUnsigned[0:1] + "." + mantissaUnsigned[1:]
+		}
+		if negative {
+			mantissaStr = "-" + mantissaUnsigned
+		} else {
+			mantissaStr = mantissaUnsigned
+		}
+		exponent = exponent + int16(mantissaLen) - 1
+		result := mantissaStr
+		if exponent != 0 {
+			result = mantissaStr + "e" + strconv.Itoa(int(exponent))
+		}
+		return result, nil
+	}
+	return nil, nil
+}
+
+func parseTwosComplementBigEndian(b []byte) (*big.Int, error) {
+	if len(b) > 16 {
+		return nil, fmt.Errorf("input byte slice is too long (max 16 bytes)")
+	}
+
+	val := new(big.Int)
+	val.SetBytes(b) // big.Int.SetBytes treats the bytes as an unsigned magnitude
+
+	// If the sign bit is 1, the number is negative.
+	if b[0]&0x80 != 0 {
+		// Calculate 2^(bit length) for subtraction
+		bitLength := uint(len(b) * 8)
+		powerOfTwo := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(bitLength)), nil)
+
+		// Subtract 2^(bit length) from the unsigned value to get the signed value.
+		val.Sub(val, powerOfTwo)
+	}
+
+	return val, nil
 }
 
 func arrowBoolToValue(srcValue *array.Boolean, rowIdx int) snowflakeValue {
@@ -2456,6 +2588,7 @@ type (
 	int64Array        []int64
 	float64Array      []float64
 	float32Array      []float32
+	decfloatArray     []*big.Float
 	boolArray         []bool
 	stringArray       []string
 	byteArray         [][]byte
@@ -2468,7 +2601,8 @@ type (
 
 // Array takes in a column of a row to be inserted via array binding, bulk or
 // otherwise, and converts it into a native snowflake type for binding
-func Array(a interface{}, typ ...timezoneType) interface{} {
+func Array(a interface{}, typ ...any) interface{} {
+
 	switch t := a.(type) {
 	case []int:
 		return (*intArray)(&t)
@@ -2480,6 +2614,14 @@ func Array(a interface{}, typ ...timezoneType) interface{} {
 		return (*float64Array)(&t)
 	case []float32:
 		return (*float32Array)(&t)
+	case []*big.Float:
+		if len(typ) == 1 {
+			if b, ok := typ[0].([]byte); ok && bytes.Equal(b, DataTypeDecfloat) {
+				return (*decfloatArray)(&t)
+			}
+		}
+		logger.Warnf("Unsupported *big.Float array bind. Set the type to []byte{DataTypeDecfloat} to use decfloatArray")
+		return a
 	case []bool:
 		return (*boolArray)(&t)
 	case []string:
@@ -2514,6 +2656,14 @@ func Array(a interface{}, typ ...timezoneType) interface{} {
 		return (*float64Array)(t)
 	case *[]float32:
 		return (*float32Array)(t)
+	case *[]*big.Float:
+		if len(typ) == 1 {
+			if b, ok := typ[0].([]byte); ok && bytes.Equal(b, DataTypeDecfloat) {
+				return (*decfloatArray)(t)
+			}
+		}
+		logger.Warnf("Unsupported *big.Float array bind. Set the type to []byte{DataTypeDecfloat} to use decfloatArray")
+		return a
 	case *[]bool:
 		return (*boolArray)(t)
 	case *[]string:
@@ -2548,7 +2698,7 @@ func Array(a interface{}, typ ...timezoneType) interface{} {
 		}
 		return interfaceArrayBinding{
 			hasTimezone:       true,
-			tzType:            typ[0],
+			tzType:            typ[0].(timezoneType),
 			timezoneTypeArray: a,
 		}
 	default:
@@ -2596,6 +2746,13 @@ func snowflakeArrayToString(nv *driver.NamedValue, stream bool) (snowflakeType, 
 		a := nv.Value.(*float32Array)
 		for _, x := range *a {
 			v := fmt.Sprintf("%g", x)
+			arr = append(arr, &v)
+		}
+	case reflect.TypeOf(&decfloatArray{}):
+		t = textType
+		a := nv.Value.(*decfloatArray)
+		for _, x := range *a {
+			v := x.Text('g', decfloatPrintingPrec)
 			arr = append(arr, &v)
 		}
 	case reflect.TypeOf(&boolArray{}):
@@ -2819,6 +2976,15 @@ func interfaceSliceToString(interfaceSlice reflect.Value, stream bool, tzType ..
 
 func higherPrecisionEnabled(ctx context.Context) bool {
 	v := ctx.Value(enableHigherPrecision)
+	if v == nil {
+		return false
+	}
+	d, ok := v.(bool)
+	return ok && d
+}
+
+func decfloatMappingEnabled(ctx context.Context) bool {
+	v := ctx.Value(enableDecfloat)
 	if v == nil {
 		return false
 	}
@@ -3133,29 +3299,29 @@ func recordToSchemaSingleField(fieldMetadata fieldMetadata, f arrow.Field, withH
 	case timeType:
 		t = &arrow.Time64Type{Unit: arrow.Nanosecond}
 	case timestampNtzType, timestampTzType:
-		if timestampOption == UseOriginalTimestamp {
-			// do nothing - return timestamp as is
+		switch timestampOption {
+		case UseOriginalTimestamp:
 			converted = false
-		} else if timestampOption == UseMicrosecondTimestamp {
+		case UseMicrosecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Microsecond}
-		} else if timestampOption == UseMillisecondTimestamp {
+		case UseMillisecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Millisecond}
-		} else if timestampOption == UseSecondTimestamp {
+		case UseSecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Second}
-		} else {
+		default:
 			t = &arrow.TimestampType{Unit: arrow.Nanosecond}
 		}
 	case timestampLtzType:
-		if timestampOption == UseOriginalTimestamp {
-			// do nothing - return timestamp as is
+		switch timestampOption {
+		case UseOriginalTimestamp:
 			converted = false
-		} else if timestampOption == UseMicrosecondTimestamp {
+		case UseMicrosecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: loc.String()}
-		} else if timestampOption == UseMillisecondTimestamp {
+		case UseMillisecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Millisecond, TimeZone: loc.String()}
-		} else if timestampOption == UseSecondTimestamp {
+		case UseSecondTimestamp:
 			t = &arrow.TimestampType{Unit: arrow.Second, TimeZone: loc.String()}
-		} else {
+		default:
 			t = &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: loc.String()}
 		}
 	case objectType:

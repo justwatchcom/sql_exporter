@@ -18,13 +18,56 @@
 package windows
 
 import (
+	"os"
+	"path/filepath"
+
 	windows "github.com/elastic/go-windows"
+	"golang.org/x/sys/windows/registry"
 )
 
-const windowsKernelExe = `C:\Windows\System32\ntoskrnl.exe`
+// fallbackSystemRoot is the last-resort default when the registry query and
+// both environment variables are unavailable.
+const fallbackSystemRoot = `C:\Windows`
+
+// systemRootFromRegistry reads the SystemRoot value from
+// HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion, which reflects the
+// actual Windows directory regardless of the process environment. Returns ""
+// on any error so the caller can fall back gracefully.
+func systemRootFromRegistry() string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
+		registry.READ|registry.WOW64_64KEY)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	val, _, err := k.GetStringValue("SystemRoot")
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+// kernelExePath returns the absolute path to the running kernel image.
+// It prefers the registry (immune to a stripped process environment), then
+// falls back to %SystemRoot% / %WINDIR%, then to the hardcoded default.
+// See #287.
+func kernelExePath() string {
+	root := systemRootFromRegistry()
+	if root == "" {
+		root = os.Getenv("SystemRoot")
+	}
+	if root == "" {
+		root = os.Getenv("WINDIR")
+	}
+	if root == "" {
+		root = fallbackSystemRoot
+	}
+	return filepath.Join(root, "System32", "ntoskrnl.exe")
+}
 
 func KernelVersion() (string, error) {
-	versionData, err := windows.GetFileVersionInfo(windowsKernelExe)
+	versionData, err := windows.GetFileVersionInfo(kernelExePath())
 	if err != nil {
 		return "", err
 	}

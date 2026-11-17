@@ -32,7 +32,7 @@ import (
 
 type CheckedAllocator struct {
 	mem Allocator
-	sz  int64
+	sz  atomic.Int64
 
 	allocs sync.Map
 }
@@ -41,10 +41,10 @@ func NewCheckedAllocator(mem Allocator) *CheckedAllocator {
 	return &CheckedAllocator{mem: mem}
 }
 
-func (a *CheckedAllocator) CurrentAlloc() int { return int(atomic.LoadInt64(&a.sz)) }
+func (a *CheckedAllocator) CurrentAlloc() int { return int(a.sz.Load()) }
 
 func (a *CheckedAllocator) Allocate(size int) []byte {
-	atomic.AddInt64(&a.sz, int64(size))
+	a.sz.Add(int64(size))
 	out := a.mem.Allocate(size)
 	if size == 0 {
 		return out
@@ -66,16 +66,21 @@ func (a *CheckedAllocator) Allocate(size int) []byte {
 }
 
 func (a *CheckedAllocator) Reallocate(size int, b []byte) []byte {
-	atomic.AddInt64(&a.sz, int64(size-len(b)))
+	a.sz.Add(int64(size - len(b)))
 
-	oldptr := uintptr(unsafe.Pointer(&b[0]))
+	var oldptr uintptr
+	if len(b) > 0 {
+		oldptr = uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	}
 	out := a.mem.Reallocate(size, b)
+	if oldptr != 0 {
+		a.allocs.Delete(oldptr)
+	}
 	if size == 0 {
 		return out
 	}
 
 	newptr := uintptr(unsafe.Pointer(&out[0]))
-	a.allocs.Delete(oldptr)
 	pcs := make([]uintptr, maxRetainedFrames)
 
 	// For historical reasons the meaning of the skip argument
@@ -92,7 +97,7 @@ func (a *CheckedAllocator) Reallocate(size int, b []byte) []byte {
 }
 
 func (a *CheckedAllocator) Free(b []byte) {
-	atomic.AddInt64(&a.sz, int64(len(b)*-1))
+	a.sz.Add(int64(len(b) * -1))
 	defer a.mem.Free(b)
 
 	if len(b) == 0 {
@@ -167,10 +172,10 @@ func (a *CheckedAllocator) AssertSize(t TestingT, sz int) {
 			// It may be nil for non-Go code or fully inlined functions.
 			if fn := frame.Func; fn != nil {
 				// format as func name + the offset in bytes from func entrypoint
-				callersMsg.WriteString(fmt.Sprintf("%s+%x", fn.Name(), frame.PC-fn.Entry()))
+				fmt.Fprintf(&callersMsg, "%s+%x", fn.Name(), frame.PC-fn.Entry())
 			} else {
 				// fallback to outer func name + file line
-				callersMsg.WriteString(fmt.Sprintf("%s, line %d", frame.Function, frame.Line))
+				fmt.Fprintf(&callersMsg, "%s, line %d", frame.Function, frame.Line)
 			}
 
 			// Write a proper file name + line, so it's really easy to find the leak
@@ -192,9 +197,9 @@ func (a *CheckedAllocator) AssertSize(t TestingT, sz int) {
 		return true
 	})
 
-	if int(atomic.LoadInt64(&a.sz)) != sz {
+	if int(a.sz.Load()) != sz {
 		t.Helper()
-		t.Errorf("invalid memory size exp=%d, got=%d", sz, a.sz)
+		t.Errorf("invalid memory size exp=%d, got=%d", sz, a.sz.Load())
 	}
 }
 
@@ -204,18 +209,16 @@ type CheckedAllocatorScope struct {
 }
 
 func NewCheckedAllocatorScope(alloc *CheckedAllocator) *CheckedAllocatorScope {
-	sz := atomic.LoadInt64(&alloc.sz)
+	sz := alloc.sz.Load()
 	return &CheckedAllocatorScope{alloc: alloc, sz: int(sz)}
 }
 
 func (c *CheckedAllocatorScope) CheckSize(t TestingT) {
-	sz := int(atomic.LoadInt64(&c.alloc.sz))
+	sz := int(c.alloc.sz.Load())
 	if c.sz != sz {
 		t.Helper()
 		t.Errorf("invalid memory size exp=%d, got=%d", c.sz, sz)
 	}
 }
 
-var (
-	_ Allocator = (*CheckedAllocator)(nil)
-)
+var _ Allocator = (*CheckedAllocator)(nil)

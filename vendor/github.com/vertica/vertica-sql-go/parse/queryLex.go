@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// Copyright (c) 2020-2023 Open Text.
+// Copyright (c) 2020-2024 Open Text.
 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -114,17 +114,57 @@ func (l *Lexer) skipUntil(val rune) {
 	}
 }
 
-func (l *Lexer) consumeIdent() {
-	for !l.done() && !l.isEndIdent(l.next()) {
-	}
+func isNamedParamStart(r rune) bool {
+	return r == '_' || unicode.IsLetter(r)
 }
 
-func (l *Lexer) isEndIdent(r rune) bool {
-	shouldEnd := unicode.IsSpace(r) || strings.ContainsRune(",)", r)
-	if shouldEnd {
-		l.backup()
+func isNamedParamPart(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+func isNamedParamBoundary(r rune) bool {
+	return !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || r == '"')
+}
+
+func (l *Lexer) currentRuneStart() int {
+	if l.width == 0 {
+		return l.pos
 	}
-	return shouldEnd
+	return l.pos - l.width
+}
+
+func (l *Lexer) shouldLexNamedParam() bool {
+	at := l.currentRuneStart()
+	if at < 0 || at >= len(l.input) || l.input[at] != '@' {
+		return false
+	}
+
+	nextPos := at + len("@")
+	if nextPos >= len(l.input) {
+		return false
+	}
+
+	next, _ := utf8.DecodeRuneInString(l.input[nextPos:])
+	if !isNamedParamStart(next) {
+		return false
+	}
+
+	if at == 0 {
+		return true
+	}
+
+	prev, _ := utf8.DecodeLastRuneInString(l.input[:at])
+	return isNamedParamBoundary(prev)
+}
+
+func (l *Lexer) consumeNamedParam() {
+	for !l.done() {
+		r := l.next()
+		if !isNamedParamPart(r) {
+			l.backup()
+			return
+		}
+	}
 }
 
 func (l *Lexer) next() rune {
@@ -174,7 +214,7 @@ func lexQuery(l *Lexer) stateFunc {
 			return lexString
 		}
 
-		if r == '@' {
+		if r == '@' && l.shouldLexNamedParam() {
 			return lexNamedParam
 		}
 
@@ -220,8 +260,8 @@ func lexNamedParam(l *Lexer) stateFunc {
 	l.writeChunk()
 	l.next()
 	l.start = l.pos
-	// advance through the name
-	l.consumeIdent()
+	// advance through a valid named-parameter token
+	l.consumeNamedParam()
 	l.onNamed(strings.ToUpper(l.input[l.start:l.pos]))
 	l.start = l.pos
 	l.output.WriteRune('?')

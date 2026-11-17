@@ -92,8 +92,10 @@ func (alg *Ecdh) Unwrap(encryptedCek []byte, key interface{}, cekSizeBits int, h
 			return nil, errors.New("Ecdh.Unwrap(): expects 'epk' key to contain 'x','y' and 'crv' fields, but 'crv' was not found.")
 		}
 
-		if crv != "P-256" && crv != "P-384" && crv != "P-521" {
-			return nil, errors.New(fmt.Sprintf("Ecdh.Unwrap(): unknown or unsupported curve %v", crv))
+		var ephemeralCurve elliptic.Curve
+
+		if ephemeralCurve, err = ecc.CurveByName(crv); err != nil {
+			return nil, fmt.Errorf("Ecdh.Unwrap(): unknown or unsupported curve: '%v'", crv)
 		}
 
 		if xBytes, err = base64url.Decode(x); err != nil {
@@ -105,8 +107,16 @@ func (alg *Ecdh) Unwrap(encryptedCek []byte, key interface{}, cekSizeBits int, h
 
 		pubKey := ecc.NewPublic(xBytes, yBytes)
 
+		if pubKey.Curve==nil {
+			return nil, errors.New("Ecdh.Unwrap(): Ephemeral public key received in header is not matching any known curve.")
+		} 
+
+		if !ephemeralCurve.IsOnCurve(pubKey.X, pubKey.Y) {
+			return nil, errors.New(fmt.Sprintf("Ecdh.Unwrap(): Ephemeral public key received in header is not matching its curve."))
+		}
+
 		if !privKey.Curve.IsOnCurve(pubKey.X, pubKey.Y) {
-			return nil, errors.New(fmt.Sprintf("Ephemeral public key received in header is invalid for reciever's private key."))
+			return nil, errors.New(fmt.Sprintf("Ecdh.Unwrap(): Ephemeral public key received in header is invalid for reciever's private key."))
 		}
 
 		return alg.deriveKey(pubKey, privKey, cekSizeBits, header), nil

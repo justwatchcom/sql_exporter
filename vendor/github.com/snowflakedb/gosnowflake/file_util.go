@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	usr "os/user"
 	"path/filepath"
 	"strings"
 )
@@ -73,21 +72,22 @@ func (util *snowflakeFileUtil) compressFileWithGzip(fileName string, tmpDir stri
 	return gzipFileName, stat.Size(), err
 }
 
-func (util *snowflakeFileUtil) getDigestAndSizeForStream(stream **bytes.Buffer) (string, int64, error) {
+func (util *snowflakeFileUtil) getDigestAndSizeForStream(stream io.Reader) (string, int64, error) {
 	m := sha256.New()
-	r := getReaderFromBuffer(stream)
 	chunk := make([]byte, fileChunkSize)
+	var total int64
 
 	for {
-		n, err := r.Read(chunk)
+		n, err := stream.Read(chunk)
 		if err == io.EOF {
 			break
 		} else if err != nil {
 			return "", 0, err
 		}
+		total += int64(n)
 		m.Write(chunk[:n])
 	}
-	return base64.StdEncoding.EncodeToString(m.Sum(nil)), int64((*stream).Len()), nil
+	return base64.StdEncoding.EncodeToString(m.Sum(nil)), total, nil
 }
 
 func (util *snowflakeFileUtil) getDigestAndSizeForFile(fileName string) (digest string, size int64, err error) {
@@ -154,6 +154,7 @@ type fileMetadata struct {
 	options            *SnowflakeFileTransferOptions
 
 	/* streaming PUT */
+	fileStream    io.Reader
 	srcStream     *bytes.Buffer
 	realSrcStream *bytes.Buffer
 
@@ -213,15 +214,17 @@ func baseName(path string) string {
 
 // expandUser returns the argument with an initial component of ~
 func expandUser(path string) (string, error) {
-	usr, err := usr.Current()
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := usr.HomeDir
 	if path == "~" {
-		path = dir
+		path = homeDir
 	} else if strings.HasPrefix(path, "~/") {
-		path = filepath.Join(dir, path[2:])
+		path = filepath.Join(homeDir, path[2:])
 	}
 	return path, nil
 }

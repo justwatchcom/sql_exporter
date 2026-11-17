@@ -4,11 +4,13 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"hash"
 	"hash/crc32"
+	"hash/crc64"
 	"io"
 	"strings"
 	"sync"
@@ -30,13 +32,24 @@ const (
 
 	// AlgorithmSHA256 represents SHA256 hash algorithm
 	AlgorithmSHA256 Algorithm = "SHA256"
+
+	// AlgorithmCRC64NVME represents CRC64NVME hash algorithm
+	AlgorithmCRC64NVME Algorithm = "CRC64NVME"
+
+	// AlgorithmSHA512 represents SHA512 hash algorithm
+	AlgorithmSHA512 Algorithm = "SHA512"
 )
+
+// inverted NVME polynomial as required by crc64.MakeTable
+const crc64NVME = 0x9a6c_9329_ac4b_c9b5
 
 var supportedAlgorithms = []Algorithm{
 	AlgorithmCRC32C,
 	AlgorithmCRC32,
 	AlgorithmSHA1,
 	AlgorithmSHA256,
+	AlgorithmCRC64NVME,
+	AlgorithmSHA512,
 }
 
 func (a Algorithm) String() string { return string(a) }
@@ -89,6 +102,10 @@ func NewAlgorithmHash(v Algorithm) (hash.Hash, error) {
 		return crc32.NewIEEE(), nil
 	case AlgorithmCRC32C:
 		return crc32.New(crc32.MakeTable(crc32.Castagnoli)), nil
+	case AlgorithmCRC64NVME:
+		return crc64.New(crc64.MakeTable(crc64NVME)), nil
+	case AlgorithmSHA512:
+		return sha512.New(), nil
 	default:
 		return nil, fmt.Errorf("unknown checksum algorithm, %v", v)
 	}
@@ -106,6 +123,10 @@ func AlgorithmChecksumLength(v Algorithm) (int, error) {
 		return crc32.Size, nil
 	case AlgorithmCRC32C:
 		return crc32.Size, nil
+	case AlgorithmCRC64NVME:
+		return crc64.Size, nil
+	case AlgorithmSHA512:
+		return sha512.Size, nil
 	default:
 		return 0, fmt.Errorf("unknown checksum algorithm, %v", v)
 	}

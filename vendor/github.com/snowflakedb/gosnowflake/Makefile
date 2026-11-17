@@ -13,7 +13,7 @@ test_setup: test_teardown
 	python3 ci/scripts/hang_webserver.py 12345 &
 
 test_teardown:
-	kill -9 $$(ps -ef | grep hang_webserver | grep -v grep | awk '{print $$1}') || true
+	pkill -9 hang_webserver || true
 
 test: deps test_setup
 	./ci/scripts/execute_tests.sh
@@ -30,7 +30,7 @@ lint: clint
 ## Format source codes
 fmt: cfmt
 	@for c in $$(ls cmd); do \
-		(cd cmd/$$c;  make fmt); \
+		(cd cmd/$$c; make fmt); \
 	done
 
 ## Install sample programs

@@ -38,7 +38,7 @@ DATA LCDATA1<>+0x108(SB)/8, $0x0000000000000000
 DATA LCDATA1<>+0x110(SB)/8, $0x000000005f000000
 GLOBL LCDATA1<>(SB), 8, $280
 
-TEXT ·_cast_type_numeric_sse4(SB), $0-40
+TEXT ·_cast_type_numeric_sse4(SB), $8-40
 
 	MOVQ itype+0(FP), DI
 	MOVQ otype+8(FP), SI

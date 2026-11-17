@@ -156,10 +156,13 @@ func (r *httpRetryer) Retry(err error) (time.Duration, bool) {
 	return 0, false
 }
 
-// Backoff implements exponential backoff. The wait time between retries is a
-// random value between 0 and the "retry period" - the time between retries. The
-// retry period starts at Initial and increases by the factor of Multiplier
-// every retry, but is capped at Max.
+// Backoff implements backoff logic for retries. The configuration for retries
+// is described in https://google.aip.dev/client-libraries/4221. The current
+// retry limit starts at Initial and increases by a factor of Multiplier every
+// retry, but is capped at Max. The actual wait time between retries is a
+// random value between 1ns and the current retry limit. The purpose of this
+// random jitter is explained in
+// https://www.awsarchitectureblog.com/2015/03/backoff.html.
 //
 // Note: MaxNumRetries / RPCDeadline is specifically not provided. These should
 // be built on top of Backoff.
@@ -247,6 +250,22 @@ func WithTimeout(t time.Duration) CallOption {
 	return &timeoutOpt{t: t}
 }
 
+type clientMetricsOpt struct {
+	cm *ClientMetrics
+}
+
+// Resolve applies the ClientMetrics to the CallSettings.
+func (o clientMetricsOpt) Resolve(s *CallSettings) {
+	s.clientMetrics = o.cm
+}
+
+// WithClientMetrics applies metrics instrumentation to the CallSettings.
+//
+// This is for internal use only.
+func WithClientMetrics(cm *ClientMetrics) CallOption {
+	return clientMetricsOpt{cm: cm}
+}
+
 // CallSettings allow fine-grained control over how calls are made.
 type CallSettings struct {
 	// Retry returns a Retryer to be used to control retry logic of a method call.
@@ -262,4 +281,48 @@ type CallSettings struct {
 	// Timeout defines the amount of time that Invoke has to complete.
 	// Unexported so it cannot be changed by the code in an APICall.
 	timeout time.Duration
+
+	// clientMetrics holds the pre-allocated OpenTelemetry metrics instruments
+	// to use for this call.
+	clientMetrics *ClientMetrics
+
+	// clientTracing holds the pre-allocated OpenTelemetry tracer
+	// to use for this call.
+	clientTracing *ClientTracing
+
+	// clientLogging holds the pre-allocated OpenTelemetry/slog logger
+	// to use for this call.
+	clientLogging *ClientLogging
+}
+
+type clientTracingOpt struct {
+	ct *ClientTracing
+}
+
+// Resolve applies the ClientTracing to the CallSettings.
+func (o clientTracingOpt) Resolve(s *CallSettings) {
+	s.clientTracing = o.ct
+}
+
+// WithClientTracing applies tracing instrumentation to the CallSettings.
+//
+// This is for internal use only.
+func WithClientTracing(ct *ClientTracing) CallOption {
+	return clientTracingOpt{ct: ct}
+}
+
+type clientLoggingOpt struct {
+	cl *ClientLogging
+}
+
+// Resolve applies the ClientLogging to the CallSettings.
+func (o clientLoggingOpt) Resolve(s *CallSettings) {
+	s.clientLogging = o.cl
+}
+
+// WithClientLogging applies logging instrumentation to the CallSettings.
+//
+// This is for internal use only.
+func WithClientLogging(cl *ClientLogging) CallOption {
+	return clientLoggingOpt{cl: cl}
 }

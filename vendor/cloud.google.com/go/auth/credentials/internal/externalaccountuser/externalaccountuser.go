@@ -17,12 +17,14 @@ package externalaccountuser
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"cloud.google.com/go/auth"
 	"cloud.google.com/go/auth/credentials/internal/stsexchange"
 	"cloud.google.com/go/auth/internal"
+	"github.com/googleapis/gax-go/v2/internallog"
 )
 
 // Options stores the configuration for fetching tokens with external authorized
@@ -49,8 +51,18 @@ type Options struct {
 	// Scopes contains the desired scopes for the returned access token.
 	Scopes []string
 
+	// EarlyTokenRefresh configures how early before a token expires that it
+	// should be refreshed. If unset, the default value is 3 minutes and 45
+	// seconds. Optional.
+	EarlyTokenRefresh time.Duration
+	// DisableAsyncRefresh configures a synchronous workflow that refreshes
+	// stale tokens while blocking. The default is false. Optional.
+	DisableAsyncRefresh bool
+
 	// Client for token request.
 	Client *http.Client
+	// Logger for logging.
+	Logger *slog.Logger
 }
 
 func (c *Options) validate() bool {
@@ -67,7 +79,10 @@ func NewTokenProvider(opts *Options) (auth.TokenProvider, error) {
 	tp := &tokenProvider{
 		o: opts,
 	}
-	return auth.NewCachedTokenProvider(tp, nil), nil
+	return auth.NewCachedTokenProvider(tp, &auth.CachedTokenProviderOptions{
+		ExpireEarly:         opts.EarlyTokenRefresh,
+		DisableAsyncRefresh: opts.DisableAsyncRefresh,
+	}), nil
 }
 
 type tokenProvider struct {
@@ -90,6 +105,7 @@ func (tp *tokenProvider) Token(ctx context.Context) (*auth.Token, error) {
 		RefreshToken:   opts.RefreshToken,
 		Authentication: clientAuth,
 		Headers:        headers,
+		Logger:         internallog.New(tp.o.Logger),
 	})
 	if err != nil {
 		return nil, err

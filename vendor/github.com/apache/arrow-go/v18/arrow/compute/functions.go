@@ -150,7 +150,7 @@ func (b *baseFunction) Validate() error {
 	}
 
 	argCount := len(b.doc.ArgNames)
-	if argCount != b.arity.NArgs && !(b.arity.IsVarArgs && argCount == b.arity.NArgs+1) {
+	if argCount != b.arity.NArgs && (!b.arity.IsVarArgs || argCount != b.arity.NArgs+1) {
 		return fmt.Errorf("in function '%s': number of argument names for function doc != function arity", b.name)
 	}
 
@@ -183,9 +183,10 @@ func (b *baseFunction) checkArity(nargs int) error {
 // generic definitions. It will be extended as other kernel types
 // are defined.
 //
-// Currently only ScalarKernels are allowed to be used.
+// Currently ScalarKernels, VectorKernels and ScalarAggKernels are allowed
+// to be used.
 type kernelType interface {
-	exec.ScalarKernel | exec.VectorKernel
+	exec.ScalarKernel | exec.VectorKernel | exec.ScalarAggKernel
 
 	// specifying the Kernel interface here allows us to utilize
 	// the methods of the Kernel interface on the generic
@@ -372,6 +373,102 @@ func (f *VectorFunction) Execute(ctx context.Context, opts FunctionOptions, args
 	return execInternal(ctx, f, opts, -1, args...)
 }
 
+// A ScalarAggregateFunction computes a single summary value from array
+// input, such as the sum or the number of values. Its kernels do not produce
+// one output value per input value: they fold the input into a state which
+// the executor finalizes once, after the whole input has been consumed.
+//
+// Kernels are selected by exact dispatch, as they are for a VectorFunction:
+// there is one kernel per input type and the input is cast to it.
+type ScalarAggregateFunction struct {
+	funcImpl[exec.ScalarAggKernel]
+}
+
+// NewScalarAggregateFunction constructs a new ScalarAggregateFunction object
+// with the passed in name, arity and function doc.
+func NewScalarAggregateFunction(name string, arity Arity, doc FunctionDoc) *ScalarAggregateFunction {
+	return &ScalarAggregateFunction{
+		funcImpl: funcImpl[exec.ScalarAggKernel]{
+			baseFunction: baseFunction{
+				name:  name,
+				arity: arity,
+				doc:   doc,
+				kind:  FuncScalarAgg,
+			},
+		},
+	}
+}
+
+func (f *ScalarAggregateFunction) SetDefaultOptions(opts FunctionOptions) {
+	f.defaultOpts = opts
+}
+
+func (f *ScalarAggregateFunction) DispatchExact(vals ...arrow.DataType) (exec.Kernel, error) {
+	return f.funcImpl.DispatchExact(vals...)
+}
+
+func (f *ScalarAggregateFunction) DispatchBest(vals ...arrow.DataType) (exec.Kernel, error) {
+	return f.DispatchExact(vals...)
+}
+
+// AddNewKernel constructs a new kernel with the provided signature and
+// lifecycle functions and then adds it to the function's list of kernels.
+func (f *ScalarAggregateFunction) AddNewKernel(inTypes []exec.InputType, outType exec.OutputType,
+	init exec.KernelInitFn, consume exec.ScalarAggConsume, merge exec.ScalarAggMerge,
+	finalize exec.ScalarAggFinalize) error {
+	if err := f.checkArity(len(inTypes)); err != nil {
+		return err
+	}
+
+	if f.arity.IsVarArgs && len(inTypes) != 1 {
+		return fmt.Errorf("%w: varargs signatures must have exactly one input type", arrow.ErrInvalid)
+	}
+
+	sig := &exec.KernelSignature{
+		InputTypes: inTypes,
+		OutType:    outType,
+		IsVarArgs:  f.arity.IsVarArgs,
+	}
+
+	return f.AddKernel(exec.NewScalarAggKernelWithSig(sig, init, consume, merge, finalize))
+}
+
+// AddKernel adds the provided kernel to the list of kernels this function
+// has. A copy of the kernel is added to the slice of kernels, which means
+// that a given kernel object can be created, added and then reused to add
+// other kernels.
+//
+// Every one of the four lifecycle functions is required: the executor cannot
+// aggregate without a state to fold into, and a kernel without a merge
+// function could not be used by a parallel or partitioned caller.
+func (f *ScalarAggregateFunction) AddKernel(k exec.ScalarAggKernel) error {
+	if err := f.checkArity(len(k.Signature.InputTypes)); err != nil {
+		return err
+	}
+
+	if f.arity.IsVarArgs && !k.Signature.IsVarArgs {
+		return fmt.Errorf("%w: function accepts varargs but kernel signature does not", arrow.ErrInvalid)
+	}
+
+	switch {
+	case k.Init == nil:
+		return fmt.Errorf("%w: scalar aggregate kernel requires an init function", arrow.ErrInvalid)
+	case k.ConsumeFn == nil:
+		return fmt.Errorf("%w: scalar aggregate kernel requires a consume function", arrow.ErrInvalid)
+	case k.MergeFn == nil:
+		return fmt.Errorf("%w: scalar aggregate kernel requires a merge function", arrow.ErrInvalid)
+	case k.FinalizeFn == nil:
+		return fmt.Errorf("%w: scalar aggregate kernel requires a finalize function", arrow.ErrInvalid)
+	}
+
+	f.kernels = append(f.kernels, k)
+	return nil
+}
+
+func (f *ScalarAggregateFunction) Execute(ctx context.Context, opts FunctionOptions, args ...Datum) (Datum, error) {
+	return execInternal(ctx, f, opts, -1, args...)
+}
+
 // MetaFunctionImpl is the signature needed for implementing a MetaFunction
 // which is a function that dispatches to another function instead.
 type MetaFunctionImpl func(context.Context, FunctionOptions, ...Datum) (Datum, error)
@@ -398,6 +495,7 @@ func NewMetaFunction(name string, arity Arity, doc FunctionDoc, impl MetaFunctio
 	return &MetaFunction{
 		baseFunction: baseFunction{
 			name:  name,
+			kind:  FuncMeta,
 			arity: arity,
 			doc:   doc,
 		},

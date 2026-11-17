@@ -23,12 +23,12 @@ import (
 	"math"
 	"math/bits"
 
-	"github.com/JohnCGriffin/overflow"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/compute/exec"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/decimal256"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
+	"github.com/apache/arrow-go/v18/internal/utils"
 	"golang.org/x/exp/constraints"
 )
 
@@ -709,7 +709,7 @@ func SubtractDate32(op ArithmeticOp) exec.ArrayKernelExec {
 	case OpSubChecked:
 		return ScalarBinary(getGoArithmeticBinary(func(a, b arrow.Time32, e *error) (result arrow.Duration) {
 			result = arrow.Duration(a) - arrow.Duration(b)
-			val, ok := overflow.Mul64(int64(result), secondsPerDay)
+			val, ok := utils.Mul64(int64(result), secondsPerDay)
 			if !ok {
 				*e = errOverflow
 			}

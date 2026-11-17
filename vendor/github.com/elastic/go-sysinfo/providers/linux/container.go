@@ -21,7 +21,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 )
 
@@ -29,7 +28,7 @@ const procOneCgroup = "/proc/1/cgroup"
 
 // IsContainerized returns true if this process is containerized.
 func IsContainerized() (bool, error) {
-	data, err := ioutil.ReadFile(procOneCgroup)
+	data, err := os.ReadFile(procOneCgroup)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

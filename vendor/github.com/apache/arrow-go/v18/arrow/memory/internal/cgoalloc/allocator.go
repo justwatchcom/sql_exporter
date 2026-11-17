@@ -25,7 +25,6 @@ package cgoalloc
 // #include "allocator.h"
 import "C"
 import (
-	"reflect"
 	"unsafe"
 )
 
@@ -35,20 +34,14 @@ type CGOMemPool = C.ArrowMemoryPool
 // CgoPoolAlloc allocates a block of memory of length 'size' using the memory
 // pool that is passed in.
 func CgoPoolAlloc(pool CGOMemPool, size int) []byte {
-	var ret []byte
 	if size == 0 {
-		return ret
+		return []byte{}
 	}
 
 	var out *C.uint8_t
 	C.arrow_pool_allocate(pool, C.int64_t(size), (**C.uint8_t)(unsafe.Pointer(&out)))
 
-	s := (*reflect.SliceHeader)(unsafe.Pointer(&ret))
-	s.Data = uintptr(unsafe.Pointer(out))
-	s.Len = size
-	s.Cap = size
-
-	return ret
+	return unsafe.Slice((*byte)(unsafe.Pointer(out)), size)
 }
 
 // CgoPoolRealloc calls 'reallocate' on the block of memory passed in which must
@@ -59,16 +52,10 @@ func CgoPoolRealloc(pool CGOMemPool, size int, b []byte) []byte {
 	}
 
 	oldSize := C.int64_t(len(b))
-	data := (*C.uint8_t)(unsafe.Pointer(&b[0]))
+	data := (*C.uint8_t)(unsafe.SliceData(b))
 	C.arrow_pool_reallocate(pool, oldSize, C.int64_t(size), &data)
 
-	var ret []byte
-	s := (*reflect.SliceHeader)(unsafe.Pointer(&ret))
-	s.Data = uintptr(unsafe.Pointer(data))
-	s.Len = size
-	s.Cap = size
-
-	return ret
+	return unsafe.Slice((*byte)(unsafe.Pointer(data)), size)
 }
 
 // CgoPoolFree uses the indicated memory pool to free a block of memory. The

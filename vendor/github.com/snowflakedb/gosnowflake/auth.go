@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/snowflakedb/gosnowflake/internal/compilation"
+	internalos "github.com/snowflakedb/gosnowflake/internal/os"
 )
 
 const (
@@ -55,6 +57,8 @@ const (
 	AuthTypeOAuthAuthorizationCode
 	// AuthTypeOAuthClientCredentials is to use non-interactive OAuth2 flow
 	AuthTypeOAuthClientCredentials
+	// AuthTypeWorkloadIdentityFederation is to use CSP identity for authentication
+	AuthTypeWorkloadIdentityFederation
 )
 
 func (authType AuthType) isOauthNativeFlow() bool {
@@ -88,14 +92,17 @@ func determineAuthenticatorType(cfg *Config, value string) error {
 	} else if upperCaseValue == AuthTypeTokenAccessor.String() {
 		cfg.Authenticator = AuthTypeTokenAccessor
 		return nil
-	} else if upperCaseValue == AuthTypePat.String() && experimentalAuthEnabled() {
+	} else if upperCaseValue == AuthTypePat.String() {
 		cfg.Authenticator = AuthTypePat
 		return nil
-	} else if upperCaseValue == AuthTypeOAuthAuthorizationCode.String() && experimentalAuthEnabled() {
+	} else if upperCaseValue == AuthTypeOAuthAuthorizationCode.String() {
 		cfg.Authenticator = AuthTypeOAuthAuthorizationCode
 		return nil
-	} else if upperCaseValue == AuthTypeOAuthClientCredentials.String() && experimentalAuthEnabled() {
+	} else if upperCaseValue == AuthTypeOAuthClientCredentials.String() {
 		cfg.Authenticator = AuthTypeOAuthClientCredentials
+		return nil
+	} else if upperCaseValue == AuthTypeWorkloadIdentityFederation.String() {
+		cfg.Authenticator = AuthTypeWorkloadIdentityFederation
 		return nil
 	} else {
 		// possibly Okta case
@@ -152,32 +159,41 @@ func (authType AuthType) String() string {
 		return "OAUTH_AUTHORIZATION_CODE"
 	case AuthTypeOAuthClientCredentials:
 		return "OAUTH_CLIENT_CREDENTIALS"
+	case AuthTypeWorkloadIdentityFederation:
+		return "WORKLOAD_IDENTITY"
 	default:
 		return "UNKNOWN"
 	}
 }
 
-// platform consists of compiler and architecture type in string
-var platform = fmt.Sprintf("%v-%v", runtime.Compiler, runtime.GOARCH)
-
-// operatingSystem is the runtime operating system.
-var operatingSystem = runtime.GOOS
-
 // userAgent shows up in User-Agent HTTP header
 var userAgent = fmt.Sprintf("%v/%v (%v-%v) %v/%v",
 	clientType,
 	SnowflakeGoDriverVersion,
-	operatingSystem,
+	runtime.GOOS,
 	runtime.GOARCH,
 	runtime.Compiler,
 	runtime.Version())
 
 type authRequestClientEnvironment struct {
-	Application string `json:"APPLICATION"`
-	Os          string `json:"OS"`
-	OsVersion   string `json:"OS_VERSION"`
-	OCSPMode    string `json:"OCSP_MODE"`
-	GoVersion   string `json:"GO_VERSION"`
+	Application             string            `json:"APPLICATION"`
+	ApplicationPath         string            `json:"APPLICATION_PATH"`
+	Os                      string            `json:"OS"`
+	OsVersion               string            `json:"OS_VERSION"`
+	OsDetails               map[string]string `json:"OS_DETAILS,omitempty"`
+	Isa                     string            `json:"ISA,omitempty"`
+	OCSPMode                string            `json:"OCSP_MODE"`
+	GoVersion               string            `json:"GO_VERSION"`
+	OAuthType               string            `json:"OAUTH_TYPE,omitempty"`
+	CertRevocationCheckMode string            `json:"CERT_REVOCATION_CHECK_MODE,omitempty"`
+	Platform                []string          `json:"PLATFORM,omitempty"`
+	CoreVersion             string            `json:"CORE_VERSION,omitempty"`
+	CoreLoadError           string            `json:"CORE_LOAD_ERROR,omitempty"`
+	CoreFileName            string            `json:"CORE_FILE_NAME,omitempty"`
+	CgoEnabled              bool              `json:"CGO_ENABLED,omitempty"`
+	LinkingMode             string            `json:"LINKING_MODE,omitempty"`
+	LibcFamily              string            `json:"LIBC_FAMILY,omitempty"`
+	LibcVersion             string            `json:"LIBC_VERSION,omitempty"`
 }
 
 type authRequestData struct {
@@ -196,7 +212,7 @@ type authRequestData struct {
 	BrowserModeRedirectPort string                       `json:"BROWSER_MODE_REDIRECT_PORT,omitempty"`
 	ProofKey                string                       `json:"PROOF_KEY,omitempty"`
 	Token                   string                       `json:"TOKEN,omitempty"`
-	OauthType               string                       `json:"OAUTH_TYPE,omitempty"`
+	Provider                string                       `json:"PROVIDER,omitempty"`
 }
 type authRequest struct {
 	Data authRequestData `json:"data"`
@@ -263,7 +279,11 @@ func postAuth(
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.WithContext(ctx).Errorf("failed to close HTTP response body for %v. err: %v", fullURL, closeErr)
+		}
+	}()
 	if resp.StatusCode == http.StatusOK {
 		var respd authResponse
 		err = json.NewDecoder(resp.Body).Decode(&respd)
@@ -343,13 +363,27 @@ func authenticate(
 	}
 
 	headers := getHeaders()
-	clientEnvironment := authRequestClientEnvironment{
-		Application: sc.cfg.Application,
-		Os:          operatingSystem,
-		OsVersion:   platform,
-		OCSPMode:    sc.cfg.ocspMode(),
-		GoVersion:   runtime.Version(),
+	// Get the current application path
+	applicationPath, err := os.Executable()
+	if err != nil {
+		logger.WithContext(ctx).Warnf("Failed to get executable path: %v", err)
+		applicationPath = "unknown"
 	}
+
+	oauthType := ""
+	switch sc.cfg.Authenticator {
+	case AuthTypeOAuthAuthorizationCode:
+		oauthType = "OAUTH_AUTHORIZATION_CODE"
+	case AuthTypeOAuthClientCredentials:
+		oauthType = "OAUTH_CLIENT_CREDENTIALS"
+	}
+
+	clientEnvironment := newAuthRequestClientEnvironment()
+	clientEnvironment.Application = sc.cfg.Application
+	clientEnvironment.ApplicationPath = applicationPath
+	clientEnvironment.OAuthType = oauthType
+	clientEnvironment.CertRevocationCheckMode = sc.cfg.CertRevocationCheckMode.String()
+	clientEnvironment.Platform = getDetectedPlatforms()
 
 	sessionParameters := make(map[string]interface{})
 	paramsMutex.Lock()
@@ -384,8 +418,8 @@ func authenticate(
 		params.Add("roleName", sc.cfg.Role)
 	}
 
-	logger.WithContext(ctx).Infof("PARAMS for Auth: %v, %v, %v, %v, %v, %v",
-		params, sc.rest.Protocol, sc.rest.Host, sc.rest.Port, sc.rest.LoginTimeout, sc.cfg.Authenticator.String())
+	logger.WithContext(ctx).Infof("Information for Auth: Host: %v, User: %v, Authenticator: %v, Params: %v, Protocol: %v, Port: %v, LoginTimeout: %v",
+		sc.rest.Host, sc.cfg.User, sc.cfg.Authenticator.String(), params, sc.rest.Protocol, sc.rest.Port, sc.rest.LoginTimeout)
 
 	respd, err := sc.rest.FuncPostAuth(ctx, sc.rest, sc.rest.getClientFor(sc.cfg.Authenticator), params, headers, bodyCreator, sc.rest.LoginTimeout)
 	if err != nil {
@@ -426,6 +460,56 @@ func authenticate(
 	return &respd.Data, nil
 }
 
+func newAuthRequestClientEnvironment() authRequestClientEnvironment {
+	var coreVersion string
+	var coreLoadError string
+
+	// Try to get minicore version, but don't block if it's not loaded yet
+	if !compilation.MinicoreEnabled {
+		logger.Trace("minicore disabled at compile time")
+		coreLoadError = "Minicore is disabled at compile time (built with -tags minicore_disabled)"
+	} else if strings.EqualFold(os.Getenv(disableMinicoreEnv), "true") {
+		logger.Trace("minicore loading disabled")
+		coreLoadError = "Minicore is disabled with SF_DISABLE_MINICORE env variable"
+	} else if mc := getMiniCore(); mc != nil {
+		var err error
+		coreVersion, err = mc.FullVersion()
+		if err != nil {
+			logger.Debugf("Minicore loading failed. %v", err)
+			var mcErr *miniCoreError
+			if errors.As(err, &mcErr) {
+				coreLoadError = fmt.Sprintf("Failed to load binary: %v", mcErr.errorType)
+			} else {
+				coreLoadError = "Failed to load binary: unknown"
+			}
+		}
+	} else {
+		// Minicore not loaded yet - this is expected during startup
+		coreVersion = ""
+		coreLoadError = "Minicore is still loading"
+		logger.Debugf("Minicore not yet loaded for client environment telemetry")
+	}
+	libcInfo := internalos.GetLibcInfo()
+	linkingMode, err := compilation.CheckDynamicLinking()
+	if err != nil {
+		logger.Debugf("cannot determine if app is dynamically linked: %v", err)
+	}
+	return authRequestClientEnvironment{
+		Os:            runtime.GOOS,
+		OsVersion:     osVersion,
+		OsDetails:     internalos.GetOsDetails(),
+		Isa:           runtime.GOARCH,
+		GoVersion:     runtime.Version(),
+		CoreVersion:   coreVersion,
+		CoreFileName:  getMiniCoreFileName(),
+		CoreLoadError: coreLoadError,
+		CgoEnabled:    compilation.CgoEnabled,
+		LinkingMode:   linkingMode.String(),
+		LibcFamily:    libcInfo.Family,
+		LibcVersion:   libcInfo.Version,
+	}
+}
+
 func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface{},
 	clientEnvironment authRequestClientEnvironment, proofKey []byte, samlResponse []byte,
 ) ([]byte, error) {
@@ -452,7 +536,10 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 	case AuthTypeOAuth:
 		requestMain.LoginName = sc.cfg.User
 		requestMain.Authenticator = AuthTypeOAuth.String()
-		requestMain.Token = sc.cfg.Token
+		var err error
+		if requestMain.Token, err = sc.cfg.getToken(); err != nil {
+			return nil, fmt.Errorf("failed to get OAuth token: %w", err)
+		}
 	case AuthTypeOkta:
 		samlResponse, err := authenticateBySAML(
 			sc.ctx,
@@ -476,13 +563,13 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 		}
 		requestMain.Token = jwtTokenString
 	case AuthTypePat:
-		if !experimentalAuthEnabled() {
-			return nil, errors.New("programmatic access tokens are not ready to use")
-		}
 		logger.WithContext(sc.ctx).Info("Programmatic access token")
 		requestMain.Authenticator = AuthTypePat.String()
 		requestMain.LoginName = sc.cfg.User
-		requestMain.Token = sc.cfg.Token
+		var err error
+		if requestMain.Token, err = sc.cfg.getToken(); err != nil {
+			return nil, fmt.Errorf("failed to get PAT token: %w", err)
+		}
 	case AuthTypeSnowflake:
 		logger.WithContext(sc.ctx).Debug("Username and password")
 		requestMain.LoginName = sc.cfg.User
@@ -508,27 +595,16 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 			requestMain.ExtAuthnDuoMethod = "passcode"
 		}
 	case AuthTypeOAuthAuthorizationCode:
-		if !experimentalAuthEnabled() {
-			return nil, errors.New("OAuth2 is not ready to use")
-		}
 		logger.WithContext(sc.ctx).Debug("OAuth authorization code")
-		oauthClient, err := newOauthClient(sc.ctx, sc.cfg)
-		if err != nil {
-			return nil, err
-		}
-		token, err := oauthClient.authenticateByOAuthAuthorizationCode()
+		token, err := authenticateByAuthorizationCode(sc)
 		if err != nil {
 			return nil, err
 		}
 		requestMain.LoginName = sc.cfg.User
 		requestMain.Token = token
-		requestMain.OauthType = "OAUTH_AUTHORIZATION_CODE"
 	case AuthTypeOAuthClientCredentials:
-		if !experimentalAuthEnabled() {
-			return nil, errors.New("OAuth2 is not ready to use")
-		}
 		logger.WithContext(sc.ctx).Debug("OAuth client credentials")
-		oauthClient, err := newOauthClient(sc.ctx, sc.cfg)
+		oauthClient, err := newOauthClient(sc.ctx, sc.cfg, sc)
 		if err != nil {
 			return nil, err
 		}
@@ -538,17 +614,88 @@ func createRequestBody(sc *snowflakeConn, sessionParameters map[string]interface
 		}
 		requestMain.LoginName = sc.cfg.User
 		requestMain.Token = token
-		requestMain.OauthType = "OAUTH_CLIENT_CREDENTIALS"
+	case AuthTypeWorkloadIdentityFederation:
+		logger.WithContext(sc.ctx).Debug("Workload Identity Federation")
+		wifAttestationProvider := createWifAttestationProvider(sc.ctx, sc.cfg, sc.telemetry)
+		wifAttestation, err := wifAttestationProvider.getAttestation(sc.cfg.WorkloadIdentityProvider)
+		if err != nil {
+			return nil, err
+		}
+		if wifAttestation == nil {
+			return nil, errors.New("workload identity federation attestation is not available, please check your configuration")
+		}
+		requestMain.Authenticator = AuthTypeWorkloadIdentityFederation.String()
+		requestMain.Token = wifAttestation.Credential
+		requestMain.Provider = wifAttestation.ProviderType
 	}
+
+	logger.WithContext(sc.ctx).Debugf("Request body is created for the authentication. Authenticator: %s, User: %s, Account: %s", sc.cfg.Authenticator.String(), sc.cfg.User, sc.cfg.Account)
 
 	authRequest := authRequest{
 		Data: requestMain,
 	}
 	jsonBody, err := json.Marshal(authRequest)
 	if err != nil {
+		logger.WithContext(sc.ctx).Errorf("Failed to marshal JSON. err: %v", err)
 		return nil, err
 	}
 	return jsonBody, nil
+}
+
+type oauthLockKey struct {
+	tokenRequestURL string
+	user            string
+	flowType        string
+}
+
+func newOAuthAuthorizationCodeLockKey(tokenRequestURL, user string) *oauthLockKey {
+	return &oauthLockKey{
+		tokenRequestURL: tokenRequestURL,
+		user:            user,
+		flowType:        "authorization_code",
+	}
+}
+
+func newRefreshTokenLockKey(tokenRequestURL, user string) *oauthLockKey {
+	return &oauthLockKey{
+		tokenRequestURL: tokenRequestURL,
+		user:            user,
+		flowType:        "refresh_token",
+	}
+}
+
+func (o *oauthLockKey) lockID() string {
+	return o.tokenRequestURL + "|" + o.user + "|" + o.flowType
+}
+
+func authenticateByAuthorizationCode(sc *snowflakeConn) (string, error) {
+	oauthClient, err := newOauthClient(sc.ctx, sc.cfg, sc)
+	if err != nil {
+		return "", err
+	}
+	if !isEligibleForParallelLogin(sc.cfg, sc.cfg.ClientStoreTemporaryCredential) {
+		return oauthClient.authenticateByOAuthAuthorizationCode()
+	}
+
+	lockKey := newOAuthAuthorizationCodeLockKey(oauthClient.tokenURL(), sc.cfg.User)
+	valueAwaiter := valueAwaitHolder.get(lockKey)
+	defer valueAwaiter.resumeOne()
+	token, err := awaitValue(valueAwaiter, func() (string, error) {
+		return credentialsStorage.getCredential(newOAuthAccessTokenSpec(oauthClient.tokenURL(), sc.cfg.User)), nil
+	}, func(s string, err error) bool {
+		return s != ""
+	}, func() string {
+		return ""
+	})
+	if err != nil || token != "" {
+		return token, err
+	}
+	token, err = oauthClient.authenticateByOAuthAuthorizationCode()
+	if err != nil {
+		return "", err
+	}
+	valueAwaiter.done()
+	return token, err
 }
 
 // Generate a JWT token in string given the configuration
@@ -586,20 +733,60 @@ func prepareJWTToken(config *Config) (string, error) {
 	return tokenString, err
 }
 
-// Authenticate with sc.cfg
+type tokenLockKey struct {
+	snowflakeHost string
+	user          string
+	tokenType     string
+}
+
+func newMfaTokenLockKey(snowflakeHost, user string) *tokenLockKey {
+	return &tokenLockKey{
+		snowflakeHost: snowflakeHost,
+		user:          user,
+		tokenType:     "MFA",
+	}
+}
+
+func newIDTokenLockKey(snowflakeHost, user string) *tokenLockKey {
+	return &tokenLockKey{
+		snowflakeHost: snowflakeHost,
+		user:          user,
+		tokenType:     "ID",
+	}
+}
+
+func (m *tokenLockKey) lockID() string {
+	return m.snowflakeHost + "|" + m.user + "|" + m.tokenType
+}
+
 func authenticateWithConfig(sc *snowflakeConn) error {
 	var authData *authResponseMain
 	var samlResponse []byte
 	var proofKey []byte
 	var err error
-	//var consentCacheIdToken = true
+
+	mfaTokenLockKey := newMfaTokenLockKey(sc.cfg.Host, sc.cfg.User)
+	idTokenLockKey := newIDTokenLockKey(sc.cfg.Host, sc.cfg.User)
 
 	if sc.cfg.Authenticator == AuthTypeExternalBrowser || sc.cfg.Authenticator == AuthTypeOAuthAuthorizationCode || sc.cfg.Authenticator == AuthTypeOAuthClientCredentials {
 		if (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && sc.cfg.ClientStoreTemporaryCredential == configBoolNotSet {
 			sc.cfg.ClientStoreTemporaryCredential = ConfigBoolTrue
 		}
-		if sc.cfg.Authenticator == AuthTypeExternalBrowser && sc.cfg.ClientStoreTemporaryCredential == ConfigBoolTrue {
-			sc.cfg.IDToken = credentialsStorage.getCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User))
+		if sc.cfg.Authenticator == AuthTypeExternalBrowser {
+			if isEligibleForParallelLogin(sc.cfg, sc.cfg.ClientStoreTemporaryCredential) {
+				valueAwaiter := valueAwaitHolder.get(idTokenLockKey)
+				defer valueAwaiter.resumeOne()
+				sc.cfg.IDToken, _ = awaitValue(valueAwaiter, func() (string, error) {
+					credential := credentialsStorage.getCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User))
+					return credential, nil
+				}, func(s string, err error) bool {
+					return s != ""
+				}, func() string {
+					return ""
+				})
+			} else if sc.cfg.ClientStoreTemporaryCredential == ConfigBoolTrue {
+				sc.cfg.IDToken = credentialsStorage.getCredential(newIDTokenSpec(sc.cfg.Host, sc.cfg.User))
+			}
 		}
 		// Disable console login by default
 		if sc.cfg.DisableConsoleLogin == configBoolNotSet {
@@ -611,7 +798,18 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 		if (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && sc.cfg.ClientRequestMfaToken == configBoolNotSet {
 			sc.cfg.ClientRequestMfaToken = ConfigBoolTrue
 		}
-		if sc.cfg.ClientRequestMfaToken == ConfigBoolTrue {
+		if isEligibleForParallelLogin(sc.cfg, sc.cfg.ClientRequestMfaToken) {
+			valueAwaiter := valueAwaitHolder.get(mfaTokenLockKey)
+			defer valueAwaiter.resumeOne()
+			sc.cfg.MfaToken, _ = awaitValue(valueAwaiter, func() (string, error) {
+				credential := credentialsStorage.getCredential(newMfaTokenSpec(sc.cfg.Host, sc.cfg.User))
+				return credential, nil
+			}, func(s string, err error) bool {
+				return s != ""
+			}, func() string {
+				return ""
+			})
+		} else if sc.cfg.ClientRequestMfaToken == ConfigBoolTrue {
 			sc.cfg.MfaToken = credentialsStorage.getCredential(newMfaTokenSpec(sc.cfg.Host, sc.cfg.User))
 		}
 	}
@@ -627,7 +825,6 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 				sc.cfg.Application,
 				sc.cfg.Account,
 				sc.cfg.User,
-				sc.cfg.Password,
 				sc.cfg.ExternalBrowserTimeout,
 				sc.cfg.DisableConsoleLogin)
 			if err != nil {
@@ -647,15 +844,7 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 			credentialsStorage.deleteCredential(newOAuthAccessTokenSpec(sc.cfg.OauthTokenRequestURL, sc.cfg.User))
 
 			if sc.cfg.Authenticator == AuthTypeOAuthAuthorizationCode {
-				var oauthClient *oauthClient
-				if oauthClient, err = newOauthClient(sc.ctx, sc.cfg); err != nil {
-					logger.Warnf("failed to create oauth client. %v", err)
-				} else {
-					if err = oauthClient.refreshToken(); err != nil {
-						logger.Warnf("cannot refresh token. %v", err)
-						credentialsStorage.deleteCredential(newOAuthRefreshTokenSpec(sc.cfg.OauthTokenRequestURL, sc.cfg.User))
-					}
-				}
+				doRefreshTokenWithLock(sc)
 			}
 
 			// if refreshing succeeds for authorization code, we will take a token from cache
@@ -667,12 +856,47 @@ func authenticateWithConfig(sc *snowflakeConn) error {
 			return err
 		}
 	}
+	if sc.cfg.Authenticator == AuthTypeUsernamePasswordMFA && isEligibleForParallelLogin(sc.cfg, sc.cfg.ClientRequestMfaToken) {
+		valueAwaiter := valueAwaitHolder.get(mfaTokenLockKey)
+		valueAwaiter.done()
+	}
+	if sc.cfg.Authenticator == AuthTypeExternalBrowser && isEligibleForParallelLogin(sc.cfg, sc.cfg.ClientStoreTemporaryCredential) {
+		valueAwaiter := valueAwaitHolder.get(idTokenLockKey)
+		valueAwaiter.done()
+	}
 	sc.populateSessionParameters(authData.Parameters)
 	sc.ctx = context.WithValue(sc.ctx, SFSessionIDKey, authData.SessionID)
 	return nil
 }
 
-func experimentalAuthEnabled() bool {
-	val, ok := os.LookupEnv("SF_ENABLE_EXPERIMENTAL_AUTHENTICATION")
-	return ok && strings.EqualFold(val, "true")
+func doRefreshTokenWithLock(sc *snowflakeConn) {
+	if oauthClient, err := newOauthClient(sc.ctx, sc.cfg, sc); err != nil {
+		logger.Warnf("failed to create oauth client. %v", err)
+	} else {
+		lockKey := newRefreshTokenLockKey(oauthClient.tokenURL(), sc.cfg.User)
+		if _, err = getValueWithLock(chooseLockerForAuth(sc.cfg), lockKey, func() (string, error) {
+			if err = oauthClient.refreshToken(); err != nil {
+				logger.Warnf("cannot refresh token. %v", err)
+				credentialsStorage.deleteCredential(newOAuthRefreshTokenSpec(sc.cfg.OauthTokenRequestURL, sc.cfg.User))
+				return "", err
+			}
+			return "", nil
+		}); err != nil {
+			logger.Warnf("failed to refresh token with lock. %v", err)
+		}
+	}
+}
+
+func chooseLockerForAuth(cfg *Config) locker {
+	if cfg.SingleAuthenticationPrompt == ConfigBoolFalse {
+		return noopLocker
+	}
+	if cfg.User == "" {
+		return noopLocker
+	}
+	return exclusiveLocker
+}
+
+func isEligibleForParallelLogin(cfg *Config, cacheEnabled ConfigBool) bool {
+	return cfg.SingleAuthenticationPrompt != ConfigBoolFalse && cfg.User != "" && cacheEnabled == ConfigBoolTrue
 }

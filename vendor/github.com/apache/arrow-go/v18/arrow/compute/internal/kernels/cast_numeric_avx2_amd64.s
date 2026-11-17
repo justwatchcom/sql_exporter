@@ -27,7 +27,7 @@ DATA LCDATA1<>+0x0b0(SB)/8, $0x00ff00ff00ff00ff
 DATA LCDATA1<>+0x0b8(SB)/8, $0x00ff00ff00ff00ff
 GLOBL LCDATA1<>(SB), 8, $192
 
-TEXT ·_cast_type_numeric_avx2(SB), $0-40
+TEXT ·_cast_type_numeric_avx2(SB), $8-40
 
 	MOVQ itype+0(FP), DI
 	MOVQ otype+8(FP), SI

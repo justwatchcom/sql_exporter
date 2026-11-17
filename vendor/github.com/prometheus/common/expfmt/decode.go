@@ -61,28 +61,83 @@ func ResponseFormat(h http.Header) Format {
 		return FmtProtoDelim
 
 	case textType:
+		if params["version"] == TextVersion_1_0_0 {
+			if _, ok := params[model.EscapingKey]; ok {
+				return FmtText_1_0_0.WithEscapingScheme(Format(ct).ToEscapingScheme())
+			}
+			return FmtText_1_0_0
+		}
 		if v, ok := params["version"]; ok && v != TextVersion {
 			return FmtUnknown
 		}
 		return FmtText
+
+	case OpenMetricsType:
+		switch params["version"] {
+		case "", OpenMetricsVersion_0_0_1:
+			return FmtOpenMetrics_0_0_1
+		case OpenMetricsVersion_1_0_0:
+			return FmtOpenMetrics_1_0_0
+		case OpenMetricsVersion_2_0_0_rc:
+			return FmtOpenMetrics_2_0_0_rc
+		case OpenMetricsVersion_2_0_0:
+			return FmtOpenMetrics_2_0_0
+		default:
+			return FmtUnknown
+		}
 	}
 
 	return FmtUnknown
 }
 
-// NewDecoder returns a new decoder based on the given input format.
-// If the input format does not imply otherwise, a text format decoder is returned.
+// NewDecoder returns a new decoder based on the given input format. Metric
+// names are validated based on the provided Format -- if the format requires
+// escaping, traditional Prometheus validity checking is used. Otherwise, names
+// are checked for UTF-8 validity. Supported formats include delimited protobuf,
+// Prometheus text format, and OpenMetrics 0.0.1 / 1.0.0 / 2.0.0-rc / 2.0.0. For historical
+// reasons, this decoder falls back to classic text decoding for other legacy
+// formats, and returns an error for unsupported formats such as text protobuf.
+// This decoder may not support the latest features of Prometheus text format
+// and is not intended for high-performance applications.
+// See: https://github.com/prometheus/common/issues/812
 func NewDecoder(r io.Reader, format Format) Decoder {
+	scheme := model.LegacyValidation
+	if format.ToEscapingScheme() == model.NoEscaping {
+		scheme = model.UTF8Validation
+	}
 	switch format.FormatType() {
 	case TypeProtoDelim:
-		return &protoDecoder{r: bufio.NewReader(r)}
+		return &protoDecoder{r: bufio.NewReader(r), s: scheme}
+	case TypeProtoText, TypeProtoCompact:
+		return &errDecoder{err: fmt.Errorf("format %s not supported for decoding", format)}
+	case TypeOpenMetrics:
+		_, params, err := mime.ParseMediaType(string(format))
+		if err != nil {
+			return &errDecoder{err: fmt.Errorf("format %s not supported for decoding", format)}
+		}
+		switch params["version"] {
+		case "", OpenMetricsVersion_0_0_1, OpenMetricsVersion_1_0_0:
+			return &openMetricsDecoder{p: newOpenMetricsParser(r, scheme)}
+		case OpenMetricsVersion_2_0_0_rc, OpenMetricsVersion_2_0_0:
+			// format.ToEscapingScheme() defaults to UnderscoreEscaping when no escaping
+			// parameter is set, whereas OpenMetrics 2.0 supports UTF-8 names by default
+			// unless a non-UTF-8 escaping scheme is explicitly requested.
+			om2Scheme := model.UTF8Validation
+			if _, hasEscaping := params[model.EscapingKey]; hasEscaping && format.ToEscapingScheme() != model.NoEscaping {
+				om2Scheme = model.LegacyValidation
+			}
+			return &openMetrics20Decoder{p: newOpenMetrics20Parser(r, om2Scheme)}
+		default:
+			return &errDecoder{err: fmt.Errorf("format %s not supported for decoding", format)}
+		}
 	}
-	return &textDecoder{r: r}
+	return &textDecoder{r: r, s: scheme}
 }
 
 // protoDecoder implements the Decoder interface for protocol buffers.
 type protoDecoder struct {
 	r protodelim.Reader
+	s model.ValidationScheme
 }
 
 // Decode implements the Decoder interface.
@@ -93,7 +148,7 @@ func (d *protoDecoder) Decode(v *dto.MetricFamily) error {
 	if err := opts.UnmarshalFrom(d.r, v); err != nil {
 		return err
 	}
-	if !model.IsValidMetricName(model.LabelValue(v.GetName())) {
+	if !d.s.IsValidMetricName(v.GetName()) {
 		return fmt.Errorf("invalid metric name %q", v.GetName())
 	}
 	for _, m := range v.GetMetric() {
@@ -107,10 +162,58 @@ func (d *protoDecoder) Decode(v *dto.MetricFamily) error {
 			if !model.LabelValue(l.GetValue()).IsValid() {
 				return fmt.Errorf("invalid label value %q", l.GetValue())
 			}
-			if !model.LabelName(l.GetName()).IsValid() {
+			if !d.s.IsValidLabelName(l.GetName()) {
 				return fmt.Errorf("invalid label name %q", l.GetName())
 			}
 		}
+	}
+	return nil
+}
+
+// errDecoder is an error-state decoder that always returns the same error.
+type errDecoder struct {
+	err error
+}
+
+func (d *errDecoder) Decode(*dto.MetricFamily) error {
+	return d.err
+}
+
+// openMetricsDecoder implements the Decoder interface for the OpenMetrics 1.0 protocol.
+type openMetricsDecoder struct {
+	p   *openMetricsParser
+	err error
+}
+
+// Decode implements the Decoder interface.
+func (d *openMetricsDecoder) Decode(v *dto.MetricFamily) error {
+	if d.err != nil {
+		return d.err
+	}
+	if err := d.p.next(v); err != nil {
+		d.err = err
+		return err
+	}
+	return nil
+}
+
+// openMetrics20Decoder implements the Decoder interface for the OpenMetrics 2.0 protocol.
+// Like openMetricsDecoder, it uses goabnf.ParseForest per line without a line-length
+// cap (which has superlinear parse time in line length) and is intended for
+// reference/conformance decoding rather than high-performance or untrusted inputs.
+type openMetrics20Decoder struct {
+	p   *openMetrics20Parser
+	err error
+}
+
+// Decode implements the Decoder interface.
+func (d *openMetrics20Decoder) Decode(v *dto.MetricFamily) error {
+	if d.err != nil {
+		return d.err
+	}
+	if err := d.p.next(v); err != nil {
+		d.err = err
+		return err
 	}
 	return nil
 }
@@ -119,6 +222,7 @@ func (d *protoDecoder) Decode(v *dto.MetricFamily) error {
 type textDecoder struct {
 	r    io.Reader
 	fams map[string]*dto.MetricFamily
+	s    model.ValidationScheme
 	err  error
 }
 
@@ -126,7 +230,7 @@ type textDecoder struct {
 func (d *textDecoder) Decode(v *dto.MetricFamily) error {
 	if d.err == nil {
 		// Read all metrics in one shot.
-		var p TextParser
+		p := NewTextParser(d.s)
 		d.fams, d.err = p.TextToMetricFamilies(d.r)
 		// If we don't get an error, store io.EOF for the end.
 		if d.err == nil {
@@ -195,7 +299,7 @@ func extractSamples(f *dto.MetricFamily, o *DecodeOptions) (model.Vector, error)
 		return extractSummary(o, f), nil
 	case dto.MetricType_UNTYPED:
 		return extractUntyped(o, f), nil
-	case dto.MetricType_HISTOGRAM:
+	case dto.MetricType_HISTOGRAM, dto.MetricType_GAUGE_HISTOGRAM:
 		return extractHistogram(o, f), nil
 	}
 	return nil, fmt.Errorf("expfmt.extractSamples: unknown metric family type %v", f.GetType())
@@ -378,9 +482,13 @@ func extractHistogram(o *DecodeOptions, f *dto.MetricFamily) model.Vector {
 				infSeen = true
 			}
 
+			v := q.GetCumulativeCountFloat()
+			if v <= 0 {
+				v = float64(q.GetCumulativeCount())
+			}
 			samples = append(samples, &model.Sample{
 				Metric:    model.Metric(lset),
-				Value:     model.SampleValue(q.GetCumulativeCount()),
+				Value:     model.SampleValue(v),
 				Timestamp: timestamp,
 			})
 		}
@@ -403,9 +511,13 @@ func extractHistogram(o *DecodeOptions, f *dto.MetricFamily) model.Vector {
 		}
 		lset[model.MetricNameLabel] = model.LabelValue(f.GetName() + "_count")
 
+		v := m.Histogram.GetSampleCountFloat()
+		if v <= 0 {
+			v = float64(m.Histogram.GetSampleCount())
+		}
 		count := &model.Sample{
 			Metric:    model.Metric(lset),
-			Value:     model.SampleValue(m.Histogram.GetSampleCount()),
+			Value:     model.SampleValue(v),
 			Timestamp: timestamp,
 		}
 		samples = append(samples, count)

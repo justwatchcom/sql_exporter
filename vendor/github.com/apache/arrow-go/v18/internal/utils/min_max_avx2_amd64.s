@@ -15,7 +15,7 @@ DATA LCDATA1<>+0x050(SB)/8, $0x8080808080808080
 DATA LCDATA1<>+0x058(SB)/8, $0x8080808080808080
 GLOBL LCDATA1<>(SB), 8, $96
 
-TEXT ·_int8_max_min_avx2(SB), $0-32
+TEXT ·_int8_max_min_avx2(SB), $8-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI
@@ -133,7 +133,7 @@ LBB0_5:
 	JNE  LBB0_9
 	JMP  LBB0_10
 
-TEXT ·_uint8_max_min_avx2(SB), $0-32
+TEXT ·_uint8_max_min_avx2(SB), NOSPLIT, $0-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI
@@ -263,7 +263,7 @@ DATA LCDATA2<>+0x050(SB)/8, $0x8000800080008000
 DATA LCDATA2<>+0x058(SB)/8, $0x8000800080008000
 GLOBL LCDATA2<>(SB), 8, $96
 
-TEXT ·_int16_max_min_avx2(SB), $0-32
+TEXT ·_int16_max_min_avx2(SB), NOSPLIT, $8-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI
@@ -488,7 +488,7 @@ LBB3_5:
 DATA LCDATA3<>+0x000(SB)/8, $0x7fffffff80000000
 GLOBL LCDATA3<>(SB), 8, $8
 
-TEXT ·_int32_max_min_avx2(SB), $0-32
+TEXT ·_int32_max_min_avx2(SB), NOSPLIT, $8-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI
@@ -677,7 +677,7 @@ DATA LCDATA4<>+0x000(SB)/8, $0x8000000000000000
 DATA LCDATA4<>+0x008(SB)/8, $0x7fffffffffffffff
 GLOBL LCDATA4<>(SB), 8, $16
 
-TEXT ·_int64_max_min_avx2(SB), $0-32
+TEXT ·_int64_max_min_avx2(SB), $8-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI
@@ -786,7 +786,7 @@ LBB6_8:
 DATA LCDATA5<>+0x000(SB)/8, $0x8000000000000000
 GLOBL LCDATA5<>(SB), 8, $8
 
-TEXT ·_uint64_max_min_avx2(SB), $0-32
+TEXT ·_uint64_max_min_avx2(SB), $8-32
 
 	MOVQ values+0(FP), DI
 	MOVQ length+8(FP), SI

@@ -1,20 +1,3 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package column
 
 import (
@@ -54,7 +37,7 @@ type namedCol struct {
 	colType Type
 }
 
-func (col *Tuple) parse(t Type, tz *time.Location) (_ Interface, err error) {
+func (col *Tuple) parse(t Type, sc *ServerContext) (_ Interface, err error) {
 	col.chType = t
 	var (
 		element       []rune
@@ -66,7 +49,9 @@ func (col *Tuple) parse(t Type, tz *time.Location) (_ Interface, err error) {
 				name := ""
 				if parts := strings.SplitN(cType, " ", 2); len(parts) == 2 {
 					if !strings.Contains(parts[0], "(") {
-						name = parts[0]
+						// the server backquotes names that are not plain identifiers, since 26.5 also
+						// reserved words such as `values` and `from` (ClickHouse/ClickHouse#102338)
+						name = unescapeColName(parts[0])
 						cType = parts[1]
 					}
 				}
@@ -99,7 +84,7 @@ func (col *Tuple) parse(t Type, tz *time.Location) (_ Interface, err error) {
 		if ct.name == "" {
 			isNamed = false
 		}
-		column, err := ct.colType.Column(ct.name, tz)
+		column, err := ct.colType.Column(ct.name, sc)
 		if err != nil {
 			return nil, err
 		}
@@ -232,13 +217,22 @@ func getStructFieldValue(field reflect.Value, name string) (reflect.Value, bool)
 			return field.Field(i), true
 		}
 	}
+	// element names are stored unquoted, keep backquoted tags such as "`56`" working
+	for i := 0; i < tField.NumField(); i++ {
+		if tag := tField.Field(i).Tag.Get("json"); tag != "" && unescapeColName(tag) == name {
+			return field.Field(i), true
+		}
+		if tag := tField.Field(i).Tag.Get("ch"); tag != "" && unescapeColName(tag) == name {
+			return field.Field(i), true
+		}
+	}
 	sField := field.FieldByName(name)
 	return sField, sField.IsValid()
 }
 
 func unescapeColName(colName string) string {
 	s := []rune(colName)
-	if s[0:1][0] == '`' && s[len(s)-1:][0] == '`' {
+	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
 		return colUnEscape.Replace(string(s[1 : len(s)-1]))
 	}
 	return colUnEscape.Replace(colName)
@@ -252,7 +246,7 @@ func (col *Tuple) scanMap(targetMap reflect.Value, row int) error {
 		}
 	}
 	for _, c := range col.columns {
-		colName := unescapeColName(c.Name())
+		colName := c.Name()
 		switch dCol := c.(type) {
 		case *Tuple:
 			switch targetMap.Type().Elem().Kind() {
@@ -366,7 +360,13 @@ func (col *Tuple) scanStruct(targetStruct reflect.Value, row int) error {
 			}
 			sField.Set(subSlice)
 		default:
-			value := reflect.ValueOf(c.Row(row, false))
+			v := c.Row(row, false)
+			if v == nil {
+				continue
+			}
+
+			value := reflect.ValueOf(v)
+
 			if err := setJSONFieldValue(sField, value); err != nil {
 				return err
 			}
@@ -433,7 +433,7 @@ func (col *Tuple) scan(targetType reflect.Type, row int) (reflect.Value, error) 
 		}
 		rMap := reflect.MakeMap(targetType)
 		if err := col.scanMap(rMap, row); err != nil {
-			return reflect.Value{}, nil
+			return reflect.Value{}, err
 		}
 		return rMap, nil
 	case reflect.Slice:
@@ -448,7 +448,7 @@ func (col *Tuple) scan(targetType reflect.Type, row int) (reflect.Value, error) 
 		if !col.isNamed {
 			return reflect.Value{}, &ColumnConverterError{
 				Op:   "ScanRow",
-				To:   fmt.Sprintf("%s", targetType),
+				To:   targetType.String(),
 				From: string(col.chType),
 				Hint: "cannot use interface for unnamed tuples, use slice",
 			}
@@ -563,6 +563,10 @@ func (col *Tuple) AppendRow(v any) error {
 				continue
 			}
 			if _, ok := col.index[name]; !ok {
+				// element names are stored unquoted, keep backquoted tags such as "`56`" working
+				name = unescapeColName(name)
+			}
+			if _, ok := col.index[name]; !ok {
 				return &Error{
 					ColumnType: string(col.chType),
 					Err:        fmt.Errorf("sub column '%s' does not exist in %s", name, col.Name()),
@@ -593,7 +597,7 @@ func (col *Tuple) AppendRow(v any) error {
 			}
 		}
 		for _, key := range value.MapKeys() {
-			name := getMapFieldName(key.Interface().(string))
+			name := key.Interface().(string)
 			if _, ok := col.index[name]; !ok {
 				return &Error{
 					ColumnType: string(col.chType),
@@ -682,3 +686,25 @@ var (
 	_ Interface           = (*Tuple)(nil)
 	_ CustomSerialization = (*Tuple)(nil)
 )
+
+func getStructFieldName(field reflect.StructField) (string, bool) {
+	name := field.Name
+	tag := field.Tag.Get("json")
+	// not a standard but we allow - to omit fields
+	if tag == "-" {
+		return name, true
+	}
+	if tag != "" {
+		// Some JSON tags contain omitempty after a comma but we don't want those in our field name.
+		return strings.Split(tag, ",")[0], false
+	}
+	// support ch tag as well as this is used elsewhere
+	tag = field.Tag.Get("ch")
+	if tag == "-" {
+		return name, true
+	}
+	if tag != "" {
+		return tag, false
+	}
+	return name, false
+}

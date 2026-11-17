@@ -12,11 +12,18 @@ var	defaultIV=[]byte { 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6 }
 
 // KeyWrap encrypts provided key (CEK) with KEK key using AES Key Wrap (rfc 3394) algorithm
 func KeyWrap(cek,kek []byte) ([]byte,error) {
-	// 1) Initialize variables
-    a := defaultIV              // Set A = IV, an initial value
-    r := arrays.Slice(cek, 8)   // For i = 1 to n
-								//     R[0][i] = P[i]
-	n := uint64(len(r))
+	if len(cek) < 16 {
+		return nil, errors.New("KeyWrap() requires cek at least of 128 bit length")
+	}
+															// 1) Initialize variables
+	a := defaultIV              // Set A = IV, an initial value
+	r, err := arrays.Slice(cek, 8)   // For i = 1 to n
+		
+	if err != nil {
+		return nil, err
+	}
+
+	n := uint64(len(r)) 	      //     R[0][i] = P[i]
 	
     // 2) Calculate intermediate values.
 	var j,i,t uint64
@@ -46,8 +53,19 @@ func KeyWrap(cek,kek []byte) ([]byte,error) {
 
 // KeyUnwrap decrypts previously encrypted key (CEK) with KEK key using AES Key Wrap (rfc 3394) algorithm
 func KeyUnwrap(encryptedCek, kek []byte) ([]byte,error) {
-    // 1) Initialize variables
-	c := arrays.Slice(encryptedCek, 8);
+
+	if len(encryptedCek) < 16 {
+		return nil, errors.New("KeyUnwrap() requires cek at least of 128 bit length")
+	}
+
+	// 1) Initialize variables
+	// slice into 64 bit blocks
+	c, err := arrays.Slice(encryptedCek, 8);
+
+	if err != nil {
+		return nil, err
+	}
+
 	a := c[0];                           //   Set A = C[0]
 	r := make([][]byte,len(c) - 1);
 
@@ -55,31 +73,31 @@ func KeyUnwrap(encryptedCek, kek []byte) ([]byte,error) {
 		r[i - 1] = c[i];                  //       R[i] = C[i]
 	}              
 
-    n := uint64(len(r))
+	n := uint64(len(r))
 	
-    // 2) Calculate intermediate values
+	// 2) Calculate intermediate values
 	var t,j uint64
 
-    for j = 6; j > 0; j-- {      						  // For j = 5 to 0    
-        for i := n; i > 0; i-- {                          //   For i = n to 1        
-			t = n * (j-1) + i;
-			a = arrays.Xor(a, arrays.UInt64ToBytes(t))
-			b,e := aesDec(kek, arrays.Concat(a, r[i-1]))  //     B = AES-1(K, (A ^ t) | R[i]) where t = n*j+i			
-			
-			if e!=nil { return nil,e }			
-			
-			a = b[:len(b)/2]                              //     A = MSB(64, B)
-			r[i-1] = b[len(b)/2:]                         //     R[i] = LSB(64, B)
-        }
-    }
-
-    // 3) Output the results
-    if (!hmac.Equal(defaultIV, a)) {  // If A is an appropriate initial value 
-        return nil, errors.New("aes.KeyUnwrap(): integrity check failed.")
+	for j = 6; j > 0; j-- {      						  // For j = 5 to 0    
+			for i := n; i > 0; i-- {              //   For i = n to 1        
+				t = n * (j-1) + i;
+				a = arrays.Xor(a, arrays.UInt64ToBytes(t))
+				b,e := aesDec(kek, arrays.Concat(a, r[i-1]))  //     B = AES-1(K, (A ^ t) | R[i]) where t = n*j+i			
+				
+				if e!=nil { return nil,e }			
+				
+				a = b[:len(b)/2]                              //     A = MSB(64, B)
+				r[i-1] = b[len(b)/2:]                         //     R[i] = LSB(64, B)
+			}
 	}
 
-								   // For i = 1 to n
-    return arrays.Unwrap(r),nil    //    P[i] = R[i]
+	// 3) Output the results
+	if (!hmac.Equal(defaultIV, a)) {  // If A is an appropriate initial value 
+			return nil, errors.New("aes.KeyUnwrap(): integrity check failed.")
+	}
+
+							 // For i = 1 to n
+	return arrays.Unwrap(r),nil    //    P[i] = R[i]
 
 }
 

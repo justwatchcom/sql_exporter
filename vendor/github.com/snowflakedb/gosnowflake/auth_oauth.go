@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 	"html"
 	"io"
 	"net"
@@ -18,6 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 const (
@@ -26,6 +27,7 @@ const (
 <body>
 OAuth authentication completed successfully.
 </body></html>`
+	localApplicationClientCredentials = "LOCAL_APPLICATION"
 )
 
 var defaultAuthorizationCodeProviderFactory = func() authorizationCodeProvider {
@@ -43,7 +45,7 @@ type oauthClient struct {
 	authorizationCodeProviderFactory func() authorizationCodeProvider
 }
 
-func newOauthClient(ctx context.Context, cfg *Config) (*oauthClient, error) {
+func newOauthClient(ctx context.Context, cfg *Config, sc *snowflakeConn) (*oauthClient, error) {
 	port := 0
 	if cfg.OauthRedirectURI != "" {
 		logger.Debugf("Using oauthRedirectUri from config: %v", cfg.OauthRedirectURI)
@@ -61,12 +63,16 @@ func newOauthClient(ctx context.Context, cfg *Config) (*oauthClient, error) {
 
 	redirectURITemplate := ""
 	if cfg.OauthRedirectURI == "" {
-		redirectURITemplate = "http://127.0.0.1:%v/"
+		redirectURITemplate = "http://127.0.0.1:%v"
 	}
 	logger.Debugf("Redirect URI template: %v, port: %v", redirectURITemplate, port)
 
+	transport, err := newTransportFactory(cfg, sc.telemetry).createTransport(cfg.transportConfigFor(transportTypeOAuth))
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{
-		Transport: getTransport(cfg),
+		Transport: transport,
 	}
 	return &oauthClient{
 		ctx:                              context.WithValue(ctx, oauth2.HTTPClient, client),
@@ -206,7 +212,11 @@ func (oauthClient *oauthClient) exchangeAccessToken(codeReq *http.Request, state
 	}
 
 	code := queryParams.Get("code")
-	token, err := oauth2cfg.Exchange(oauthClient.ctx, code, oauth2.VerifierOption(codeVerifier))
+	opts := []oauth2.AuthCodeOption{oauth2.VerifierOption(codeVerifier)}
+	if oauthClient.cfg.EnableSingleUseRefreshTokens {
+		opts = append(opts, oauth2.SetAuthURLParam("enable_single_use_refresh_tokens", "true"))
+	}
+	token, err := oauth2cfg.Exchange(oauthClient.ctx, code, opts...)
 	if err != nil {
 		responseBodyChan <- err.Error()
 		return nil, err
@@ -216,9 +226,15 @@ func (oauthClient *oauthClient) exchangeAccessToken(codeReq *http.Request, state
 }
 
 func (oauthClient *oauthClient) buildAuthorizationCodeConfig(callbackPort int) *oauth2.Config {
+	clientID, clientSecret := oauthClient.cfg.OauthClientID, oauthClient.cfg.OauthClientSecret
+	if oauthClient.eligibleForDefaultClientCredentials() {
+		clientID, clientSecret = localApplicationClientCredentials, localApplicationClientCredentials
+	}
+	oauthClient.logIfHTTPInUse(oauthClient.authorizationURL())
+	oauthClient.logIfHTTPInUse(oauthClient.tokenURL())
 	return &oauth2.Config{
-		ClientID:     oauthClient.cfg.OauthClientID,
-		ClientSecret: oauthClient.cfg.OauthClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		RedirectURL:  oauthClient.buildRedirectURI(callbackPort),
 		Scopes:       oauthClient.buildScopes(),
 		Endpoint: oauth2.Endpoint{
@@ -227,6 +243,14 @@ func (oauthClient *oauthClient) buildAuthorizationCodeConfig(callbackPort int) *
 			AuthStyle: oauth2.AuthStyleInHeader,
 		},
 	}
+}
+func (oauthClient *oauthClient) eligibleForDefaultClientCredentials() bool {
+	return oauthClient.cfg.OauthClientID == "" && oauthClient.cfg.OauthClientSecret == "" && oauthClient.isSnowflakeAsIDP()
+}
+
+func (oauthClient *oauthClient) isSnowflakeAsIDP() bool {
+	return (oauthClient.cfg.OauthAuthorizationURL == "" || strings.Contains(oauthClient.cfg.OauthAuthorizationURL, oauthClient.cfg.Host)) &&
+		(oauthClient.cfg.OauthTokenRequestURL == "" || strings.Contains(oauthClient.cfg.OauthTokenRequestURL, oauthClient.cfg.Host))
 }
 
 func (oauthClient *oauthClient) authorizationURL() string {
@@ -269,7 +293,11 @@ func handleOAuthSocket(tcpListener *net.TCPListener, successChan chan []byte, er
 		logger.Warnf("error creating socket. %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			logger.Warnf("error while closing connection (%v -> %v). %v", conn.LocalAddr(), conn.RemoteAddr(), err)
+		}
+	}()
 	var buf [bufSize]byte
 	codeResp := bytes.NewBuffer(nil)
 	for {
@@ -381,7 +409,11 @@ func (oauthClient *oauthClient) refreshToken() error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Warnf("error while closing response body for %v. %v", req.URL, err)
+		}
+	}()
 	if resp.StatusCode != 200 {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -413,4 +445,15 @@ func (oauthClient *oauthClient) accessTokenSpec() *secureTokenSpec {
 
 func (oauthClient *oauthClient) refreshTokenSpec() *secureTokenSpec {
 	return newOAuthRefreshTokenSpec(oauthClient.tokenURL(), oauthClient.cfg.User)
+}
+
+func (oauthClient *oauthClient) logIfHTTPInUse(u string) {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		logger.Warnf("Cannot parse URL: %v. %v", u, err)
+		return
+	}
+	if parsed.Scheme == "http" {
+		logger.Warnf("OAuth URL uses insecure HTTP protocol: %v", u)
+	}
 }
