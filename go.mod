@@ -5,7 +5,8 @@ go 1.27.4
 require (
 	cloud.google.com/go/cloudsqlconn v1.27.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.51.0
-	github.com/aws/aws-sdk-go v1.55.8
+	github.com/aws/aws-sdk-go-v2/config v1.33.19
+	github.com/aws/aws-sdk-go-v2/feature/rds/auth v1.7.12
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/go-kit/log v0.2.1
 	github.com/go-sql-driver/mysql v1.10.2
@@ -45,7 +46,6 @@ require (
 	github.com/apache/arrow-go/v18 v18.9.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.48.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.27 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.33.19 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.1 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.9 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.5 // indirect
@@ -99,7 +99,6 @@ require (
 	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
 	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
-	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect

@@ -29,8 +29,8 @@ import (
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 )
 
 var (
@@ -41,6 +41,19 @@ var (
 	CloudSQLPrefix = "cloudsql+"
 )
 
+// buildRDSAuthToken builds an RDS IAM authentication token for the given endpoint (host:port) and database user.
+func buildRDSAuthToken(endpoint, user string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	return auth.BuildAuthToken(ctx, endpoint, cfg.Region, user, cfg.Credentials)
+}
+
 func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 	dsn := strings.TrimPrefix(conn, "rds-mysql://")
 	config, err := mysql.ParseDSN(dsn)
@@ -48,11 +61,7 @@ func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
 	}
 
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-	}))
-
-	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+	token, err := buildRDSAuthToken(config.Addr, config.User)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
 	}
@@ -293,10 +302,7 @@ func (j *Job) updateConnections() {
 					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
 					continue
 				}
-				sess := session.Must(session.NewSessionWithOptions(session.Options{
-					SharedConfigState: session.SharedConfigEnable,
-				}))
-				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
+				token, err := buildRDSAuthToken(u.Host, u.User.Username())
 				if err != nil {
 					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
 					continue
