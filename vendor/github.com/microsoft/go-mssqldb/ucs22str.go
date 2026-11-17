@@ -5,7 +5,6 @@ package mssql
 
 import (
 	"fmt"
-	"reflect"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -129,21 +128,7 @@ func ucs22str(s []byte) (string, error) {
 
 	// we can reuse the underlying array and create our own uint16 slice here
 	// because utf16.Decode allocates a new buffer and only reads its input.
-
-	// declare a real uint16 slice so that the compiler can keep track of
-	// the underlying memory as we transfer & convert it.
-	// This is to ensure that the GC does not prematurely collect our data.
-	var uint16slice []uint16
-
-	uint16Header := (*reflect.SliceHeader)(unsafe.Pointer(&uint16slice))
-	sourceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&s))
-
-	uint16Header.Data = sourceHeader.Data
-	// it is important to reference s after the assignment of the Data
-	// pointer to make sure that s is not garbage collected before
-	// we have another reference to the data.
-	uint16Header.Len = len(s) / 2       // the output is half the length in bytes
-	uint16Header.Cap = uint16Header.Len // the capacity is also half the number of bytes
+	uint16slice := unsafe.Slice((*uint16)(unsafe.Pointer(&s[0])), len(s)/2)
 
 	// decode the uint16s as utf-16 and return a string.
 	// After this point both s and uint16slice can be garbage collected.

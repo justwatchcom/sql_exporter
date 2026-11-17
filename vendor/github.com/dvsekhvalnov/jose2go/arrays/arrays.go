@@ -21,9 +21,15 @@ func Xor(left, right []byte) []byte {
 }
 
 // Slice is splitting input byte array into slice of subarrays. Each of count length.
-func Slice(arr []byte, count int) [][]byte {
+func Slice(arr []byte, count int) ([][]byte, error) {
+
+	if len(arr) == 0 || len(arr) % count != 0 {
+		return nil, fmt.Errorf("arrays.Slice() expects input data padded up to %v bytes, but was given %v bytes", count, len(arr))
+
+	}
 
 	sliceCount := len(arr) / count
+
 	result := make([][]byte, sliceCount)
 
 	for i := 0; i < sliceCount; i++ {
@@ -33,7 +39,7 @@ func Slice(arr []byte, count int) [][]byte {
 		result[i] = arr[start:end]
 	}
 
-	return result
+	return result, nil
 }
 
 // Random generates byte array with random data of byteCount length

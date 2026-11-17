@@ -1,6 +1,6 @@
 package common
 
-// Copyright (c) 2019-2023 Open Text.
+// Copyright (c) 2019-2024 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,6 +61,7 @@ const (
 	AuthenticationCleartextPassword int32 = 3
 	AuthenticationMD5Password       int32 = 5
 	AuthenticationOAuth             int32 = 12
+	AuthenticationTOTP              int32 = 14
 	AuthenticationSHA512Password    int32 = 66048
 )
 

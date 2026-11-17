@@ -19,9 +19,21 @@ var errInvalidState = errors.New("brotli: invalid state")
 // It is arbitrarily chosen to be equal to the constant used in io.Copy.
 const readBufSize = 32 * 1024
 
+// ReaderOptions controls optional Brotli decoding features.
+type ReaderOptions struct {
+	// LargeWindow accepts the large-window extension defined by RFC 9841.
+	// It is disabled by default. Applications such as PDF readers may require it.
+	LargeWindow bool
+}
+
 // NewReader creates a new Reader reading the given reader.
 func NewReader(src io.Reader) *Reader {
-	r := new(Reader)
+	return NewReaderOptions(src, ReaderOptions{})
+}
+
+// NewReaderOptions creates a Reader with the supplied decoding options.
+func NewReaderOptions(src io.Reader, options ReaderOptions) *Reader {
+	r := &Reader{largeWindow: options.LargeWindow}
 	r.Reset(src)
 	return r
 }
@@ -33,15 +45,33 @@ func NewReader(src io.Reader) *Reader {
 func (r *Reader) Reset(src io.Reader) error {
 	if r.error_code < 0 {
 		// There was an unrecoverable error, leaving the Reader's state
-		// undefined. Clear out everything but the buffer.
-		*r = Reader{buf: r.buf}
+		// undefined. Clear out everything but the buffers.
+		*r = Reader{
+			largeWindow:      r.largeWindow,
+			buf:              r.buf,
+			block_type_trees: r.block_type_trees,
+			literal_hgroup: huffmanTreeGroup{
+				htrees: r.literal_hgroup.htrees,
+				codes:  r.literal_hgroup.codes,
+			},
+			distance_hgroup: huffmanTreeGroup{
+				htrees: r.distance_hgroup.htrees,
+				codes:  r.distance_hgroup.codes,
+			},
+			insert_copy_hgroup: huffmanTreeGroup{
+				htrees: r.insert_copy_hgroup.htrees,
+				codes:  r.insert_copy_hgroup.codes,
+			},
+		}
 	}
 
 	decoderStateInit(r)
+	r.large_window = r.largeWindow
 	r.src = src
 	if r.buf == nil {
 		r.buf = make([]byte, readBufSize)
 	}
+	r.in = r.buf[:0]
 	return nil
 }
 
@@ -49,6 +79,9 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	if !decoderHasMoreOutput(r) && len(r.in) == 0 {
 		m, readErr := r.src.Read(r.buf)
 		if m == 0 {
+			if readErr == io.EOF && r.state != stateDone {
+				readErr = io.ErrUnexpectedEOF
+			}
 			// If readErr is `nil`, we just proxy underlying stream behavior.
 			return 0, readErr
 		}
@@ -71,7 +104,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 
 		switch result {
 		case decoderResultSuccess:
-			if len(r.in) > 0 {
+			if len(r.in) > 0 || r.buffer_length > 0 {
 				return n, errExcessiveInput
 			}
 			return n, nil

@@ -63,19 +63,56 @@ type bufferMetadata struct {
 }
 
 type fileBlock struct {
-	Offset int64
-	Meta   int32
-	Body   int64
+	offset int64
+	meta   int32
+	body   int64
 
 	r   io.ReaderAt
 	mem memory.Allocator
 }
 
-func fileBlocksToFB(b *flatbuffers.Builder, blocks []fileBlock, start startVecFunc) flatbuffers.UOffsetT {
+func (blk fileBlock) Offset() int64 { return blk.offset }
+func (blk fileBlock) Meta() int32   { return blk.meta }
+func (blk fileBlock) Body() int64   { return blk.body }
+
+func validateFileBlockMetadata(buf []byte, meta int32) (int, error) {
+	if len(buf) < 4 {
+		return 0, fmt.Errorf("arrow/ipc: file block metadata is too short: %d", len(buf))
+	}
+
+	var (
+		prefix int
+		length uint32
+	)
+	switch binary.LittleEndian.Uint32(buf) {
+	case 0:
+		return 0, errors.New("arrow/ipc: unexpected end-of-stream marker in file block")
+	case kIPCContToken:
+		prefix = 8
+		if len(buf) < prefix {
+			return 0, fmt.Errorf("arrow/ipc: file block metadata is too short for prefix length %d", prefix)
+		}
+	default:
+		// ARROW-6314: backwards compatibility for reading old IPC
+		// messages produced prior to version 0.15.0
+		prefix = 4
+	}
+	length = binary.LittleEndian.Uint32(buf[prefix-4:])
+
+	if int(meta)-prefix < 4 {
+		return 0, fmt.Errorf("arrow/ipc: invalid file block metadata length %d for prefix length %d", meta, prefix)
+	}
+	if int64(length) != int64(meta)-int64(prefix) {
+		return 0, fmt.Errorf("arrow/ipc: file block metadata length prefix %d does not match footer length %d", length, int64(meta)-int64(prefix))
+	}
+	return prefix, nil
+}
+
+func fileBlocksToFB(b *flatbuffers.Builder, blocks []dataBlock, start startVecFunc) flatbuffers.UOffsetT {
 	start(b, len(blocks))
 	for i := len(blocks) - 1; i >= 0; i-- {
 		blk := blocks[i]
-		flatbuf.CreateBlock(b, blk.Offset, blk.Meta, blk.Body)
+		flatbuf.CreateBlock(b, blk.Offset(), blk.Meta(), blk.Body())
 	}
 
 	return b.EndVector(len(blocks))
@@ -91,7 +128,7 @@ func (blk fileBlock) NewMessage() (*Message, error) {
 	)
 
 	meta = memory.NewResizableBuffer(blk.mem)
-	meta.Resize(int(blk.Meta))
+	meta.Resize(int(blk.meta))
 	defer meta.Release()
 
 	buf = meta.Bytes()
@@ -100,35 +137,35 @@ func (blk fileBlock) NewMessage() (*Message, error) {
 		return nil, fmt.Errorf("arrow/ipc: could not read message metadata: %w", err)
 	}
 
-	prefix := 0
-	switch binary.LittleEndian.Uint32(buf) {
-	case 0:
-	case kIPCContToken:
-		prefix = 8
-	default:
-		// ARROW-6314: backwards compatibility for reading old IPC
-		// messages produced prior to version 0.15.0
-		prefix = 4
+	prefix, err := validateFileBlockMetadata(buf, blk.meta)
+	if err != nil {
+		return nil, err
 	}
 
 	// drop buf-size already known from blk.Meta
-	meta = memory.SliceBuffer(meta, prefix, int(blk.Meta)-prefix)
+	meta = memory.SliceBuffer(meta, prefix, int(blk.meta)-prefix)
 	defer meta.Release()
 
 	body = memory.NewResizableBuffer(blk.mem)
 	defer body.Release()
-	body.Resize(int(blk.Body))
+	body.Resize(int(blk.body))
 	buf = body.Bytes()
 	_, err = io.ReadFull(r, buf)
 	if err != nil {
 		return nil, fmt.Errorf("arrow/ipc: could not read message body: %w", err)
 	}
 
-	return NewMessage(meta, body), nil
+	msg := NewMessage(meta, body)
+	messageBodyLen := msg.BodyLen()
+	if messageBodyLen != blk.body {
+		msg.Release()
+		return nil, fmt.Errorf("arrow/ipc: file block body length %d does not match message body length %d", blk.body, messageBodyLen)
+	}
+	return msg, nil
 }
 
 func (blk fileBlock) section() io.Reader {
-	return io.NewSectionReader(blk.r, blk.Offset, int64(blk.Meta)+blk.Body)
+	return io.NewSectionReader(blk.r, blk.offset, int64(blk.meta)+blk.body)
 }
 
 func unitFromFB(unit flatbuf.TimeUnit) arrow.TimeUnit {
@@ -445,7 +482,7 @@ func (fv *fieldVisitor) visit(field arrow.Field) {
 		offsets[0] = fieldToFB(fv.b, fv.pos.Child(0),
 			arrow.Field{Name: "run_ends", Type: dt.RunEnds()}, fv.memo)
 		offsets[1] = fieldToFB(fv.b, fv.pos.Child(1),
-			arrow.Field{Name: "values", Type: dt.Encoded(), Nullable: true}, fv.memo)
+			arrow.Field{Name: "values", Type: dt.Encoded(), Nullable: dt.ValueNullable}, fv.memo)
 		flatbuf.RunEndEncodedStart(fv.b)
 		fv.b.PrependUOffsetT(offsets[1])
 		fv.b.PrependUOffsetT(offsets[0])
@@ -839,8 +876,7 @@ func concreteTypeFromFB(typ flatbuf.Type, data flatbuffers.Table, children []arr
 
 		var dt flatbuf.Map
 		dt.Init(data.Bytes, data.Pos)
-		ret := arrow.MapOf(pairType.Field(0).Type, pairType.Field(1).Type)
-		ret.SetItemNullable(pairType.Field(1).Nullable)
+		ret := arrow.MapOfFields(pairType.Field(0), pairType.Field(1))
 		ret.KeysSorted = dt.KeysSorted()
 		return ret, nil
 
@@ -853,7 +889,9 @@ func concreteTypeFromFB(typ flatbuf.Type, data flatbuffers.Table, children []arr
 		default:
 			return nil, fmt.Errorf("%w: arrow/ipc: run-end encoded run_ends field must be one of int16, int32, or int64 type", arrow.ErrInvalid)
 		}
-		return arrow.RunEndEncodedOf(children[0].Type, children[1].Type), nil
+		ret := arrow.RunEndEncodedOf(children[0].Type, children[1].Type)
+		ret.ValueNullable = children[1].Nullable
+		return ret, nil
 
 	default:
 		panic(fmt.Errorf("arrow/ipc: type %v not implemented", flatbuf.EnumNamesType[typ]))
@@ -1137,13 +1175,15 @@ func writeFBBuilder(b *flatbuffers.Builder, mem memory.Allocator) *memory.Buffer
 	return buf
 }
 
-func writeMessageFB(b *flatbuffers.Builder, mem memory.Allocator, hdrType flatbuf.MessageHeader, hdr flatbuffers.UOffsetT, bodyLen int64) *memory.Buffer {
+func writeMessageFB(b *flatbuffers.Builder, mem memory.Allocator, hdrType flatbuf.MessageHeader, hdr flatbuffers.UOffsetT, bodyLen int64, customMetadata arrow.Metadata) *memory.Buffer {
+	metaFB := metadataToFB(b, customMetadata, flatbuf.MessageStartCustomMetadataVector)
 
 	flatbuf.MessageStart(b)
 	flatbuf.MessageAddVersion(b, flatbuf.MetadataVersion(currentMetadataVersion))
 	flatbuf.MessageAddHeaderType(b, hdrType)
 	flatbuf.MessageAddHeader(b, hdr)
 	flatbuf.MessageAddBodyLength(b, bodyLen)
+	flatbuf.MessageAddCustomMetadata(b, metaFB)
 	msg := flatbuf.MessageEnd(b)
 	b.Finish(msg)
 
@@ -1153,10 +1193,10 @@ func writeMessageFB(b *flatbuffers.Builder, mem memory.Allocator, hdrType flatbu
 func writeSchemaMessage(schema *arrow.Schema, mem memory.Allocator, dict *dictutils.Mapper) *memory.Buffer {
 	b := flatbuffers.NewBuilder(1024)
 	schemaFB := schemaToFB(b, schema, dict)
-	return writeMessageFB(b, mem, flatbuf.MessageHeaderSchema, schemaFB, 0)
+	return writeMessageFB(b, mem, flatbuf.MessageHeaderSchema, schemaFB, 0, arrow.Metadata{})
 }
 
-func writeFileFooter(schema *arrow.Schema, dicts, recs []fileBlock, w io.Writer) error {
+func writeFileFooter(schema *arrow.Schema, dicts, recs []dataBlock, w io.Writer) error {
 	var (
 		b    = flatbuffers.NewBuilder(1024)
 		memo dictutils.Mapper
@@ -1180,10 +1220,10 @@ func writeFileFooter(schema *arrow.Schema, dicts, recs []fileBlock, w io.Writer)
 	return err
 }
 
-func writeRecordMessage(mem memory.Allocator, size, bodyLength int64, fields []fieldMetadata, meta []bufferMetadata, codec flatbuf.CompressionType, variadicCounts []int64) *memory.Buffer {
+func writeRecordMessage(mem memory.Allocator, size, bodyLength int64, fields []fieldMetadata, meta []bufferMetadata, codec flatbuf.CompressionType, variadicCounts []int64, customMetadata arrow.Metadata) *memory.Buffer {
 	b := flatbuffers.NewBuilder(0)
 	recFB := recordToFB(b, size, bodyLength, fields, meta, codec, variadicCounts)
-	return writeMessageFB(b, mem, flatbuf.MessageHeaderRecordBatch, recFB, bodyLength)
+	return writeMessageFB(b, mem, flatbuf.MessageHeaderRecordBatch, recFB, bodyLength, customMetadata)
 }
 
 func writeDictionaryMessage(mem memory.Allocator, id int64, isDelta bool, size, bodyLength int64, fields []fieldMetadata, meta []bufferMetadata, codec flatbuf.CompressionType, variadicCounts []int64) *memory.Buffer {
@@ -1195,7 +1235,7 @@ func writeDictionaryMessage(mem memory.Allocator, id int64, isDelta bool, size, 
 	flatbuf.DictionaryBatchAddData(b, recFB)
 	flatbuf.DictionaryBatchAddIsDelta(b, isDelta)
 	dictFB := flatbuf.DictionaryBatchEnd(b)
-	return writeMessageFB(b, mem, flatbuf.MessageHeaderDictionaryBatch, dictFB, bodyLength)
+	return writeMessageFB(b, mem, flatbuf.MessageHeaderDictionaryBatch, dictFB, bodyLength, arrow.Metadata{})
 }
 
 func recordToFB(b *flatbuffers.Builder, size, bodyLength int64, fields []fieldMetadata, meta []bufferMetadata, codec flatbuf.CompressionType, variadicCounts []int64) flatbuffers.UOffsetT {

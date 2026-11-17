@@ -19,7 +19,8 @@ package dictutils
 import (
 	"errors"
 	"fmt"
-	"hash/maphash"
+
+	"github.com/apache/arrow-go/v18/internal/utils/maphash"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -57,7 +58,7 @@ func (f *FieldPos) Path() []int32 {
 
 type Mapper struct {
 	pathToID map[uint64]int64
-	hasher   maphash.Hash
+	hasher   maphash.MapHash
 }
 
 func (d *Mapper) NumDicts() int {
@@ -206,7 +207,7 @@ func (d *dictCollector) visit(pos FieldPos, arr arrow.Array) error {
 	return d.visitChildren(pos, dt, arr)
 }
 
-func (d *dictCollector) collect(batch arrow.Record) error {
+func (d *dictCollector) collect(batch arrow.RecordBatch) error {
 	var (
 		pos    = NewFieldPos()
 		schema = batch.Schema()
@@ -369,7 +370,7 @@ func (memo *Memo) AddOrReplace(id int64, v arrow.ArrayData) bool {
 	return !ok
 }
 
-func CollectDictionaries(batch arrow.Record, mapper *Mapper) (out []dictpair, err error) {
+func CollectDictionaries(batch arrow.RecordBatch, mapper *Mapper) (out []dictpair, err error) {
 	collector := dictCollector{mapper: mapper}
 	err = collector.collect(batch)
 	out = collector.dictionaries

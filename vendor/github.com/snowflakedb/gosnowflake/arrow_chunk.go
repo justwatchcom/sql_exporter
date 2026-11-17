@@ -47,6 +47,7 @@ func (arc *arrowResultChunk) decodeArrowChunk(ctx context.Context, rowType []exe
 		}
 		arc.rowCount += numRows
 	}
+	logger.Debugf("The number of chunk rows: %v", len(chunkRows))
 
 	return chunkRows, arc.reader.Err()
 }

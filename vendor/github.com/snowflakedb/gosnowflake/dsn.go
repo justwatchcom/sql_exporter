@@ -2,6 +2,7 @@ package gosnowflake
 
 import (
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +43,17 @@ const (
 	ConfigBoolFalse
 )
 
+func (cb ConfigBool) String() string {
+	switch cb {
+	case ConfigBoolTrue:
+		return "true"
+	case ConfigBoolFalse:
+		return "false"
+	default:
+		return "not set"
+	}
+}
+
 // Config is a set of configuration parameters
 type Config struct {
 	Account   string // Account name
@@ -52,12 +65,13 @@ type Config struct {
 	Role      string // Role
 	Region    string // Region
 
-	OauthClientID         string // Client id for OAuth2 external IdP
-	OauthClientSecret     string // Client secret for OAuth2 external IdP
-	OauthAuthorizationURL string // Authorization URL of Auth2 external IdP
-	OauthTokenRequestURL  string // Token request URL of Auth2 external IdP
-	OauthRedirectURI      string // Redirect URI registered in IdP. The default is http://127.0.0.1:<random port>/
-	OauthScope            string // Comma separated list of scopes. If empty it is derived from role.
+	OauthClientID                string // Client id for OAuth2 external IdP
+	OauthClientSecret            string // Client secret for OAuth2 external IdP
+	OauthAuthorizationURL        string // Authorization URL of Auth2 external IdP
+	OauthTokenRequestURL         string // Token request URL of Auth2 external IdP
+	OauthRedirectURI             string // Redirect URI registered in IdP. The default is http://127.0.0.1:<random port>
+	OauthScope                   string // Comma separated list of scopes. If empty it is derived from role.
+	EnableSingleUseRefreshTokens bool   // Enables single use refresh tokens for Snowflake IdP
 
 	// ValidateDefaultParameters disable the validation checks for Database, Schema, Warehouse and Role
 	// at the time a connection is established
@@ -65,50 +79,72 @@ type Config struct {
 
 	Params map[string]*string // other connection parameters
 
+	// Deprecated: will be removed in a future release.
 	ClientIP net.IP // IP address for network check
 	Protocol string // http or https (optional)
 	Host     string // hostname (optional)
 	Port     int    // port (optional)
 
-	Authenticator AuthType // The authenticator type
+	Authenticator              AuthType   // The authenticator type
+	SingleAuthenticationPrompt ConfigBool // If enabled prompting for authentication will only occur for the first authentication challenge
 
 	Passcode           string
 	PasscodeInPassword bool
 
 	OktaURL *url.URL
 
-	LoginTimeout           time.Duration // Login retry timeout EXCLUDING network roundtrip and read out http response
-	RequestTimeout         time.Duration // request retry timeout EXCLUDING network roundtrip and read out http response
-	JWTExpireTimeout       time.Duration // JWT expire after timeout
-	ClientTimeout          time.Duration // Timeout for network round trip + read out http response
-	JWTClientTimeout       time.Duration // Timeout for network round trip + read out http response used when JWT token auth is taking place
+	// Deprecated: timeouts may be reorganized in a future release.
+	LoginTimeout time.Duration // Login retry timeout EXCLUDING network roundtrip and read out http response
+	// Deprecated: timeouts may be reorganized in a future release.
+	RequestTimeout time.Duration // request retry timeout EXCLUDING network roundtrip and read out http response
+	// Deprecated: timeouts may be reorganized in a future release.
+	JWTExpireTimeout time.Duration // JWT expire after timeout
+	// Deprecated: timeouts may be reorganized in a future release.
+	ClientTimeout time.Duration // Timeout for network round trip + read out http response
+	// Deprecated: timeouts may be reorganized in a future release.
+	JWTClientTimeout time.Duration // Timeout for network round trip + read out http response used when JWT token auth is taking place
+	// Deprecated: timeouts may be reorganized in a future release.
 	ExternalBrowserTimeout time.Duration // Timeout for external browser login
-	CloudStorageTimeout    time.Duration // Timeout for a single call to a cloud storage provider
-	MaxRetryCount          int           // Specifies how many times non-periodic HTTP request can be retried
+	// Deprecated: timeouts may be reorganized in a future release.
+	CloudStorageTimeout time.Duration // Timeout for a single call to a cloud storage provider
+	MaxRetryCount       int           // Specifies how many times non-periodic HTTP request can be retried
 
 	Application       string // application name.
 	DisableOCSPChecks bool   // driver doesn't check certificate revocation status
-	// Deprecated: InsecureMode use DisableOCSPChecks instead
+	// Deprecated: InsecureMode use DisableOCSPChecks instead. Will be removed in a future release.
 	InsecureMode bool             // driver doesn't check certificate revocation status
 	OCSPFailOpen OCSPFailOpenMode // OCSP Fail Open
 
-	Token            string        // Token to use for OAuth other forms of token based auth
-	TokenAccessor    TokenAccessor // Optional token accessor to use
-	KeepSessionAlive bool          // Enables the session to persist even after the connection is closed
+	Token         string        // Token to use for OAuth other forms of token based auth
+	TokenFilePath string        // TokenFilePath defines a file where to read token from
+	TokenAccessor TokenAccessor // Optional token accessor to use
+	// Deprecated: will be removed in a future release.
+	KeepSessionAlive bool // Enables the session to persist even after the connection is closed
 
 	PrivateKey *rsa.PrivateKey // Private key used to sign JWT
 
 	Transporter http.RoundTripper // RoundTripper to intercept HTTP requests and responses
 
+	tlsConfig     *tls.Config // Custom TLS configuration
+	TLSConfigName string      // Name of the TLS config to use
+
+	// Deprecated: will be removed in a future release and replaced with a session parameter.
 	DisableTelemetry bool // indicates whether to disable telemetry
 
-	Tracing string // sets logging level
+	// Deprecated: may be removed in a future release with logging reorganization.
+	Tracing            string // sets logging level
+	LogQueryText       bool   // indicates whether query text should be logged.
+	LogQueryParameters bool   // indicates whether query parameters should be logged.
 
 	TmpDirPath string // sets temporary directory used by a driver for operations like encrypting, compressing etc
 
-	MfaToken                       string     // Internally used to cache the MFA token
-	IDToken                        string     // Internally used to cache the Id Token for external browser
-	ClientRequestMfaToken          ConfigBool // When true the MFA token is cached in the credential manager. True by default in Windows/OSX. False for Linux.
+	// Deprecated: will be unexported in a future release.
+	MfaToken string // Internally used to cache the MFA token
+	// Deprecated: will be unexported in a future release.
+	IDToken string // Internally used to cache the Id Token for external browser
+	// Deprecated: may be unexported in a future release.
+	ClientRequestMfaToken ConfigBool // When true the MFA token is cached in the credential manager. True by default in Windows/OSX. False for Linux.
+	// Deprecated: may be unexported in a future release.
 	ClientStoreTemporaryCredential ConfigBool // When true the ID token is cached in the credential manager. True by default in Windows/OSX. False for Linux.
 
 	DisableQueryContextCache bool // Should HTAP query context cache be disabled
@@ -120,6 +156,34 @@ type Config struct {
 	DisableConsoleLogin ConfigBool // Indicates whether console login should be disabled
 
 	DisableSamlURLCheck ConfigBool // Indicates whether the SAML URL check should be disabled
+
+	WorkloadIdentityProvider          string   // The workload identity provider to use for WIF authentication
+	WorkloadIdentityEntraResource     string   // The resource to use for WIF authentication on Azure environment
+	WorkloadIdentityImpersonationPath []string // The components to use for WIF impersonation.
+
+	CertRevocationCheckMode           CertRevocationCheckMode // revocation check mode for CRLs
+	CrlAllowCertificatesWithoutCrlURL ConfigBool              // Allow certificates (not short-lived) without CRL DP included to be treated as correct ones
+	CrlInMemoryCacheDisabled          bool                    // Should the in-memory cache be disabled
+	CrlOnDiskCacheDisabled            bool                    // Should the on-disk cache be disabled
+	CrlDownloadMaxSize                int                     // Max size in bytes of CRL to download. 0 means no limit. Default is 0.
+	CrlHTTPClientTimeout              time.Duration           // Timeout for HTTP client used to download CRL
+
+	ConnectionDiagnosticsEnabled       bool   // Indicates whether connection diagnostics should be enabled
+	ConnectionDiagnosticsAllowlistFile string // File path to the allowlist file for connection diagnostics. If not specified, the allowlist.json file in the current directory will be used.
+
+	ProxyHost     string // Proxy host
+	ProxyPort     int    // Proxy port
+	ProxyUser     string // Proxy user
+	ProxyPassword string // Proxy password
+	ProxyProtocol string // Proxy protocol (http or https)
+	NoProxy       string // No proxy for this host list
+}
+
+func (c *Config) getToken() (string, error) {
+	if c.TokenFilePath != "" {
+		return readToken(c.TokenFilePath)
+	}
+	return c.Token, nil
 }
 
 // Validate enables testing if config is correct.
@@ -129,6 +193,12 @@ func (c *Config) Validate() error {
 		if _, err := os.Stat(c.TmpDirPath); err != nil {
 			return err
 		}
+	}
+	if strings.EqualFold(c.WorkloadIdentityProvider, "azure") && len(c.WorkloadIdentityImpersonationPath) > 0 {
+		return errors.New("WorkloadIdentityImpersonationPath is not supported for Azure")
+	}
+	if c.Token != "" && c.TokenFilePath != "" {
+		return errors.New("token and tokenFilePath cannot be specified at the same time")
 	}
 	return nil
 }
@@ -142,6 +212,22 @@ func (c *Config) ocspMode() string {
 		return ocspModeFailOpen
 	}
 	return ocspModeFailClosed
+}
+
+func (c *Config) transportConfigFor(transportType transportType) *transportConfig {
+	return defaultTransportConfigs.forTransportType(transportType)
+}
+
+func (c *Config) describeIdentityAttributes() string {
+	return fmt.Sprintf("host: %v, account: %v, user: %v, password existed: %v, role: %v, database: %v, schema: %v, warehouse: %v, %v",
+		c.Host, c.Account, c.User, (c.Password != ""), c.Role, c.Database, c.Schema, c.Warehouse, c.describeProxy())
+}
+
+func (c *Config) describeProxy() string {
+	if c.ProxyHost != "" {
+		return fmt.Sprintf("proxyHost: %v, proxyPort: %v proxyUser: %v, proxyPassword %v, proxyProtocol: %v, noProxy: %v", c.ProxyHost, c.ProxyPort, c.ProxyUser, c.ProxyPassword != "", c.ProxyProtocol, c.NoProxy)
+	}
+	return "proxy was not configured"
 }
 
 // DSN constructs a DSN for Snowflake db.
@@ -214,11 +300,30 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.OauthScope != "" {
 		params.Add("oauthScope", cfg.OauthScope)
 	}
+	if cfg.EnableSingleUseRefreshTokens {
+		params.Add("enableSingleUseRefreshTokens", strconv.FormatBool(cfg.EnableSingleUseRefreshTokens))
+	}
+	if cfg.WorkloadIdentityProvider != "" {
+		params.Add("workloadIdentityProvider", cfg.WorkloadIdentityProvider)
+	}
+	if cfg.WorkloadIdentityEntraResource != "" {
+		params.Add("workloadIdentityEntraResource", cfg.WorkloadIdentityEntraResource)
+	}
+	if len(cfg.WorkloadIdentityImpersonationPath) > 0 {
+		params.Add("workloadIdentityImpersonationPath", strings.Join(cfg.WorkloadIdentityImpersonationPath, ","))
+	}
 	if cfg.Authenticator != AuthTypeSnowflake {
 		if cfg.Authenticator == AuthTypeOkta {
 			params.Add("authenticator", strings.ToLower(cfg.OktaURL.String()))
 		} else {
 			params.Add("authenticator", strings.ToLower(cfg.Authenticator.String()))
+		}
+	}
+	if cfg.SingleAuthenticationPrompt != configBoolNotSet {
+		if cfg.SingleAuthenticationPrompt == ConfigBoolTrue {
+			params.Add("singleAuthenticationPrompt", "true")
+		} else {
+			params.Add("singleAuthenticationPrompt", "false")
 		}
 	}
 	if cfg.Passcode != "" {
@@ -260,6 +365,27 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.Token != "" {
 		params.Add("token", cfg.Token)
 	}
+	if cfg.TokenFilePath != "" {
+		params.Add("tokenFilePath", cfg.TokenFilePath)
+	}
+	if cfg.CertRevocationCheckMode != CertRevocationCheckDisabled {
+		params.Add("certRevocationCheckMode", cfg.CertRevocationCheckMode.String())
+	}
+	if cfg.CrlAllowCertificatesWithoutCrlURL == ConfigBoolTrue {
+		params.Add("crlAllowCertificatesWithoutCrlURL", "true")
+	}
+	if cfg.CrlInMemoryCacheDisabled {
+		params.Add("crlInMemoryCacheDisabled", "true")
+	}
+	if cfg.CrlOnDiskCacheDisabled {
+		params.Add("crlOnDiskCacheDisabled", "true")
+	}
+	if cfg.CrlDownloadMaxSize != 0 {
+		params.Add("crlDownloadMaxSize", strconv.Itoa(cfg.CrlDownloadMaxSize))
+	}
+	if cfg.CrlHTTPClientTimeout != 0 {
+		params.Add("crlHttpClientTimeout", strconv.FormatInt(int64(cfg.CrlHTTPClientTimeout/time.Second), 10))
+	}
 	if cfg.Params != nil {
 		for k, v := range cfg.Params {
 			params.Add(k, *v)
@@ -279,8 +405,17 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.DisableOCSPChecks {
 		params.Add("disableOCSPChecks", strconv.FormatBool(cfg.DisableOCSPChecks))
 	}
+	if cfg.DisableTelemetry {
+		params.Add("disableTelemetry", strconv.FormatBool(cfg.DisableTelemetry))
+	}
 	if cfg.Tracing != "" {
 		params.Add("tracing", cfg.Tracing)
+	}
+	if cfg.LogQueryText {
+		params.Add("logQueryText", strconv.FormatBool(cfg.LogQueryText))
+	}
+	if cfg.LogQueryParameters {
+		params.Add("logQueryParameters", strconv.FormatBool(cfg.LogQueryParameters))
 	}
 	if cfg.TmpDirPath != "" {
 		params.Add("tmpDirPath", cfg.TmpDirPath)
@@ -312,6 +447,33 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.DisableSamlURLCheck != configBoolNotSet {
 		params.Add("disableSamlURLCheck", strconv.FormatBool(cfg.DisableSamlURLCheck != ConfigBoolFalse))
 	}
+	if cfg.ConnectionDiagnosticsEnabled {
+		params.Add("connectionDiagnosticsEnabled", strconv.FormatBool(cfg.ConnectionDiagnosticsEnabled))
+	}
+	if cfg.ConnectionDiagnosticsAllowlistFile != "" {
+		params.Add("connectionDiagnosticsAllowlistFile", cfg.ConnectionDiagnosticsAllowlistFile)
+	}
+	if cfg.TLSConfigName != "" {
+		params.Add("tlsConfigName", cfg.TLSConfigName)
+	}
+	if cfg.ProxyHost != "" {
+		params.Add("proxyHost", cfg.ProxyHost)
+	}
+	if cfg.ProxyPort != 0 {
+		params.Add("proxyPort", strconv.Itoa(cfg.ProxyPort))
+	}
+	if cfg.ProxyProtocol != "" {
+		params.Add("proxyProtocol", cfg.ProxyProtocol)
+	}
+	if cfg.ProxyUser != "" {
+		params.Add("proxyUser", cfg.ProxyUser)
+	}
+	if cfg.ProxyPassword != "" {
+		params.Add("proxyPassword", cfg.ProxyPassword)
+	}
+	if cfg.NoProxy != "" {
+		params.Add("noProxy", cfg.NoProxy)
+	}
 
 	dsn = fmt.Sprintf("%v:%v@%v:%v", url.QueryEscape(cfg.User), url.QueryEscape(cfg.Password), cfg.Host, cfg.Port)
 	if params.Encode() != "" {
@@ -342,8 +504,8 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 	var i int
 	posQuestion := len(dsn)
 	for i = len(dsn) - 1; i >= 0; i-- {
-		switch {
-		case dsn[i] == '/':
+		switch dsn[i] {
+		case '/':
 			foundSlash = true
 
 			// left part is empty if i <= 0
@@ -351,12 +513,12 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 			posSecondSlash := i
 			if i > 0 {
 				for j = i - 1; j >= 0; j-- {
-					switch {
-					case dsn[j] == '/':
+					switch dsn[j] {
+					case '/':
 						// second slash
 						secondSlash = true
 						posSecondSlash = j
-					case dsn[j] == '@':
+					case '@':
 						// username[:password]@...
 						cfg.User, cfg.Password = parseUserPassword(j, dsn)
 					}
@@ -384,7 +546,7 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 				cfg.Database = dsn[posSecondSlash+1 : posQuestion]
 			}
 			done = true
-		case dsn[i] == '?':
+		case '?':
 			posQuestion = i
 		}
 		if done {
@@ -395,10 +557,10 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 		// no db or schema is specified
 		var j int
 		for j = len(dsn) - 1; j >= 0; j-- {
-			switch {
-			case dsn[j] == '@':
+			switch dsn[j] {
+			case '@':
 				cfg.User, cfg.Password = parseUserPassword(j, dsn)
-			case dsn[j] == '?':
+			case '?':
 				posQuestion = j
 			}
 			if dsn[j] == '@' {
@@ -561,12 +723,26 @@ func fillMissingConfigParameters(cfg *Config) error {
 		cfg.IncludeRetryReason = ConfigBoolTrue
 	}
 
+	if cfg.ProxyHost != "" && cfg.ProxyProtocol == "" {
+		cfg.ProxyProtocol = "http" // Default to http if not specified
+	}
+
 	domain, _ := extractDomainFromHost(cfg.Host)
 	if len(cfg.Host) == len(domain) {
 		return &SnowflakeError{
 			Number:      ErrCodeFailedToParseHost,
 			Message:     errMsgFailedToParseHost,
 			MessageArgs: []interface{}{cfg.Host},
+		}
+	}
+	if cfg.TLSConfigName != "" {
+		if tlsConfig, ok := getTLSConfig(cfg.TLSConfigName); ok {
+			cfg.tlsConfig = tlsConfig
+		} else {
+			return &SnowflakeError{
+				Number:  ErrCodeMissingTLSConfig,
+				Message: fmt.Sprintf(errMsgMissingTLSConfig, cfg.TLSConfigName),
+			}
 		}
 	}
 	return nil
@@ -610,7 +786,8 @@ func authRequiresUser(cfg *Config) bool {
 		cfg.Authenticator != AuthTypeExternalBrowser &&
 		cfg.Authenticator != AuthTypePat &&
 		cfg.Authenticator != AuthTypeOAuthAuthorizationCode &&
-		cfg.Authenticator != AuthTypeOAuthClientCredentials
+		cfg.Authenticator != AuthTypeOAuthClientCredentials &&
+		cfg.Authenticator != AuthTypeWorkloadIdentityFederation
 }
 
 func authRequiresPassword(cfg *Config) bool {
@@ -620,7 +797,8 @@ func authRequiresPassword(cfg *Config) bool {
 		cfg.Authenticator != AuthTypeJwt &&
 		cfg.Authenticator != AuthTypePat &&
 		cfg.Authenticator != AuthTypeOAuthAuthorizationCode &&
-		cfg.Authenticator != AuthTypeOAuthClientCredentials
+		cfg.Authenticator != AuthTypeOAuthClientCredentials &&
+		cfg.Authenticator != AuthTypeWorkloadIdentityFederation
 }
 
 func authRequiresEitherPasswordOrToken(cfg *Config) bool {
@@ -704,13 +882,16 @@ func parseParams(cfg *Config, posQuestion int, dsn string) (err error) {
 
 // parseDSNParams parses the DSN "query string". Values must be url.QueryEscape'ed
 func parseDSNParams(cfg *Config, params string) (err error) {
-	logger.Infof("Query String: %v\n", params)
+	logger.Infof("Query String: %v\n", maskSecrets(params))
 	paramsSlice := strings.Split(params, "&")
 	insecureModeIdx := findByPrefix(paramsSlice, "insecureMode")
 	disableOCSPChecksIdx := findByPrefix(paramsSlice, "disableOCSPChecks")
 	if insecureModeIdx > -1 && disableOCSPChecksIdx > -1 {
 		logger.Warn("duplicated insecureMode and disableOCSPChecks. disableOCSPChecks takes precedence")
 		paramsSlice = append(paramsSlice[:insecureModeIdx-1], paramsSlice[insecureModeIdx+1:]...)
+	}
+	if slices.Contains(paramsSlice, "token") && slices.Contains(paramsSlice, "tokenFilePath") {
+		return errors.New("token and tokenFilePath cannot be specified at the same time")
 	}
 	for _, v := range paramsSlice {
 		param := strings.SplitN(v, "=", 2)
@@ -738,6 +919,17 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			cfg.Region = value
 		case "protocol":
 			cfg.Protocol = value
+		case "singleAuthenticationPrompt":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			if vv {
+				cfg.SingleAuthenticationPrompt = ConfigBoolTrue
+			} else {
+				cfg.SingleAuthenticationPrompt = ConfigBoolFalse
+			}
 		case "passcode":
 			cfg.Passcode = value
 		case "oauthClientId":
@@ -752,6 +944,13 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			cfg.OauthRedirectURI = value
 		case "oauthScope":
 			cfg.OauthScope = value
+		case "enableSingleUseRefreshTokens":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.EnableSingleUseRefreshTokens = vv
 		case "passcodeInPassword":
 			var vv bool
 			vv, err = strconv.ParseBool(value)
@@ -821,6 +1020,13 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 				return
 			}
 			cfg.DisableOCSPChecks = vv
+		case "disableTelemetry":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.DisableTelemetry = vv
 		case "ocspFailOpen":
 			var vv bool
 			vv, err = strconv.ParseBool(value)
@@ -835,6 +1041,20 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 
 		case "token":
 			cfg.Token = value
+		case "tokenFilePath":
+			cfg.TokenFilePath = value
+			cfg.Token, err = readToken(value)
+			if err != nil {
+				return
+			}
+		case "tlsConfigName":
+			cfg.TLSConfigName = value
+		case "workloadIdentityProvider":
+			cfg.WorkloadIdentityProvider = value
+		case "workloadIdentityEntraResource":
+			cfg.WorkloadIdentityEntraResource = value
+		case "workloadIdentityImpersonationPath":
+			cfg.WorkloadIdentityImpersonationPath = strings.Split(value, ",")
 		case "privateKey":
 			var decodeErr error
 			block, decodeErr := base64.URLEncoding.DecodeString(value)
@@ -884,6 +1104,20 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			}
 		case "tracing":
 			cfg.Tracing = value
+		case "logQueryText":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.LogQueryText = vv
+		case "logQueryParameters":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.LogQueryParameters = vv
 		case "tmpDirPath":
 			cfg.TmpDirPath = value
 		case "disableQueryContextCache":
@@ -928,6 +1162,76 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			} else {
 				cfg.DisableSamlURLCheck = ConfigBoolFalse
 			}
+		case "certRevocationCheckMode":
+			var certRevocationCheckMode CertRevocationCheckMode
+			certRevocationCheckMode, err = parseCertRevocationCheckMode(value)
+			if err != nil {
+				return
+			}
+			cfg.CertRevocationCheckMode = certRevocationCheckMode
+		case "crlAllowCertificatesWithoutCrlURL":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if vv {
+				cfg.CrlAllowCertificatesWithoutCrlURL = ConfigBoolTrue
+			} else {
+				cfg.CrlAllowCertificatesWithoutCrlURL = ConfigBoolFalse
+			}
+		case "crlInMemoryCacheDisabled":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			if vv {
+				cfg.CrlInMemoryCacheDisabled = true
+			} else {
+				cfg.CrlInMemoryCacheDisabled = false
+			}
+		case "crlOnDiskCacheDisabled":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			if vv {
+				cfg.CrlOnDiskCacheDisabled = true
+			} else {
+				cfg.CrlOnDiskCacheDisabled = false
+			}
+		case "crlDownloadMaxSize":
+			cfg.CrlDownloadMaxSize, err = strconv.Atoi(value)
+			if err != nil {
+				return
+			}
+		case "crlHttpClientTimeout":
+			var vv int64
+			vv, err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return
+			}
+			cfg.CrlHTTPClientTimeout = time.Duration(vv * int64(time.Second))
+		case "connectionDiagnosticsEnabled":
+			var vv bool
+			vv, err = strconv.ParseBool(value)
+			if err != nil {
+				return
+			}
+			cfg.ConnectionDiagnosticsEnabled = vv
+		case "connectionDiagnosticsAllowlistFile":
+			cfg.ConnectionDiagnosticsAllowlistFile = value
+		case "proxyHost":
+			cfg.ProxyHost, err = parseString(value)
+		case "proxyPort":
+			cfg.ProxyPort, err = parseInt(value)
+		case "proxyUser":
+			cfg.ProxyUser, err = parseString(value)
+		case "proxyPassword":
+			cfg.ProxyPassword, err = parseString(value)
+		case "noProxy":
+			cfg.NoProxy, err = parseString(value)
+		case "proxyProtocol":
+			cfg.ProxyProtocol, err = parseString(value)
 		default:
 			if cfg.Params == nil {
 				cfg.Params = make(map[string]*string)
@@ -962,7 +1266,7 @@ type ConfigParam struct {
 
 // GetConfigFromEnv is used to parse the environment variable values to specific fields of the Config
 func GetConfigFromEnv(properties []*ConfigParam) (*Config, error) {
-	var account, user, password, token, role, host, portStr, protocol, warehouse, database, schema, region, passcode, application string
+	var account, user, password, token, tokenFilePath, role, host, portStr, protocol, warehouse, database, schema, region, passcode, application string
 	var oauthClientID, oauthClientSecret, oauthAuthorizationURL, oauthTokenRequestURL, oauthRedirectURI, oauthScope string
 	var privateKey *rsa.PrivateKey
 	var err error
@@ -983,6 +1287,8 @@ func GetConfigFromEnv(properties []*ConfigParam) (*Config, error) {
 			password = value
 		case "Token":
 			token = value
+		case "TokenFilePath":
+			tokenFilePath = value
 		case "Role":
 			role = value
 		case "Host":
@@ -1038,6 +1344,7 @@ func GetConfigFromEnv(properties []*ConfigParam) (*Config, error) {
 		User:                  user,
 		Password:              password,
 		Token:                 token,
+		TokenFilePath:         tokenFilePath,
 		Role:                  role,
 		Host:                  host,
 		Port:                  port,

@@ -28,6 +28,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/compute/exec"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/decimal256"
+	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"golang.org/x/exp/constraints"
@@ -71,12 +72,15 @@ func CastIntegerToFloating(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.
 
 type decimal[T decimal128.Num | decimal256.Num] interface {
 	Less(T) bool
-	GreaterEqual(T) bool
+	Greater(T) bool
 	LowBits() uint64
 }
 
 func decimalToIntImpl[InT decimal128.Num | decimal256.Num, OutT arrow.IntType | arrow.UintType](allowOverflow bool, min, max InT, v decimal[InT], err *error) OutT {
-	if !allowOverflow && (v.Less(min) || v.GreaterEqual(max)) {
+	// min and max are the inclusive bounds of the output integer type, so a
+	// value equal to max (e.g. math.MaxInt64) is in range. Use a strict
+	// greater-than check rather than >= so the endpoints are not rejected.
+	if !allowOverflow && (v.Less(min) || v.Greater(max)) {
 		debug.Log("integer value out of bounds from decimal")
 		*err = fmt.Errorf("%w: integer value out of bounds", arrow.ErrInvalid)
 		return OutT(0)
@@ -308,7 +312,7 @@ func safeRescaleDecimal256Out(inputType arrow.Type, outScale, outPrecision, inSc
 		return ScalarUnaryNotNull(func(_ *exec.KernelCtx, val decimal128.Num, err *error) decimal256.Num {
 			out, e := decimal256.FromDecimal128(val).Rescale(inScale, outScale)
 			if e != nil {
-				*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, *err)
+				*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, e)
 				return decimal256.Num{}
 			}
 
@@ -323,7 +327,7 @@ func safeRescaleDecimal256Out(inputType arrow.Type, outScale, outPrecision, inSc
 	return ScalarUnaryNotNull(func(_ *exec.KernelCtx, val decimal256.Num, err *error) decimal256.Num {
 		out, e := val.Rescale(inScale, outScale)
 		if e != nil {
-			*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, *err)
+			*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, e)
 			return decimal256.Num{}
 		}
 
@@ -341,7 +345,7 @@ func safeRescaleDecimal128Out(inputType arrow.Type, outScale, outPrecision, inSc
 		return ScalarUnaryNotNull(func(_ *exec.KernelCtx, val decimal128.Num, err *error) decimal128.Num {
 			out, e := val.Rescale(inScale, outScale)
 			if e != nil {
-				*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, *err)
+				*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, e)
 				return decimal128.Num{}
 			}
 
@@ -356,7 +360,7 @@ func safeRescaleDecimal128Out(inputType arrow.Type, outScale, outPrecision, inSc
 	return ScalarUnaryNotNull(func(_ *exec.KernelCtx, val decimal256.Num, err *error) decimal128.Num {
 		out, e := val.Rescale(inScale, outScale)
 		if e != nil {
-			*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, *err)
+			*err = fmt.Errorf("%w: %s", arrow.ErrInvalid, e)
 			return decimal128.Num{}
 		}
 
@@ -506,6 +510,27 @@ func CastFloat64ToDecimal(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.E
 	return executor(ctx, batch, out)
 }
 
+func CastDecimalToFloat16(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
+	var (
+		executor exec.ArrayKernelExec
+	)
+
+	switch dt := batch.Values[0].Array.Type.(type) {
+	case *arrow.Decimal128Type:
+		scale := dt.Scale
+		executor = ScalarUnaryNotNull(func(_ *exec.KernelCtx, v decimal128.Num, err *error) float16.Num {
+			return float16.New(v.ToFloat32(scale))
+		})
+	case *arrow.Decimal256Type:
+		scale := dt.Scale
+		executor = ScalarUnaryNotNull(func(_ *exec.KernelCtx, v decimal256.Num, err *error) float16.Num {
+			return float16.New(v.ToFloat32(scale))
+		})
+	}
+
+	return executor(ctx, batch, out)
+}
+
 func CastDecimalToFloating[OutT constraints.Float](ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
 	var (
 		executor exec.ArrayKernelExec
@@ -543,13 +568,49 @@ func boolToNum[T numeric](_ *exec.KernelCtx, in []byte, out []T) error {
 	return nil
 }
 
-func checkFloatTrunc[InT constraints.Float, OutT arrow.IntType | arrow.UintType](in, out *exec.ArraySpan) error {
-	wasTrunc := func(out OutT, in InT) bool {
-		return InT(out) != in
+func boolToFloat16(_ *exec.KernelCtx, in []byte, out []float16.Num) error {
+	var (
+		zero float16.Num
+		one  = float16.New(1)
+	)
+
+	for i := range out {
+		if bitutil.BitIsSet(in, i) {
+			out[i] = one
+		} else {
+			out[i] = zero
+		}
 	}
-	wasTruncMaybeNull := func(out OutT, in InT, isValid bool) bool {
-		return isValid && (InT(out) != in)
+	return nil
+}
+
+func wasTrunc[InT constraints.Float | float16.Num, OutT arrow.IntType | arrow.UintType](out OutT, in InT) bool {
+	switch v := any(in).(type) {
+	case float16.Num:
+		return float16.New(float32(out)) != v
+	case float32:
+		return float32(out) != v
+	case float64:
+		return float64(out) != v
+	default:
+		return false
 	}
+}
+
+func wasTruncMaybeNull[InT constraints.Float | float16.Num, OutT arrow.IntType | arrow.UintType](out OutT, in InT, isValid bool) bool {
+	switch v := any(in).(type) {
+	case float16.Num:
+		return isValid && (float16.New(float32(out)) != v)
+	case float32:
+		return isValid && (float32(out) != v)
+	case float64:
+		return isValid && (float64(out) != v)
+	default:
+		return false
+	}
+}
+
+func checkFloatTrunc[InT constraints.Float | float16.Num, OutT arrow.IntType | arrow.UintType](in, out *exec.ArraySpan) error {
 	getError := func(val InT) error {
 		return fmt.Errorf("%w: float value %f was truncated converting to %s",
 			arrow.ErrInvalid, val, out.Type)
@@ -598,7 +659,7 @@ func checkFloatTrunc[InT constraints.Float, OutT arrow.IntType | arrow.UintType]
 	return nil
 }
 
-func checkFloatToIntTruncImpl[T constraints.Float](in, out *exec.ArraySpan) error {
+func checkFloatToIntTruncImpl[T constraints.Float | float16.Num](in, out *exec.ArraySpan) error {
 	switch out.Type.ID() {
 	case arrow.INT8:
 		return checkFloatTrunc[T, int8](in, out)
@@ -623,6 +684,8 @@ func checkFloatToIntTruncImpl[T constraints.Float](in, out *exec.ArraySpan) erro
 
 func checkFloatToIntTrunc(in, out *exec.ArraySpan) error {
 	switch in.Type.ID() {
+	case arrow.FLOAT16:
+		return checkFloatToIntTruncImpl[float16.Num](in, out)
 	case arrow.FLOAT32:
 		return checkFloatToIntTruncImpl[float32](in, out)
 	case arrow.FLOAT64:
@@ -729,6 +792,26 @@ func getParseStringExec[OffsetT int32 | int64](out arrow.Type) exec.ArrayKernelE
 	panic("invalid type for getParseStringExec")
 }
 
+func addFloat16Casts(outTy arrow.DataType, kernels []exec.ScalarKernel) []exec.ScalarKernel {
+	kernels = append(kernels, GetCommonCastKernels(outTy.ID(), exec.NewOutputType(outTy))...)
+
+	kernels = append(kernels, exec.NewScalarKernel(
+		[]exec.InputType{exec.NewExactInput(arrow.FixedWidthTypes.Boolean)},
+		exec.NewOutputType(outTy), ScalarUnaryBoolArg(boolToFloat16), nil))
+
+	for _, inTy := range []arrow.DataType{arrow.BinaryTypes.Binary, arrow.BinaryTypes.String} {
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewExactInput(inTy)}, exec.NewOutputType(outTy),
+			getParseStringExec[int32](outTy.ID()), nil))
+	}
+	for _, inTy := range []arrow.DataType{arrow.BinaryTypes.LargeBinary, arrow.BinaryTypes.LargeString} {
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewExactInput(inTy)}, exec.NewOutputType(outTy),
+			getParseStringExec[int64](outTy.ID()), nil))
+	}
+	return kernels
+}
+
 func addCommonNumberCasts[T numeric](outTy arrow.DataType, kernels []exec.ScalarKernel) []exec.ScalarKernel {
 	kernels = append(kernels, GetCommonCastKernels(outTy.ID(), exec.NewOutputType(outTy))...)
 
@@ -759,7 +842,7 @@ func GetCastToInteger[T arrow.IntType | arrow.UintType](outType arrow.DataType) 
 			CastIntToInt, nil))
 	}
 
-	for _, inTy := range floatingTypes {
+	for _, inTy := range append(floatingTypes, arrow.FixedWidthTypes.Float16) {
 		kernels = append(kernels, exec.NewScalarKernel(
 			[]exec.InputType{exec.NewExactInput(inTy)}, output,
 			CastFloatingToInteger, nil))
@@ -775,7 +858,7 @@ func GetCastToInteger[T arrow.IntType | arrow.UintType](outType arrow.DataType) 
 	return kernels
 }
 
-func GetCastToFloating[T constraints.Float](outType arrow.DataType) []exec.ScalarKernel {
+func GetCastToFloating[T constraints.Float | float16.Num](outType arrow.DataType) []exec.ScalarKernel {
 	kernels := make([]exec.ScalarKernel, 0)
 
 	output := exec.NewOutputType(outType)
@@ -785,19 +868,40 @@ func GetCastToFloating[T constraints.Float](outType arrow.DataType) []exec.Scala
 			CastIntegerToFloating, nil))
 	}
 
-	for _, inTy := range floatingTypes {
+	for _, inTy := range append(floatingTypes, arrow.FixedWidthTypes.Float16) {
 		kernels = append(kernels, exec.NewScalarKernel(
 			[]exec.InputType{exec.NewExactInput(inTy)}, output,
 			CastFloatingToFloating, nil))
 	}
 
-	kernels = addCommonNumberCasts[T](outType, kernels)
-	kernels = append(kernels, exec.NewScalarKernel(
-		[]exec.InputType{exec.NewIDInput(arrow.DECIMAL128)}, output,
-		CastDecimalToFloating[T], nil))
-	kernels = append(kernels, exec.NewScalarKernel(
-		[]exec.InputType{exec.NewIDInput(arrow.DECIMAL256)}, output,
-		CastDecimalToFloating[T], nil))
+	var z T
+	switch any(z).(type) {
+	case float16.Num:
+		kernels = addFloat16Casts(outType, kernels)
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL128)}, output,
+			CastDecimalToFloat16, nil))
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL256)}, output,
+			CastDecimalToFloat16, nil))
+	case float32:
+		kernels = addCommonNumberCasts[float32](outType, kernels)
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL128)}, output,
+			CastDecimalToFloating[float32], nil))
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL256)}, output,
+			CastDecimalToFloating[float32], nil))
+	case float64:
+		kernels = addCommonNumberCasts[float64](outType, kernels)
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL128)}, output,
+			CastDecimalToFloating[float64], nil))
+		kernels = append(kernels, exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(arrow.DECIMAL256)}, output,
+			CastDecimalToFloating[float64], nil))
+	}
+
 	return kernels
 }
 

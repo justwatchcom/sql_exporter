@@ -108,6 +108,7 @@ type execResponseStageInfo struct {
 	EndPoint              string                  `json:"endPoint,omitempty"`
 	UseS3RegionalURL      bool                    `json:"useS3RegionalUrl,omitempty"`
 	UseRegionalURL        bool                    `json:"useRegionalUrl,omitempty"`
+	UseVirtualURL         bool                    `json:"useVirtualUrl,omitempty"`
 }
 
 // make all data field optional

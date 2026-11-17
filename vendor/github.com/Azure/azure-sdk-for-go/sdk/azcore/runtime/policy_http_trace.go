@@ -1,6 +1,3 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
@@ -8,13 +5,12 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/exported"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/sanitizer"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/internal/shared"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"
@@ -33,14 +29,13 @@ const (
 )
 
 // newHTTPTracePolicy creates a new instance of the httpTracePolicy.
-//   - allowedQueryParams contains the user-specified query parameters that don't need to be redacted from the trace
-func newHTTPTracePolicy(allowedQueryParams []string) exported.Policy {
-	return &httpTracePolicy{allowedQP: getAllowedQueryParams(allowedQueryParams)}
+func newHTTPTracePolicy(sanitizer *sanitizer.Sanitizer) exported.Policy {
+	return &httpTracePolicy{sanitizer: sanitizer}
 }
 
 // httpTracePolicy is a policy that creates a trace for the HTTP request and its response
 type httpTracePolicy struct {
-	allowedQP map[string]struct{}
+	sanitizer *sanitizer.Sanitizer
 }
 
 // Do implements the pipeline.Policy interfaces for the httpTracePolicy type.
@@ -49,7 +44,7 @@ func (h *httpTracePolicy) Do(req *policy.Request) (resp *http.Response, err erro
 	if tracer, ok := rawTracer.(tracing.Tracer); ok && tracer.Enabled() {
 		attributes := []tracing.Attribute{
 			{Key: attrHTTPMethod, Value: req.Raw().Method},
-			{Key: attrHTTPURL, Value: getSanitizedURL(*req.Raw().URL, h.allowedQP)},
+			{Key: attrHTTPURL, Value: h.sanitizer.GetSanitizedURL(*req.Raw().URL)},
 			{Key: attrNetPeerName, Value: req.Raw().URL.Host},
 		}
 
@@ -76,27 +71,26 @@ func (h *httpTracePolicy) Do(req *policy.Request) (resp *http.Response, err erro
 					span.SetAttributes(tracing.Attribute{Key: attrAZServiceReqID, Value: reqID})
 				}
 			} else if err != nil {
-				var urlErr *url.Error
-				if errors.As(err, &urlErr) {
-					// calling *url.Error.Error() will include the unsanitized URL
-					// which we don't want. in addition, we already have the HTTP verb
-					// and sanitized URL in the trace so we aren't losing any info
-					err = urlErr.Err
-				}
-				span.SetStatus(tracing.SpanStatusError, err.Error())
+				span.SetStatus(tracing.SpanStatusError, h.sanitizer.GetSanitizedURLString(err.Error(), req.Raw().URL))
 			}
 			span.End()
 		}()
 
 		req = req.WithContext(ctx)
 	}
+	// Record even when this request's tracing is disabled: a credential request
+	// can still share URL state with a traced parent operation that reports its error.
+	sanitizer.RecordURL(req.Raw().Context(), *req.Raw().URL, h.sanitizer)
 	resp, err = req.Next()
 	return
 }
 
 // StartSpanOptions contains the optional values for StartSpan.
 type StartSpanOptions struct {
-	// for future expansion
+	// Kind indicates the kind of Span.
+	Kind tracing.SpanKind
+	// Attributes contains key-value pairs of attributes for the span.
+	Attributes []tracing.Attribute
 }
 
 // StartSpan starts a new tracing span.
@@ -114,7 +108,6 @@ func StartSpan(ctx context.Context, name string, tracer tracing.Tracer, options 
 	// we MUST propagate the active tracer before returning so that the trace policy can access it
 	ctx = context.WithValue(ctx, shared.CtxWithTracingTracer{}, tracer)
 
-	const newSpanKind = tracing.SpanKindInternal
 	if activeSpan := ctx.Value(ctxActiveSpan{}); activeSpan != nil {
 		// per the design guidelines, if a SDK method Foo() calls SDK method Bar(),
 		// then the span for Bar() must be suppressed. however, if Bar() makes a REST
@@ -126,10 +119,19 @@ func StartSpan(ctx context.Context, name string, tracer tracing.Tracer, options 
 			return ctx, func(err error) {}
 		}
 	}
+
+	if options == nil {
+		options = &StartSpanOptions{}
+	}
+	if options.Kind == 0 {
+		options.Kind = tracing.SpanKindInternal
+	}
+
 	ctx, span := tracer.Start(ctx, name, &tracing.SpanOptions{
-		Kind: newSpanKind,
+		Kind:       options.Kind,
+		Attributes: options.Attributes,
 	})
-	ctx = context.WithValue(ctx, ctxActiveSpan{}, newSpanKind)
+	ctx = context.WithValue(ctx, ctxActiveSpan{}, options.Kind)
 	return ctx, func(err error) {
 		if err != nil {
 			errType := strings.Replace(fmt.Sprintf("%T", err), "*exported.", "*azcore.", 1)

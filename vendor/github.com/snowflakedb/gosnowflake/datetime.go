@@ -48,7 +48,7 @@ func timeToString(t time.Time, dateTimeType string, params map[string]*string) (
 func snowflakeFormatToGoFormat(sfFormat string) (string, error) {
 	res := sfFormat
 	for _, replacement := range formatReplacements {
-		res = strings.Replace(res, replacement.input, replacement.output, -1)
+		res = strings.ReplaceAll(res, replacement.input, replacement.output)
 	}
 
 	if incorrectSecondsFractionRegex.MatchString(res) {
@@ -67,7 +67,7 @@ func snowflakeFormatToGoFormat(sfFormat string) (string, error) {
 				return "", err
 			}
 		}
-		res = strings.Replace(res, submatch[0], strings.Repeat("0", fractionNumbers), -1)
+		res = strings.ReplaceAll(res, submatch[0], strings.Repeat("0", fractionNumbers))
 	}
 	return res, nil
 }

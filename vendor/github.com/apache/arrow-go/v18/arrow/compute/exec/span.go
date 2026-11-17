@@ -19,6 +19,8 @@
 package exec
 
 import (
+	"fmt"
+	"math"
 	"sync/atomic"
 	"unsafe"
 
@@ -114,6 +116,10 @@ func (a *ArraySpan) UpdateNullCount() int64 {
 	if curNulls != array.UnknownNullCount {
 		return curNulls
 	}
+	if len(a.Buffers[0].Buf) == 0 {
+		atomic.StoreInt64(&a.Nulls, 0)
+		return 0
+	}
 
 	newNulls := a.Len - int64(bitutil.CountSetBits(a.Buffers[0].Buf, int(a.Offset), int(a.Len)))
 	atomic.StoreInt64(&a.Nulls, newNulls)
@@ -179,6 +185,9 @@ func (a *ArraySpan) MakeData() arrow.ArrayData {
 	} else if dt.ID() == arrow.DENSE_UNION || dt.ID() == arrow.SPARSE_UNION {
 		bufs[0] = nil
 		nulls = 0
+	} else if dt.ID() == arrow.RUN_END_ENCODED {
+		bufs[0] = nil
+		nulls = 0
 	}
 
 	if len(a.Children) > 0 {
@@ -189,7 +198,14 @@ func (a *ArraySpan) MakeData() arrow.ArrayData {
 			children[i] = d
 		}
 	}
-	return array.NewData(a.Type, length, bufs[:a.NumBuffers()], children, nulls, off)
+	nbufs := a.NumBuffers()
+	if (dt.ID() == arrow.BINARY_VIEW || dt.ID() == arrow.STRING_VIEW) && bufs[2] == nil {
+		// A view array whose values are all inline has no data buffer, and
+		// consumers such as array.Concatenate expect each data buffer to be
+		// non-nil.
+		nbufs = 2
+	}
+	return array.NewData(a.Type, length, bufs[:nbufs], children, nulls, off)
 }
 
 // MakeArray is a convenience function for calling array.MakeFromData(a.MakeData())
@@ -207,13 +223,13 @@ func (a *ArraySpan) SetSlice(off, length int64) {
 		return
 	}
 
+	// The cached null count describes the span as it was, not the slice.
+	// As in the C++ ArraySpan::SetSlice, a slice of anything with a validity
+	// bitmap has an unknown count until someone asks for it; only the null
+	// type and a span without a bitmap can be counted without looking.
 	if a.Type.ID() != arrow.NULL {
-		if a.Nulls != 0 {
-			if a.Nulls == a.Len {
-				a.Nulls = length
-			} else {
-				a.Nulls = array.UnknownNullCount
-			}
+		if a.Nulls != 0 || len(a.Buffers[0].Buf) != 0 {
+			a.Nulls = array.UnknownNullCount
 		}
 	} else {
 		a.Nulls = length
@@ -241,7 +257,7 @@ func (a *ArraySpan) GetBuffer(idx int) *memory.Buffer {
 // convenience function to resize the children slice if necessary,
 // or just shrink the slice without re-allocating if there's enough
 // capacity already.
-func (a *ArraySpan) resizeChildren(i int) {
+func (a *ArraySpan) ResizeChildren(i int) {
 	if cap(a.Children) >= i {
 		a.Children = a.Children[:i]
 	} else {
@@ -295,7 +311,7 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 		a.Buffers[1].Buf = sc.Data()
 		a.Buffers[1].Owner = nil
 		a.Buffers[1].SelfAlloc = false
-		a.resizeChildren(1)
+		a.ResizeChildren(1)
 		a.Children[0].SetMembers(val.(*scalar.Dictionary).Value.Dict.Data())
 	case arrow.IsBaseBinary(typeID):
 		sc := val.(scalar.BinaryScalar)
@@ -320,6 +336,28 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 				int64(len(dataBuffer)), 1)
 		}
 		a.Buffers[2].Buf = dataBuffer
+	case typeID == arrow.BINARY_VIEW || typeID == arrow.STRING_VIEW:
+		sc := val.(scalar.BinaryScalar)
+		a.Buffers[1].Buf = arrow.Uint64Traits.CastToBytes(a.Scratch[:])
+		a.Buffers[1].Owner = nil
+		a.Buffers[1].SelfAlloc = false
+		a.Buffers[2].Buf, a.Buffers[2].Owner = nil, nil
+		a.Buffers[2].SelfAlloc = false
+
+		header := &arrow.ViewHeaderTraits.CastFromBytes(a.Buffers[1].Buf)[0]
+		*header = arrow.ViewHeader{}
+		if sc.IsValid() {
+			if len(sc.Data()) > math.MaxInt32 {
+				// The header's size is an int32, and this method can't
+				// return an error.
+				panic(fmt.Errorf("%w: %s value of %d bytes exceeds the view size limit",
+					arrow.ErrInvalid, val.DataType(), len(sc.Data())))
+			}
+			if header.SetBytes(sc.Data()); !header.IsInline() {
+				a.Buffers[2].Buf = sc.Data()
+				a.Buffers[2].Owner = sc.Buffer()
+			}
+		}
 	case typeID == arrow.FIXED_SIZE_BINARY:
 		sc := val.(scalar.BinaryScalar)
 		if !sc.IsValid() {
@@ -334,7 +372,7 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 	case arrow.IsListLike(typeID):
 		sc := val.(scalar.ListScalar)
 		valueLen := 0
-		a.resizeChildren(1)
+		a.ResizeChildren(1)
 
 		if sc.GetList() != nil {
 			a.Children[0].SetMembers(sc.GetList().Data())
@@ -364,7 +402,7 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 		a.Buffers[1].Buf = nil
 		a.Buffers[1].Owner = nil
 		a.Buffers[1].SelfAlloc = false
-		a.resizeChildren(len(sc.Value))
+		a.ResizeChildren(len(sc.Value))
 		for i, v := range sc.Value {
 			a.Children[i].FillFromScalar(v)
 		}
@@ -378,7 +416,7 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 		a.Buffers[1].SelfAlloc = false
 		codes := unsafe.Slice((*arrow.UnionTypeCode)(unsafe.Pointer(&a.Buffers[1].Buf[0])), 1)
 
-		a.resizeChildren(len(a.Type.(arrow.UnionType).Fields()))
+		a.ResizeChildren(len(a.Type.(arrow.UnionType).Fields()))
 		switch sc := val.(type) {
 		case *scalar.DenseUnion:
 			codes[0] = sc.TypeCode
@@ -421,7 +459,7 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 }
 
 func (a *ArraySpan) SetDictionary(span *ArraySpan) {
-	a.resizeChildren(1)
+	a.ResizeChildren(1)
 	a.Children[0].Release()
 	a.Children[0] = *span
 }
@@ -468,13 +506,13 @@ func (a *ArraySpan) TakeOwnership(data arrow.ArrayData) {
 	}
 
 	if typeID == arrow.DICTIONARY {
-		a.resizeChildren(1)
+		a.ResizeChildren(1)
 		dict := data.Dictionary()
 		if dict != (*array.Data)(nil) {
 			a.Children[0].TakeOwnership(dict)
 		}
 	} else {
-		a.resizeChildren(len(data.Children()))
+		a.ResizeChildren(len(data.Children()))
 		for i, c := range data.Children() {
 			a.Children[i].TakeOwnership(c)
 		}
@@ -522,7 +560,7 @@ func (a *ArraySpan) SetMembers(data arrow.ArrayData) {
 	}
 
 	if typeID == arrow.DICTIONARY {
-		a.resizeChildren(1)
+		a.ResizeChildren(1)
 		dict := data.Dictionary()
 		if dict != (*array.Data)(nil) {
 			a.Children[0].SetMembers(dict)
@@ -574,10 +612,22 @@ type ExecSpan struct {
 func getNumBuffers(dt arrow.DataType) int {
 	switch dt.ID() {
 	case arrow.RUN_END_ENCODED:
-		return 0
+		return 1
 	case arrow.NULL, arrow.STRUCT, arrow.FIXED_SIZE_LIST:
 		return 1
-	case arrow.BINARY, arrow.LARGE_BINARY, arrow.STRING, arrow.LARGE_STRING, arrow.DENSE_UNION:
+	case arrow.BINARY, arrow.LARGE_BINARY, arrow.STRING, arrow.LARGE_STRING,
+		arrow.DENSE_UNION:
+		return 3
+	case arrow.BINARY_VIEW, arrow.STRING_VIEW:
+		// bitmap + view-header buffer + a single overflow data buffer.
+		// ArraySpan's fixed buffer array limits additional data buffers,
+		// so callers producing multi-buffer views must keep their data
+		// within a single block (the default 32KB allocation in the
+		// builder is sufficient for most use cases).
+		return 3
+	case arrow.LIST_VIEW, arrow.LARGE_LIST_VIEW:
+		// validity + offsets + sizes. Unlike the view types above, this
+		// count is exact rather than a cap on variadic data buffers.
 		return 3
 	case arrow.EXTENSION:
 		return getNumBuffers(dt.(arrow.ExtensionType).StorageType())
@@ -603,7 +653,7 @@ func FillZeroLength(dt arrow.DataType, span *ArraySpan) {
 	}
 
 	if dt.ID() == arrow.DICTIONARY {
-		span.resizeChildren(1)
+		span.ResizeChildren(1)
 		FillZeroLength(dt.(*arrow.DictionaryType).ValueType, &span.Children[0])
 		return
 	}
@@ -616,7 +666,7 @@ func FillZeroLength(dt arrow.DataType, span *ArraySpan) {
 		return
 	}
 
-	span.resizeChildren(nt.NumFields())
+	span.ResizeChildren(nt.NumFields())
 	for i, f := range nt.Fields() {
 		FillZeroLength(f.Type, &span.Children[i])
 	}

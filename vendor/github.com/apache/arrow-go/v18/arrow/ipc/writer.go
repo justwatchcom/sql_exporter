@@ -75,6 +75,14 @@ func hasNestedDict(data arrow.ArrayData) bool {
 }
 
 // Writer is an Arrow stream writer.
+//
+// Writer is not safe for concurrent use. It writes to the underlying io.Writer
+// without any synchronization, so concurrent calls to Write or Close can
+// interleave output and corrupt the stream (for example by emitting the schema
+// header more than once). Because an arbitrary io.Writer cannot be assumed to
+// be safe for concurrent use, callers that produce records from multiple
+// goroutines must serialize writes themselves, for example by sending records
+// over a channel to a single goroutine that owns the Writer.
 type Writer struct {
 	w io.Writer
 
@@ -82,12 +90,13 @@ type Writer struct {
 	pw  PayloadWriter
 
 	started         bool
+	err             error
 	schema          *arrow.Schema
 	mapper          dictutils.Mapper
-	codec           flatbuf.CompressionType
-	compressNP      int
+	compression     compressionSettings
 	compressors     []compressor
-	minSpaceSavings *float64
+	encoder         *recordEncoder
+	minSpaceSavings float64
 
 	// map of the last written dictionaries by id
 	// so we can avoid writing the same dictionary over and over
@@ -104,8 +113,7 @@ func NewWriterWithPayloadWriter(pw PayloadWriter, opts ...Option) *Writer {
 		mem:             cfg.alloc,
 		pw:              pw,
 		schema:          cfg.schema,
-		codec:           cfg.codec,
-		compressNP:      cfg.compressNP,
+		compression:     compressionSettings{codec: cfg.codec, zstdLevel: cfg.zstdLevel, compressNP: cfg.compressNP},
 		minSpaceSavings: cfg.minSpaceSavings,
 		emitDictDeltas:  cfg.emitDictDeltas,
 		compressors:     make([]compressor, cfg.compressNP),
@@ -116,22 +124,43 @@ func NewWriterWithPayloadWriter(pw PayloadWriter, opts ...Option) *Writer {
 func NewWriter(w io.Writer, opts ...Option) *Writer {
 	cfg := newConfig(opts...)
 	return &Writer{
-		w:              w,
-		mem:            cfg.alloc,
-		pw:             &streamWriter{w: w},
-		schema:         cfg.schema,
-		codec:          cfg.codec,
-		emitDictDeltas: cfg.emitDictDeltas,
-		compressNP:     cfg.compressNP,
-		compressors:    make([]compressor, cfg.compressNP),
+		w:               w,
+		mem:             cfg.alloc,
+		pw:              &streamWriter{w: w},
+		schema:          cfg.schema,
+		compression:     compressionSettings{codec: cfg.codec, zstdLevel: cfg.zstdLevel, compressNP: cfg.compressNP},
+		emitDictDeltas:  cfg.emitDictDeltas,
+		minSpaceSavings: cfg.minSpaceSavings,
+		compressors:     make([]compressor, cfg.compressNP),
 	}
 }
 
+func (w *Writer) getRecordEncoder() *recordEncoder {
+	if w.encoder == nil {
+		w.encoder = newRecordEncoder(
+			w.mem,
+			0,
+			kMaxNestingDepth,
+			true,
+			w.compression,
+			w.minSpaceSavings,
+			w.compressors,
+		)
+	}
+	return w.encoder
+}
+
 func (w *Writer) Close() error {
+	defer func() { w.encoder = nil }()
+	defer releaseCompressors(w.compressors)
+
+	if w.err != nil {
+		return w.closeAfterFailure()
+	}
 	if !w.started {
 		err := w.start()
 		if err != nil {
-			return err
+			return w.closeAfterFailure()
 		}
 	}
 
@@ -140,24 +169,47 @@ func (w *Writer) Close() error {
 	}
 
 	err := w.pw.Close()
-	if err != nil {
-		return fmt.Errorf("arrow/ipc: could not close payload writer: %w", err)
-	}
 	w.pw = nil
-
-	for _, d := range w.lastWrittenDicts {
-		d.Release()
+	w.releaseDictionaries()
+	if err != nil {
+		return w.fail(fmt.Errorf("arrow/ipc: could not close payload writer: %w", err))
 	}
 
 	return nil
 }
 
-func (w *Writer) Write(rec arrow.Record) (err error) {
+func (w *Writer) closeAfterFailure() error {
+	if w.started && w.pw != nil {
+		w.err = errors.Join(w.err, w.pw.Close())
+	}
+	w.releaseDictionaries()
+	w.pw = nil
+	return w.err
+}
+
+func (w *Writer) releaseDictionaries() {
+	for _, d := range w.lastWrittenDicts {
+		d.Release()
+	}
+	w.lastWrittenDicts = nil
+}
+
+func (w *Writer) fail(err error) error {
+	if w.err == nil {
+		w.err = err
+	}
+	return w.err
+}
+
+func (w *Writer) Write(rec arrow.RecordBatch) (err error) {
 	defer func() {
 		if pErr := recover(); pErr != nil {
-			err = utils.FormatRecoveredError("arrow/ipc: unknown error while writing", pErr)
+			err = w.fail(utils.FormatRecoveredError("arrow/ipc: unknown error while writing", pErr))
 		}
 	}()
+	if w.err != nil {
+		return w.err
+	}
 
 	incomingSchema := rec.Schema()
 
@@ -175,36 +227,27 @@ func (w *Writer) Write(rec arrow.Record) (err error) {
 		return errInconsistentSchema
 	}
 
-	const allow64b = true
-	var (
-		data = Payload{msg: MessageRecordBatch}
-		enc  = newRecordEncoder(
-			w.mem,
-			0,
-			kMaxNestingDepth,
-			allow64b,
-			w.codec,
-			w.compressNP,
-			w.minSpaceSavings,
-			w.compressors,
-		)
-	)
+	data := Payload{msg: MessageRecordBatch}
+	enc := w.getRecordEncoder()
 	defer data.Release()
 
 	err = writeDictionaryPayloads(w.mem, rec, false, w.emitDictDeltas, &w.mapper, w.lastWrittenDicts, w.pw, enc)
 	if err != nil {
-		return fmt.Errorf("arrow/ipc: failure writing dictionary batches: %w", err)
+		return w.fail(fmt.Errorf("arrow/ipc: failure writing dictionary batches: %w", err))
 	}
 
 	enc.reset()
 	if err := enc.Encode(&data, rec); err != nil {
-		return fmt.Errorf("arrow/ipc: could not encode record to payload: %w", err)
+		return w.fail(fmt.Errorf("arrow/ipc: could not encode record to payload: %w", err))
 	}
 
-	return w.pw.WritePayload(data)
+	if err := w.pw.WritePayload(data); err != nil {
+		return w.fail(err)
+	}
+	return nil
 }
 
-func writeDictionaryPayloads(mem memory.Allocator, batch arrow.Record, isFileFormat bool, emitDictDeltas bool, mapper *dictutils.Mapper, lastWrittenDicts map[int64]arrow.Array, pw PayloadWriter, encoder *recordEncoder) error {
+func writeDictionaryPayloads(mem memory.Allocator, batch arrow.RecordBatch, isFileFormat bool, emitDictDeltas bool, mapper *dictutils.Mapper, lastWrittenDicts map[int64]arrow.Array, pw PayloadWriter, encoder *recordEncoder) error {
 	dictionaries, err := dictutils.CollectDictionaries(batch, mapper)
 	if err != nil {
 		return err
@@ -245,19 +288,21 @@ func writeDictionaryPayloads(mem memory.Allocator, batch arrow.Record, isFileFor
 			}
 		}
 
-		var data = Payload{msg: MessageDictionaryBatch}
-		defer data.Release()
+		if err := func() error {
+			data := Payload{msg: MessageDictionaryBatch}
+			defer data.Release()
 
-		dict := pair.Dict
-		if deltaStart > 0 {
-			dict = array.NewSlice(dict, deltaStart, int64(dict.Len()))
-			defer dict.Release()
-		}
-		if err := enc.Encode(&data, pair.ID, deltaStart > 0, dict); err != nil {
-			return err
-		}
+			dict := pair.Dict
+			if deltaStart > 0 {
+				dict = array.NewSlice(dict, deltaStart, int64(dict.Len()))
+				defer dict.Release()
+			}
+			if err := enc.Encode(&data, pair.ID, deltaStart > 0, dict); err != nil {
+				return err
+			}
 
-		if err := pw.WritePayload(data); err != nil {
+			return pw.WritePayload(data)
+		}(); err != nil {
 			return err
 		}
 
@@ -271,7 +316,12 @@ func writeDictionaryPayloads(mem memory.Allocator, batch arrow.Record, isFileFor
 }
 
 func (w *Writer) start() error {
-	w.started = true
+	if w.err != nil {
+		return w.err
+	}
+	if w.schema == nil {
+		return w.fail(fmt.Errorf("%w: cannot write IPC stream without a schema", arrow.ErrInvalid))
+	}
 
 	w.mapper.ImportSchema(w.schema)
 	w.lastWrittenDicts = make(map[int64]arrow.Array)
@@ -280,10 +330,11 @@ func (w *Writer) start() error {
 	ps := payloadFromSchema(w.schema, w.mem, &w.mapper)
 	defer ps.Release()
 
+	w.started = true
 	for _, data := range ps {
 		err := w.pw.WritePayload(data)
 		if err != nil {
-			return err
+			return w.fail(err)
 		}
 	}
 
@@ -295,7 +346,7 @@ type dictEncoder struct {
 }
 
 func (d *dictEncoder) encodeMetadata(p *Payload, isDelta bool, id, nrows int64) error {
-	p.meta = writeDictionaryMessage(d.mem, id, isDelta, nrows, p.size, d.fields, d.meta, d.codec, d.variadicCounts)
+	p.meta = writeDictionaryMessage(d.mem, id, isDelta, nrows, p.size, d.fields, d.meta, d.compression.codec, d.variadicCounts)
 	return nil
 }
 
@@ -306,13 +357,22 @@ func (d *dictEncoder) Encode(p *Payload, id int64, isDelta bool, dict arrow.Arra
 	}()
 
 	schema := arrow.NewSchema([]arrow.Field{{Name: "dictionary", Type: dict.DataType(), Nullable: true}}, nil)
-	batch := array.NewRecord(schema, []arrow.Array{dict}, int64(dict.Len()))
+	batch := array.NewRecordBatch(schema, []arrow.Array{dict}, int64(dict.Len()))
 	defer batch.Release()
 	if err := d.encode(p, batch); err != nil {
 		return err
 	}
 
 	return d.encodeMetadata(p, isDelta, id, batch.NumRows())
+}
+
+// compressionSettings groups the three related compression knobs (codec
+// type, zstd level, and concurrency) so that callers of newRecordEncoder
+// do not risk transposing adjacent positional int/enum arguments.
+type compressionSettings struct {
+	codec      flatbuf.CompressionType
+	zstdLevel  int
+	compressNP int
 }
 
 type recordEncoder struct {
@@ -323,12 +383,12 @@ type recordEncoder struct {
 	variadicCounts []int64
 
 	depth           int64
+	maxDepth        int64
 	start           int64
 	allow64b        bool
-	codec           flatbuf.CompressionType
-	compressNP      int
+	compression     compressionSettings
 	compressors     []compressor
-	minSpaceSavings *float64
+	minSpaceSavings float64
 }
 
 func newRecordEncoder(
@@ -336,18 +396,17 @@ func newRecordEncoder(
 	startOffset,
 	maxDepth int64,
 	allow64b bool,
-	codec flatbuf.CompressionType,
-	compressNP int,
-	minSpaceSavings *float64,
+	compression compressionSettings,
+	minSpaceSavings float64,
 	compressors []compressor,
 ) *recordEncoder {
 	return &recordEncoder{
 		mem:             mem,
 		start:           startOffset,
 		depth:           maxDepth,
+		maxDepth:        maxDepth,
 		allow64b:        allow64b,
-		codec:           codec,
-		compressNP:      compressNP,
+		compression:     compression,
 		compressors:     compressors,
 		minSpaceSavings: minSpaceSavings,
 	}
@@ -355,22 +414,25 @@ func newRecordEncoder(
 
 func (w *recordEncoder) shouldCompress(uncompressed, compressed int) bool {
 	debug.Assert(uncompressed > 0, "uncompressed size is 0")
-	if w.minSpaceSavings == nil {
+	if w.minSpaceSavings == 0 {
 		return true
 	}
 
 	savings := 1.0 - float64(compressed)/float64(uncompressed)
-	return savings >= *w.minSpaceSavings
+	return savings >= w.minSpaceSavings
 }
 
 func (w *recordEncoder) reset() {
+	w.depth = w.maxDepth
 	w.start = 0
-	w.fields = make([]fieldMetadata, 0)
+	w.fields = w.fields[:0]
+	w.meta = w.meta[:0]
+	w.variadicCounts = w.variadicCounts[:0]
 }
 
 func (w *recordEncoder) getCompressor(id int) compressor {
 	if w.compressors[id] == nil {
-		w.compressors[id] = getCompressor(w.codec)
+		w.compressors[id] = getCompressor(w.compression.codec, w.compression.zstdLevel)
 	}
 	return w.compressors[id]
 }
@@ -390,9 +452,11 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 
 		n, err := codec.Write(p.body[idx].Bytes())
 		if err != nil {
+			buf.Release()
 			return err
 		}
 		if err := codec.Close(); err != nil {
+			buf.Release()
 			return err
 		}
 
@@ -412,7 +476,7 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 		return nil
 	}
 
-	if w.compressNP <= 1 {
+	if w.compression.compressNP <= 1 {
 		codec := w.getCompressor(0)
 		for idx := range p.body {
 			if err := compress(idx, codec); err != nil {
@@ -425,12 +489,12 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 	var (
 		wg          sync.WaitGroup
 		ch          = make(chan int)
-		errch       = make(chan error)
+		errch       = make(chan error, 1)
 		ctx, cancel = context.WithCancel(context.Background())
 	)
 	defer cancel()
 
-	for workerID := 0; workerID < w.compressNP; workerID++ {
+	for workerID := 0; workerID < w.compression.compressNP; workerID++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -444,7 +508,10 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 					}
 
 					if err := compress(idx, codec); err != nil {
-						errch <- err
+						select {
+						case errch <- err:
+						default:
+						}
 						cancel()
 						return
 					}
@@ -456,18 +523,27 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 		}(workerID)
 	}
 
+send:
 	for idx := range p.body {
-		ch <- idx
+		select {
+		case ch <- idx:
+		case <-ctx.Done():
+			break send
+		}
 	}
 
 	close(ch)
 	wg.Wait()
-	close(errch)
 
-	return <-errch
+	select {
+	case err := <-errch:
+		return err
+	default:
+		return nil
+	}
 }
 
-func (w *recordEncoder) encode(p *Payload, rec arrow.Record) error {
+func (w *recordEncoder) encode(p *Payload, rec arrow.RecordBatch) error {
 	// perform depth-first traversal of the row-batch
 	for i, col := range rec.Columns() {
 		err := w.visit(p, col)
@@ -476,22 +552,25 @@ func (w *recordEncoder) encode(p *Payload, rec arrow.Record) error {
 		}
 	}
 
-	if w.codec != -1 {
-		if w.minSpaceSavings != nil {
-			pct := *w.minSpaceSavings
-			if pct < 0 || pct > 1 {
-				p.Release()
-				return fmt.Errorf("%w: minSpaceSavings not in range [0,1]. Provided %.05f",
-					arrow.ErrInvalid, pct)
-			}
+	if w.compression.codec != -1 {
+		if math.IsNaN(w.minSpaceSavings) || w.minSpaceSavings < 0 || w.minSpaceSavings > 1 {
+			p.Release()
+			return fmt.Errorf("%w: minSpaceSavings not in range [0,1]. Provided %.05f",
+				arrow.ErrInvalid, w.minSpaceSavings)
 		}
-		w.compressBodyBuffers(p)
+		if err := w.compressBodyBuffers(p); err != nil {
+			return err
+		}
 	}
 
 	// position for the start of a buffer relative to the passed frame of reference.
 	// may be 0 or some other position in an address space.
 	offset := w.start
-	w.meta = make([]bufferMetadata, len(p.body))
+	if cap(w.meta) < len(p.body) {
+		w.meta = make([]bufferMetadata, len(p.body))
+	} else {
+		w.meta = w.meta[:len(p.body)]
+	}
 
 	// construct the metadata for the record batch header
 	for i, buf := range p.body {
@@ -603,7 +682,7 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 			// non-zero offset: slice the buffer
 			offset := int64(data.Offset()) * typeWidth
 			// send padding if available
-			len := minI64(bitutil.CeilByte64(arrLen*typeWidth), int64(values.Len())-offset)
+			len := min(bitutil.CeilByte64(arrLen*typeWidth), int64(values.Len())-offset)
 			values = memory.NewBufferBytes(values.Bytes()[offset : offset+len])
 		default:
 			if values != nil {
@@ -627,9 +706,13 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 		case needTruncate(int64(data.Offset()), values, totalDataBytes):
 			// slice data buffer to include the range we need now.
 			var (
-				beg = arr.ValueOffset64(0)
-				len = minI64(paddedLength(totalDataBytes, kArrowAlignment), int64(totalDataBytes))
+				beg int64 = 0
+				len       = min(paddedLength(totalDataBytes, kArrowAlignment), int64(totalDataBytes))
 			)
+			if arr.Len() > 0 {
+				beg = arr.ValueOffset64(0)
+			}
+
 			values = memory.NewBufferBytes(data.Buffers()[2].Bytes()[beg : beg+len])
 		default:
 			if values != nil {
@@ -651,7 +734,7 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 			// non-zero offset: slice the buffer
 			offset := data.Offset() * int(typeWidth)
 			// send padding if available
-			len := int(minI64(bitutil.CeilByte64(arrLen*typeWidth), int64(values.Len()-offset)))
+			len := int(min(bitutil.CeilByte64(arrLen*typeWidth), int64(values.Len()-offset)))
 			values = memory.SliceBuffer(values, offset, len)
 		default:
 			if values != nil {
@@ -859,29 +942,14 @@ func (w *recordEncoder) getZeroBasedValueOffsets(arr arrow.Array) *memory.Buffer
 
 	dataTypeWidth := arr.DataType().Layout().Buffers[1].ByteWidth
 
-	// if we have a non-zero offset, then the value offsets do not start at
-	// zero. we must a) create a new offsets array with shifted offsets and
-	// b) slice the values array accordingly
-	hasNonZeroOffset := data.Offset() != 0
-
-	// or if there are more value offsets than values (the array has been sliced)
-	// we need to trim off the trailing offsets
-	hasMoreOffsetsThanValues := offsetBytesNeeded < voffsets.Len()
-
-	// or if the offsets do not start from the zero index, we need to shift them
-	// and slice the values array
 	var firstOffset int64
 	if dataTypeWidth == 8 {
-		firstOffset = arrow.Int64Traits.CastFromBytes(voffsets.Bytes())[0]
+		firstOffset = arrow.Int64Traits.CastFromBytes(voffsets.Bytes())[data.Offset()]
 	} else {
-		firstOffset = int64(arrow.Int32Traits.CastFromBytes(voffsets.Bytes())[0])
+		firstOffset = int64(arrow.Int32Traits.CastFromBytes(voffsets.Bytes())[data.Offset()])
 	}
-	offsetsDoNotStartFromZero := firstOffset != 0
 
-	// determine whether the offsets array should be shifted
-	needsTruncateAndShift := hasNonZeroOffset || hasMoreOffsetsThanValues || offsetsDoNotStartFromZero
-
-	if needsTruncateAndShift {
+	if firstOffset != 0 {
 		shiftedOffsets := memory.NewResizableBuffer(w.mem)
 		shiftedOffsets.Resize(offsetBytesNeeded)
 
@@ -907,6 +975,8 @@ func (w *recordEncoder) getZeroBasedValueOffsets(arr arrow.Array) *memory.Buffer
 		}
 
 		voffsets = shiftedOffsets
+	} else if data.Offset() != 0 || offsetBytesNeeded < voffsets.Len() {
+		voffsets = memory.SliceBuffer(voffsets, data.Offset()*dataTypeWidth, offsetBytesNeeded)
 	} else {
 		voffsets.Retain()
 	}
@@ -1007,7 +1077,7 @@ func (w *recordEncoder) rebaseDenseUnionValueOffsets(arr *array.DenseUnion, offs
 	// child array, when we have a sliced array, we need to re-base
 	// the value offsets for each array! ew.
 	unshiftedOffsets := arr.RawValueOffsets()
-	codes := arr.RawTypeCodes()
+	codes := arr.RawTypeCodes()[:arr.Len()]
 
 	shiftedOffsetsBuf := memory.NewResizableBuffer(w.mem)
 	shiftedOffsetsBuf.Resize(arrow.Int32Traits.BytesRequired(arr.Len()))
@@ -1024,20 +1094,25 @@ func (w *recordEncoder) rebaseDenseUnionValueOffsets(arr *array.DenseUnion, offs
 		} else {
 			shiftedOffsets[i] = unshiftedOffsets[i] - offsets[c]
 		}
-		lengths[c] = maxI32(lengths[c], shiftedOffsets[i]+1)
+		lengths[c] = max(lengths[c], shiftedOffsets[i]+1)
 	}
 	return shiftedOffsetsBuf
 }
 
-func (w *recordEncoder) Encode(p *Payload, rec arrow.Record) error {
+func (w *recordEncoder) Encode(p *Payload, rec arrow.RecordBatch) error {
 	if err := w.encode(p, rec); err != nil {
 		return err
 	}
-	return w.encodeMetadata(p, rec.NumRows())
+
+	var customMeta arrow.Metadata
+	if rm, ok := rec.(arrow.RecordBatchWithMetadata); ok {
+		customMeta = rm.Metadata()
+	}
+	return w.encodeMetadata(p, rec.NumRows(), customMeta)
 }
 
-func (w *recordEncoder) encodeMetadata(p *Payload, nrows int64) error {
-	p.meta = writeRecordMessage(w.mem, nrows, p.size, w.fields, w.meta, w.codec, w.variadicCounts)
+func (w *recordEncoder) encodeMetadata(p *Payload, nrows int64, customMetadata arrow.Metadata) error {
+	p.meta = writeRecordMessage(w.mem, nrows, p.size, w.fields, w.meta, w.compression.codec, w.variadicCounts, customMetadata)
 	return nil
 }
 
@@ -1067,7 +1142,7 @@ func getTruncatedBuffer(offset, length int64, byteWidth int32, buf *memory.Buffe
 
 	paddedLen := paddedLength(length*int64(byteWidth), kArrowAlignment)
 	if offset != 0 || paddedLen < int64(buf.Len()) {
-		return memory.SliceBuffer(buf, int(offset*int64(byteWidth)), int(minI64(paddedLen, int64(buf.Len()))))
+		return memory.SliceBuffer(buf, int(offset*int64(byteWidth)), int(min(paddedLen, int64(buf.Len()))))
 	}
 	buf.Retain()
 	return buf
@@ -1080,16 +1155,40 @@ func needTruncate(offset int64, buf *memory.Buffer, minLength int64) bool {
 	return offset != 0 || minLength < int64(buf.Len())
 }
 
-func minI64(a, b int64) int64 {
-	if a < b {
-		return a
+// GetRecordBatchPayload produces the ipc payload for a given record batch.
+// The resulting payload itself must be released by the caller via the Release
+// method after it is no longer needed.
+func GetRecordBatchPayload(batch arrow.RecordBatch, opts ...Option) (Payload, error) {
+	cfg := newConfig(opts...)
+	compressors := make([]compressor, cfg.compressNP)
+	copy(compressors, cfg.compressors)
+	defer releaseCompressors(compressors)
+	var (
+		data = Payload{msg: MessageRecordBatch}
+		enc  = newRecordEncoder(
+			cfg.alloc,
+			0,
+			kMaxNestingDepth,
+			true,
+			compressionSettings{codec: cfg.codec, zstdLevel: cfg.zstdLevel, compressNP: cfg.compressNP},
+			cfg.minSpaceSavings,
+			compressors,
+		)
+	)
+
+	err := enc.Encode(&data, batch)
+	if err != nil {
+		data.Release()
+		return Payload{}, err
 	}
-	return b
+
+	return data, nil
 }
 
-func maxI32(a, b int32) int32 {
-	if a > b {
-		return a
-	}
-	return b
+// GetSchemaPayload produces the ipc payload for a given schema.
+func GetSchemaPayload(schema *arrow.Schema, mem memory.Allocator) Payload {
+	var mapper dictutils.Mapper
+	mapper.ImportSchema(schema)
+	ps := payloadFromSchema(schema, mem, &mapper)
+	return ps[0]
 }

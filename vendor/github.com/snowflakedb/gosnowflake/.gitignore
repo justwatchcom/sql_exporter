@@ -1,3 +1,4 @@
+*.DS_Store
 .idea/
 .vscode/
 parameters*.json
@@ -17,3 +18,7 @@ __debug_bin*
 
 # exclude vendor
 vendor
+
+# SSH private key for WIF tests
+ci/wif/parameters/rsa_wif_aws_azure
+ci/wif/parameters/rsa_wif_gcp

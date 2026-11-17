@@ -695,7 +695,11 @@ func castNumberToNumberUnsafe(in, out *exec.ArraySpan) {
 
 	inputOffset := in.Type.(arrow.FixedWidthDataType).Bytes() * int(in.Offset)
 	outputOffset := out.Type.(arrow.FixedWidthDataType).Bytes() * int(out.Offset)
-	castNumericUnsafe(in.Type.ID(), out.Type.ID(), in.Buffers[1].Buf[inputOffset:], out.Buffers[1].Buf[outputOffset:], int(in.Len))
+	if in.Type.ID() == arrow.FLOAT16 || out.Type.ID() == arrow.FLOAT16 {
+		castNumericGo(in.Type.ID(), out.Type.ID(), in.Buffers[1].Buf[inputOffset:], out.Buffers[1].Buf[outputOffset:], int(in.Len))
+	} else {
+		castNumericUnsafe(in.Type.ID(), out.Type.ID(), in.Buffers[1].Buf[inputOffset:], out.Buffers[1].Buf[outputOffset:], int(in.Len))
+	}
 }
 
 func MaxDecimalDigitsForInt(id arrow.Type) (int32, error) {
@@ -847,6 +851,10 @@ func (v *validityBuilder) Finish() (buf *memory.Buffer) {
 	return
 }
 
+func (v *validityBuilder) reset() {
+	v.bitLength, v.falseCount = 0, 0
+}
+
 type execBufBuilder struct {
 	mem    memory.Allocator
 	buffer *memory.Buffer
@@ -872,6 +880,10 @@ func (bldr *execBufBuilder) unsafeAppend(data []byte) {
 	bldr.sz += len(data)
 }
 
+func (bldr *execBufBuilder) reset() {
+	bldr.sz = 0
+}
+
 func (bldr *execBufBuilder) finish() (buf *memory.Buffer) {
 	if bldr.buffer == nil {
 		buf = memory.NewBufferBytes(nil)
@@ -879,7 +891,7 @@ func (bldr *execBufBuilder) finish() (buf *memory.Buffer) {
 	}
 	bldr.buffer.Resize(bldr.sz)
 	buf = bldr.buffer
-	bldr.buffer, bldr.sz = nil, 0
+	bldr.buffer, bldr.data, bldr.sz = nil, nil, 0
 	return
 }
 

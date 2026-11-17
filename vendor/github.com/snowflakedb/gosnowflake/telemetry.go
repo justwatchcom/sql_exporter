@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,12 +50,14 @@ type snowflakeTelemetry struct {
 
 func (st *snowflakeTelemetry) addLog(data *telemetryData) error {
 	if !st.enabled {
-		return fmt.Errorf("telemetry disabled; not adding log")
+		logger.Debug("telemetry disabled; not adding log")
+		return nil
 	}
 	st.mutex.Lock()
 	st.logs = append(st.logs, data)
+	shouldFlush := len(st.logs) >= st.flushSize
 	st.mutex.Unlock()
-	if len(st.logs) >= st.flushSize {
+	if shouldFlush {
 		if err := st.sendBatch(); err != nil {
 			return err
 		}
@@ -64,9 +67,8 @@ func (st *snowflakeTelemetry) addLog(data *telemetryData) error {
 
 func (st *snowflakeTelemetry) sendBatch() error {
 	if !st.enabled {
-		err := fmt.Errorf("telemetry disabled; not sending log")
-		logger.Debug(err)
-		return err
+		logger.Debug("telemetry disabled; not sending log")
+		return nil
 	}
 	type telemetry struct {
 		Logs []*telemetryData `json:"logs"`
@@ -74,6 +76,17 @@ func (st *snowflakeTelemetry) sendBatch() error {
 
 	st.mutex.Lock()
 	logsToSend := st.logs
+	minicoreLoadLogs.mu.Lock()
+	if mcLogs := minicoreLoadLogs.logs; len(mcLogs) > 0 {
+		logsToSend = append(logsToSend, &telemetryData{
+			Timestamp: time.Now().UnixMilli(),
+			Message: map[string]string{
+				"minicoreLogs": strings.Join(mcLogs, "; "),
+			},
+		})
+		minicoreLoadLogs.logs = make([]string, 0)
+	}
+	minicoreLoadLogs.mu.Unlock()
 	st.logs = make([]*telemetryData, 0)
 	st.mutex.Unlock()
 
@@ -87,38 +100,43 @@ func (st *snowflakeTelemetry) sendBatch() error {
 	if err != nil {
 		return err
 	}
-	logger.Debugf("sending %v logs to telemetry. inband telemetry payload "+
-		"being sent: %v", len(logsToSend), string(body))
+	logger.Debugf("sending %v logs to telemetry.", len(logsToSend))
+	logger.Debugf("telemetry payload being sent: %v", string(body))
 
 	headers := getHeaders()
 	if token, _, _ := st.sr.TokenAccessor.GetTokens(); token != "" {
 		headers[headerAuthorizationKey] = fmt.Sprintf(headerSnowflakeToken, token)
 	}
+	fullURL := st.sr.getFullURL(telemetryPath, nil)
 	resp, err := st.sr.FuncPost(context.Background(), st.sr,
-		st.sr.getFullURL(telemetryPath, nil), headers, body,
+		fullURL, headers, body,
 		defaultTelemetryTimeout, defaultTimeProvider, nil)
 	if err != nil {
-		logger.Info("failed to upload metrics to telemetry. err: %v", err)
+		logger.Errorf("failed to upload metrics to telemetry. err: %v", err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err = resp.Body.Close(); err != nil {
+			logger.Errorf("failed to close response body for %v. err: %v", fullURL, err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		err = fmt.Errorf("non-successful response from telemetry server: %v. "+
 			"disabling telemetry", resp.StatusCode)
-		logger.Info(err)
+		logger.Error(err)
 		st.enabled = false
 		return err
 	}
 	var respd telemetryResponse
 	if err = json.NewDecoder(resp.Body).Decode(&respd); err != nil {
-		logger.Info(err)
+		logger.Error(err)
 		st.enabled = false
 		return err
 	}
 	if !respd.Success {
 		err = fmt.Errorf("telemetry send failed with error code: %v, message: %v",
 			respd.Code, respd.Message)
-		logger.Info(err)
+		logger.Error(err)
 		st.enabled = false
 		return err
 	}

@@ -19,7 +19,7 @@ package linux
 
 import (
 	"bytes"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -32,10 +32,11 @@ import (
 
 const userHz = 100
 
+// Processes returns a list of processes on the system
 func (s linuxSystem) Processes() ([]types.Process, error) {
 	procs, err := s.procFS.AllProcs()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching all processes: %w", err)
 	}
 
 	processes := make([]types.Process, 0, len(procs))
@@ -45,19 +46,21 @@ func (s linuxSystem) Processes() ([]types.Process, error) {
 	return processes, nil
 }
 
+// Process returns the given process
 func (s linuxSystem) Process(pid int) (types.Process, error) {
-	proc, err := s.procFS.NewProc(pid)
+	proc, err := s.procFS.Proc(pid)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching process: %w", err)
 	}
 
 	return &process{Proc: proc, fs: s.procFS}, nil
 }
 
+// Self returns process info for the caller's own PID
 func (s linuxSystem) Self() (types.Process, error) {
 	proc, err := s.procFS.Self()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching self process info: %w", err)
 	}
 
 	return &process{Proc: proc, fs: s.procFS}, nil
@@ -69,19 +72,21 @@ type process struct {
 	info *types.ProcessInfo
 }
 
+// PID returns the PID of the process
 func (p *process) PID() int {
 	return p.Proc.PID
 }
 
+// Parent returns the parent process
 func (p *process) Parent() (types.Process, error) {
 	info, err := p.Info()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching process info: %w", err)
 	}
 
-	proc, err := p.fs.NewProc(info.PPID)
+	proc, err := p.fs.Proc(info.PPID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching data for parent process: %w", err)
 	}
 
 	return &process{Proc: proc, fs: p.fs}, nil
@@ -91,8 +96,8 @@ func (p *process) path(pa ...string) string {
 	return p.fs.path(append([]string{strconv.Itoa(p.PID())}, pa...)...)
 }
 
+// CWD returns the current working directory
 func (p *process) CWD() (string, error) {
-	// TODO: add CWD to procfs
 	cwd, err := os.Readlink(p.path("cwd"))
 	if os.IsNotExist(err) {
 		return "", nil
@@ -101,34 +106,35 @@ func (p *process) CWD() (string, error) {
 	return cwd, err
 }
 
+// Info returns basic process info
 func (p *process) Info() (types.ProcessInfo, error) {
 	if p.info != nil {
 		return *p.info, nil
 	}
 
-	stat, err := p.NewStat()
+	stat, err := p.Stat()
 	if err != nil {
-		return types.ProcessInfo{}, err
+		return types.ProcessInfo{}, fmt.Errorf("error fetching process stats: %w", err)
 	}
 
 	exe, err := p.Executable()
 	if err != nil {
-		return types.ProcessInfo{}, err
+		return types.ProcessInfo{}, fmt.Errorf("error fetching process executable info: %w", err)
 	}
 
 	args, err := p.CmdLine()
 	if err != nil {
-		return types.ProcessInfo{}, err
+		return types.ProcessInfo{}, fmt.Errorf("error fetching process cmdline: %w", err)
 	}
 
 	cwd, err := p.CWD()
 	if err != nil {
-		return types.ProcessInfo{}, err
+		return types.ProcessInfo{}, fmt.Errorf("error fetching process CWD: %w", err)
 	}
 
 	bootTime, err := bootTime(p.fs.FS)
 	if err != nil {
-		return types.ProcessInfo{}, err
+		return types.ProcessInfo{}, fmt.Errorf("error fetching boot time: %w", err)
 	}
 
 	p.info = &types.ProcessInfo{
@@ -144,8 +150,9 @@ func (p *process) Info() (types.ProcessInfo, error) {
 	return *p.info, nil
 }
 
+// Memory returns memory stats for the process
 func (p *process) Memory() (types.MemoryInfo, error) {
-	stat, err := p.NewStat()
+	stat, err := p.Stat()
 	if err != nil {
 		return types.MemoryInfo{}, err
 	}
@@ -156,8 +163,9 @@ func (p *process) Memory() (types.MemoryInfo, error) {
 	}, nil
 }
 
+// CPUTime returns CPU usage time for the process
 func (p *process) CPUTime() (types.CPUTimes, error) {
-	stat, err := p.NewStat()
+	stat, err := p.Stat()
 	if err != nil {
 		return types.CPUTimes{}, err
 	}
@@ -178,9 +186,10 @@ func (p *process) OpenHandleCount() (int, error) {
 	return p.Proc.FileDescriptorsLen()
 }
 
+// Environment returns a list of environment variables for the process
 func (p *process) Environment() (map[string]string, error) {
 	// TODO: add Environment to procfs
-	content, err := ioutil.ReadFile(p.path("environ"))
+	content, err := os.ReadFile(p.path("environ"))
 	if err != nil {
 		return nil, err
 	}
@@ -204,8 +213,9 @@ func (p *process) Environment() (map[string]string, error) {
 	return env, nil
 }
 
+// Seccomp returns seccomp info for the process
 func (p *process) Seccomp() (*types.SeccompInfo, error) {
-	content, err := ioutil.ReadFile(p.path("status"))
+	content, err := os.ReadFile(p.path("status"))
 	if err != nil {
 		return nil, err
 	}
@@ -213,8 +223,9 @@ func (p *process) Seccomp() (*types.SeccompInfo, error) {
 	return readSeccompFields(content)
 }
 
+// Capabilities returns capability info for the process
 func (p *process) Capabilities() (*types.CapabilityInfo, error) {
-	content, err := ioutil.ReadFile(p.path("status"))
+	content, err := os.ReadFile(p.path("status"))
 	if err != nil {
 		return nil, err
 	}
@@ -222,8 +233,9 @@ func (p *process) Capabilities() (*types.CapabilityInfo, error) {
 	return readCapabilities(content)
 }
 
+// User returns user info for the process
 func (p *process) User() (types.UserInfo, error) {
-	content, err := ioutil.ReadFile(p.path("status"))
+	content, err := os.ReadFile(p.path("status"))
 	if err != nil {
 		return types.UserInfo{}, err
 	}
@@ -249,28 +261,31 @@ func (p *process) User() (types.UserInfo, error) {
 		}
 		return nil
 	})
+	if err != nil {
+		return user, fmt.Errorf("error partsing key-values in user data: %w", err)
+	}
 
 	return user, nil
 }
 
 // NetworkStats reports network stats for an individual PID.
 func (p *process) NetworkCounters() (*types.NetworkCountersInfo, error) {
-	snmpRaw, err := ioutil.ReadFile(p.path("net/snmp"))
+	snmpRaw, err := os.ReadFile(p.path("net/snmp"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading net/snmp file: %w", err)
 	}
 	snmp, err := getNetSnmpStats(snmpRaw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error parsing SNMP network data: %w", err)
 	}
 
-	netstatRaw, err := ioutil.ReadFile(p.path("net/netstat"))
+	netstatRaw, err := os.ReadFile(p.path("net/netstat"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading net/netstat file: %w", err)
 	}
 	netstat, err := getNetstatStats(netstatRaw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error parsing netstat file: %w", err)
 	}
 
 	return &types.NetworkCountersInfo{SNMP: snmp, Netstat: netstat}, nil

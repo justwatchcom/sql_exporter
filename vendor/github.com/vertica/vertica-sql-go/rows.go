@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2023 Open Text.
+// Copyright (c) 2019-2024 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -351,4 +351,28 @@ func newEmptyRows() *rows {
 	cdf := make([]*msgs.BERowDescColumnDef, 0)
 	be := &msgs.BERowDescMsg{Columns: cdf}
 	return newRows(context.Background(), be, "")
+}
+
+// expandColumnDefs grows r.columnDefs to cover at least numCols columns.
+// It is a last-resort fallback for CALL statements where Vertica's Describe
+// phase returns an incomplete RowDescription and no execution-time
+// RowDescription is sent to correct it. Synthetic entries use OID 0 so that
+// rows.Next() returns the raw wire bytes as a string (the default case),
+// making the behaviour explicit rather than falsely claiming a specific type.
+// The caller invokes this whenever a DataRow wider than columnDefs is seen,
+// not only on the first row.
+//
+// Ordering guarantee: this function is called inside collectResults(), which
+// fully drains the wire and buffers all rows before returning the *rows object
+// to database/sql. Because database/sql only calls Columns() after receiving
+// that object, all expansions are complete before Columns() executes.
+// This invariant would break in a streaming/lazy-row model where *rows is
+// handed to the caller before all DataRows have been received.
+func (r *rows) expandColumnDefs(numCols uint16) {
+	for uint16(len(r.columnDefs.Columns)) < numCols {
+		r.columnDefs.Columns = append(r.columnDefs.Columns, &msgs.BERowDescColumnDef{
+			FieldName:   fmt.Sprintf("unknown_col%d", len(r.columnDefs.Columns)),
+			DataTypeOID: 0, // unknown — falls to the default string case in rows.Next()
+		})
+	}
 }

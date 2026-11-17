@@ -20,6 +20,7 @@ package compute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -92,7 +93,7 @@ var (
 //   - PreallocContiguous = true
 //   - Registry = GetFunctionRegistry()
 //   - ExecChannelSize = 10
-//   - NumParallel = runtime.NumCPU()
+//   - NumParallel = runtime.GOMAXPROCS(0)
 func DefaultExecCtx() ExecCtx { return defaultExecCtx }
 
 func init() {
@@ -100,9 +101,10 @@ func init() {
 	defaultExecCtx.PreallocContiguous = true
 	defaultExecCtx.Registry = GetFunctionRegistry()
 	defaultExecCtx.ExecChannelSize = 10
-	// default level of parallelism
+	// default level of parallelism, bounded by GOMAXPROCS so that cgroup CPU
+	// limits (Go 1.25+) and explicit GOMAXPROCS settings are respected.
 	// set to 1 to disable parallelization
-	defaultExecCtx.NumParallel = runtime.NumCPU()
+	defaultExecCtx.NumParallel = runtime.GOMAXPROCS(0)
 }
 
 // SetExecCtx returns a new child context containing the passed in ExecCtx
@@ -245,10 +247,14 @@ func propagateNulls(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ArraySp
 		return fmt.Errorf("%w: can only propagate nulls into pre-allocated memory when output offset is non-zero", arrow.ErrInvalid)
 	}
 
-	var (
+	var scratch [8]*exec.ArraySpan
+	arrsWithNulls := scratch[:0]
+	if len(batch.Values) > len(scratch) {
 		arrsWithNulls = make([]*exec.ArraySpan, 0, len(batch.Values))
-		isAllNull     bool
-		prealloc      bool = out.Buffers[0].Buf != nil
+	}
+	var (
+		isAllNull bool
+		prealloc  = out.Buffers[0].Buf != nil
 	)
 
 	for i := range batch.Values {
@@ -439,7 +445,7 @@ func (e *nonAggExecImpl) Init(ctx *exec.KernelCtx, args exec.KernelInitArgs) (er
 }
 
 func (e *nonAggExecImpl) prepareOutput(length int) *exec.ExecResult {
-	var nullCount int = array.UnknownNullCount
+	var nullCount = array.UnknownNullCount
 
 	if e.kernel.GetNullHandling() == exec.NullNoOutput {
 		nullCount = 0
@@ -521,7 +527,21 @@ func (s *scalarExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 	var (
 		output Datum
 		acc    []arrow.Array
+		ok     bool
 	)
+	releaseAccumulated := func() {
+		for _, c := range acc {
+			c.Release()
+		}
+		acc = nil
+	}
+	releaseOutput := func() {
+		if output != nil {
+			output.Release()
+			output = nil
+		}
+		releaseAccumulated()
+	}
 
 	toChunked := func() {
 		acc = output.(ArrayLikeDatum).Chunks()
@@ -533,7 +553,13 @@ func (s *scalarExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 	select {
 	case <-ctx.Done():
 		return nil
-	case output = <-out:
+	case output, ok = <-out:
+		if !ok || output == nil || ctx.Err() != nil {
+			if output != nil {
+				output.Release()
+			}
+			return nil
+		}
 		// if the inputs contained at least one chunked array
 		// then we want to return chunked output
 		if hasChunked {
@@ -544,18 +570,23 @@ func (s *scalarExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 	for {
 		select {
 		case <-ctx.Done():
-			// context is done, either cancelled or a timeout.
-			// either way, we end early and return what we've got so far.
-			return output
+			// A canceled call must not return a partial result.
+			releaseOutput()
+			return nil
 		case o, ok := <-out:
 			if !ok { // channel closed, wrap it up
+				// Cancellation and channel closure can become ready together.
+				// Recheck the context so selecting the channel cannot make a
+				// canceled call return a result nondeterministically.
+				if ctx.Err() != nil {
+					releaseOutput()
+					return nil
+				}
 				if output != nil {
 					return output
 				}
 
-				for _, c := range acc {
-					defer c.Release()
-				}
+				defer releaseAccumulated()
 
 				chkd := arrow.NewChunked(s.outType, acc)
 				defer chkd.Release()
@@ -579,6 +610,15 @@ func (s *scalarExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 }
 
 func (s *scalarExecutor) executeSpans(data chan<- Datum) (err error) {
+	defer func() {
+		// Clean up per-invocation kernel state using ctx.State rather than
+		// the shared kernel.Data field, which races when multiple goroutines
+		// execute the same kernel concurrently.
+		if sk, ok := s.kernel.(*exec.ScalarKernel); ok && sk.CleanupFn != nil && s.ctx.State != nil {
+			err = errors.Join(err, sk.CleanupFn(s.ctx.State))
+		}
+	}()
+
 	var (
 		input  exec.ExecSpan
 		output exec.ExecResult
@@ -587,8 +627,7 @@ func (s *scalarExecutor) executeSpans(data chan<- Datum) (err error) {
 
 	if s.preallocContiguous {
 		// make one big output alloc
-		prealloc := s.prepareOutput(int(s.iterLen))
-		output = *prealloc
+		output := s.prepareOutput(int(s.iterLen))
 
 		output.Offset = 0
 		var resultOffset int64
@@ -598,15 +637,19 @@ func (s *scalarExecutor) executeSpans(data chan<- Datum) (err error) {
 				break
 			}
 			output.SetSlice(resultOffset, input.Len)
-			err = s.executeSingleSpan(&input, &output)
+			err = s.executeSingleSpan(&input, output)
 			resultOffset = nextOffset
 		}
 		if err != nil {
-			prealloc.Release()
+			output.Release()
 			return
 		}
 
-		return s.emitResult(prealloc, data)
+		if output.Offset != 0 {
+			output.SetSlice(0, s.iterLen)
+		}
+
+		return s.emitResult(output, data)
 	}
 
 	// fully preallocating, but not contiguously
@@ -642,7 +685,7 @@ func (s *scalarExecutor) executeSingleSpan(input *exec.ExecSpan, out *exec.ExecR
 	return s.kernel.Exec(s.ctx, input, out)
 }
 
-func (s *scalarExecutor) setupPrealloc(totalLen int64, args []Datum) error {
+func (s *scalarExecutor) setupPrealloc(_ int64, args []Datum) error {
 	s.numOutBuf = len(s.outType.Layout().Buffers)
 	outTypeID := s.outType.ID()
 	// default to no validity pre-allocation for the following cases:
@@ -753,42 +796,61 @@ func iterateExecSpans(batch *ExecBatch, maxChunkSize int64, promoteIfAllScalar b
 	}
 
 	var (
-		args           []Datum = batch.Values
-		haveChunked    bool
-		chunkIdxes           = make([]int, len(args))
-		valuePositions       = make([]int64, len(args))
-		valueOffsets         = make([]int64, len(args))
-		pos, length    int64 = 0, batch.Len
+		args              = batch.Values
+		pos, length int64 = 0, batch.Len
 	)
 	haveAllScalars = checkIfAllScalar(batch)
 	maxChunkSize = exec.Min(length, maxChunkSize)
 
 	span := exec.ExecSpan{Values: make([]exec.ExecValue, len(args)), Len: 0}
+	haveChunked := false
 	for i, a := range args {
 		switch arg := a.(type) {
 		case *ScalarDatum:
 			span.Values[i].Scalar = arg.Value
 		case *ArrayDatum:
 			span.Values[i].Array.SetMembers(arg.Value)
-			valueOffsets[i] = int64(arg.Value.Offset())
 		case *ChunkedDatum:
+			haveChunked = true
 			// populate from first chunk
 			carr := arg.Value
 			if len(carr.Chunks()) > 0 {
 				arr := carr.Chunk(0).Data()
 				span.Values[i].Array.SetMembers(arr)
-				valueOffsets[i] = int64(arr.Offset())
 			} else {
 				// fill as zero len
 				exec.FillZeroLength(carr.DataType(), &span.Values[i].Array)
 			}
-			haveChunked = true
+		}
+	}
+
+	singleSpan := !haveChunked && length > 0 && length <= maxChunkSize
+	var valueOffsets []int64
+	if !singleSpan {
+		valueOffsets = make([]int64, len(args))
+		for i := range args {
+			valueOffsets[i] = span.Values[i].Array.Offset
 		}
 	}
 
 	if haveAllScalars && promoteIfAllScalar {
 		exec.PromoteExecSpanScalars(span)
 	}
+
+	if singleSpan {
+		span.Len = length
+		returned := false
+		return haveAllScalars, func() (exec.ExecSpan, int64, bool) {
+			if returned {
+				return exec.ExecSpan{}, length, false
+			}
+			returned = true
+			return span, length, true
+		}, nil
+	}
+
+	chunkIdxes := make([]int, len(args))
+	valuePositions := make([]int64, len(args))
 
 	nextChunkSpan := func(iterSz int64, span exec.ExecSpan) int64 {
 		for i := 0; i < len(args) && iterSz > 0; i++ {
@@ -856,6 +918,9 @@ var (
 	}
 	vectorExecPool = sync.Pool{
 		New: func() any { return &vectorExecutor{} },
+	}
+	scalarAggExecPool = sync.Pool{
+		New: func() any { return &scalarAggExecutor{} },
 	}
 )
 
@@ -971,6 +1036,12 @@ func (v *vectorExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 		case <-ctx.Done():
 			return nil
 		case output = <-out:
+			if output == nil || ctx.Err() != nil {
+				if output != nil {
+					output.Release()
+				}
+				return nil
+			}
 		}
 
 		// we got an output datum, but let's wait for the channel to
@@ -980,6 +1051,10 @@ func (v *vectorExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 			output.Release()
 			return nil
 		case <-out:
+			if ctx.Err() != nil {
+				output.Release()
+				return nil
+			}
 			return output
 		}
 	}
@@ -989,18 +1064,37 @@ func (v *vectorExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 		output Datum
 		acc    []arrow.Array
 	)
+	releaseAccumulated := func() {
+		for _, c := range acc {
+			c.Release()
+		}
+		acc = nil
+	}
+	releaseOutput := func() {
+		if output != nil {
+			output.Release()
+			output = nil
+		}
+		releaseAccumulated()
+	}
 
 	toChunked := func() {
 		out := output.(ArrayLikeDatum).Chunks()
 		acc = make([]arrow.Array, 0, len(out))
+		isChunked := output.Kind() == KindChunked
 		for _, o := range out {
 			if o.Len() > 0 {
+				if isChunked {
+					// ChunkedDatum.Chunks returns borrowed references.
+					o.Retain()
+				}
 				acc = append(acc, o)
+			} else if !isChunked {
+				// ArrayDatum.Chunks creates an owned array.
+				o.Release()
 			}
 		}
-		if output.Kind() != KindChunked {
-			output.Release()
-		}
+		output.Release()
 		output = nil
 	}
 
@@ -1010,6 +1104,9 @@ func (v *vectorExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 		return nil
 	case output = <-out:
 		if output == nil || ctx.Err() != nil {
+			if output != nil {
+				output.Release()
+			}
 			return nil
 		}
 
@@ -1023,18 +1120,23 @@ func (v *vectorExecutor) WrapResults(ctx context.Context, out <-chan Datum, hasC
 	for {
 		select {
 		case <-ctx.Done():
-			// context is done, either cancelled or a timeout.
-			// either way, we end early and return what we've got so far.
-			return output
+			// A canceled call must not return a partial result.
+			releaseOutput()
+			return nil
 		case o, ok := <-out:
 			if !ok { // channel closed, wrap it up
+				// Cancellation and channel closure can become ready together.
+				// Recheck the context so selecting the channel cannot make a
+				// canceled call return a result nondeterministically.
+				if ctx.Err() != nil {
+					releaseOutput()
+					return nil
+				}
 				if output != nil {
 					return output
 				}
 
-				for _, c := range acc {
-					defer c.Release()
-				}
+				defer releaseAccumulated()
 
 				chkd := arrow.NewChunked(v.outType, acc)
 				defer chkd.Release()
@@ -1107,9 +1209,11 @@ func (v *vectorExecutor) execChunked(batch *ExecBatch, out chan<- Datum) error {
 	}
 
 	if len(result) == 0 {
-		empty := output.MakeArray()
+		outType := output.Type
+		empty := array.MakeArrayOfNull(exec.GetAllocator(v.ctx.Ctx), outType, 0)
 		defer empty.Release()
-		out <- &ChunkedDatum{Value: arrow.NewChunked(output.Type, []arrow.Array{empty})}
+		output.Release()
+		out <- &ChunkedDatum{Value: arrow.NewChunked(outType, []arrow.Array{empty})}
 		return nil
 	}
 
@@ -1119,4 +1223,188 @@ func (v *vectorExecutor) execChunked(batch *ExecBatch, out chan<- Datum) error {
 		}
 	}
 	return nil
+}
+
+// NewScalarAggExecutor constructs an executor for scalar aggregate kernels,
+// which consume the whole input into a single kernel state and finalize it
+// once into a single result.
+func NewScalarAggExecutor() KernelExecutor { return &scalarAggExecutor{} }
+
+// scalarAggExecutor drives a scalar aggregate kernel. Unlike the scalar and
+// vector executors it produces exactly one Datum, and it does not preallocate
+// or propagate nulls: the kernel owns the whole result.
+//
+// The state the kernel's init function produced is owned by this executor
+// from Init until cleanup, which happens exactly once, whether the
+// aggregation succeeded, saw no input at all, was cancelled, or failed.
+type scalarAggExecutor struct {
+	ctx     *exec.KernelCtx
+	ectx    ExecCtx
+	kernel  exec.AggKernel
+	outType arrow.DataType
+	cleaned bool
+}
+
+func (a *scalarAggExecutor) Init(ctx *exec.KernelCtx, args exec.KernelInitArgs) (err error) {
+	a.ctx, a.cleaned = ctx, false
+	k, ok := args.Kernel.(exec.AggKernel)
+	if !ok {
+		return fmt.Errorf("%w: scalar aggregate execution requires an aggregate kernel, got %T",
+			arrow.ErrInvalid, args.Kernel)
+	}
+	a.kernel = k
+	a.ectx = GetExecCtx(ctx.Ctx)
+	a.outType, err = k.GetSig().OutType.Resolve(ctx, args.Inputs)
+	return
+}
+
+func (a *scalarAggExecutor) Execute(ctx context.Context, batch *ExecBatch, data chan<- Datum) (err error) {
+	defer func() {
+		if cleanupErr := a.cleanupState(); cleanupErr != nil && err == nil {
+			err = cleanupErr
+		}
+	}()
+
+	if a.ctx.State == nil {
+		return fmt.Errorf("%w: scalar aggregation requires a non-nil kernel state", arrow.ErrInvalid)
+	}
+
+	if err = a.consumeBatch(ctx, batch); err != nil {
+		return
+	}
+
+	// an empty input still reaches finalize, so that the options decide
+	// what an aggregation over no values produces
+	var result *exec.AggregateResult
+	if result, err = a.kernel.Finalize(a.ctx); err != nil {
+		return
+	}
+	if result == nil {
+		return fmt.Errorf("%w: scalar aggregate kernel finalized without a result", arrow.ErrInvalid)
+	}
+
+	// the result owns its value; boxing it as an owned Datum hands that
+	// single reference over to the Datum, which the caller releases
+	var out Datum
+	switch taken := result.Take().(type) {
+	case nil:
+		out = &EmptyDatum{}
+	case scalar.Scalar:
+		out = &ScalarDatum{Value: taken}
+	case arrow.ArrayData:
+		out = &ArrayDatum{Value: taken}
+	default:
+		return fmt.Errorf("%w: unexpected aggregate result type %T from Take()", arrow.ErrInvalid, taken)
+	}
+	select {
+	case <-ctx.Done():
+		out.Release()
+		return context.Cause(ctx)
+	case data <- out:
+		return nil
+	}
+}
+
+// consumeBatch folds every chunk of the batch into the kernel state. Scalars
+// are not promoted to arrays, as they are for scalar kernels: an aggregate
+// kernel handles a scalar input weighted by the length of the span, which is
+// both cheaper and what the C++ implementation does.
+func (a *scalarAggExecutor) consumeBatch(ctx context.Context, batch *ExecBatch) error {
+	maxChunkSize := a.ectx.ChunkSize
+	if maxChunkSize <= 0 {
+		maxChunkSize = DefaultMaxChunkSize
+	}
+
+	if checkIfAllScalar(batch) && batch.Len > 1 {
+		// a batch of scalars can carry a logical length greater than one,
+		// for instance when only the partition columns of a batch were
+		// projected for an aggregation
+		span := ExecSpanFromBatch(batch)
+		for pos := int64(0); pos < batch.Len; {
+			span.Len = exec.Min(batch.Len-pos, maxChunkSize)
+			if err := a.consumeSpan(ctx, span); err != nil {
+				return err
+			}
+			pos += span.Len
+		}
+		return nil
+	}
+
+	_, iter, err := iterateExecSpans(batch, maxChunkSize, false)
+	if err != nil {
+		return err
+	}
+
+	for {
+		span, _, ok := iter()
+		if !ok {
+			break
+		}
+		if span.Len == 0 {
+			continue
+		}
+		if err := a.consumeSpan(ctx, &span); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *scalarAggExecutor) consumeSpan(ctx context.Context, span *exec.ExecSpan) error {
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
+	}
+	return a.kernel.Consume(a.ctx, span)
+}
+
+// WrapResults returns the single result of the aggregation. It reads the
+// channel until it is closed, so that the goroutine which produced the result
+// has finished by the time the state is cleaned up.
+func (a *scalarAggExecutor) WrapResults(ctx context.Context, out <-chan Datum, _ bool) Datum {
+	var result Datum
+	for datum := range out {
+		if datum == nil {
+			continue
+		}
+		if result != nil {
+			datum.Release()
+			continue
+		}
+		result = datum
+	}
+
+	if ctx.Err() != nil && result != nil {
+		result.Release()
+		return nil
+	}
+	return result
+}
+
+func (a *scalarAggExecutor) CheckResultType(out Datum) error {
+	typ := out.(ArrayLikeDatum).Type()
+	if typ != nil && !arrow.TypeEqual(a.outType, typ) {
+		return fmt.Errorf("%w: kernel type result mismatch: declared as %s, actual is %s",
+			arrow.ErrType, a.outType, typ)
+	}
+	return nil
+}
+
+func (a *scalarAggExecutor) Clear() {
+	// a no-op if Execute already cleaned up; this covers the paths where it
+	// did not run at all, such as a failure in Init
+	_ = a.cleanupState()
+	a.ctx, a.kernel, a.outType = nil, nil, nil
+	a.cleaned = false
+}
+
+// cleanupState releases the aggregate state exactly once. It does not touch
+// the result which finalize returned: that result owns its own reference.
+func (a *scalarAggExecutor) cleanupState() error {
+	if a.cleaned || a.ctx == nil || a.kernel == nil {
+		return nil
+	}
+	a.cleaned = true
+	state := a.ctx.State
+	a.ctx.State = nil
+	return a.kernel.Cleanup(a.ctx, state)
 }

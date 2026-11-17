@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var paramsMutex *sync.Mutex
@@ -33,7 +35,13 @@ func (d SnowflakeDriver) Open(dsn string) (driver.Conn, error) {
 
 // OpenConnector creates a new connector with parsed DSN.
 func (d SnowflakeDriver) OpenConnector(dsn string) (driver.Connector, error) {
-	cfg, err := ParseDSN(dsn)
+	var cfg *Config
+	var err error
+	if dsn == "autoConfig" {
+		cfg, err = loadConnectionConfig()
+	} else {
+		cfg, err = ParseDSN(dsn)
+	}
 	if err != nil {
 		return Connector{}, err
 	}
@@ -42,6 +50,7 @@ func (d SnowflakeDriver) OpenConnector(dsn string) (driver.Connector, error) {
 
 // OpenWithConfig creates a new connection with the given Config.
 func (d SnowflakeDriver) OpenWithConfig(ctx context.Context, config Config) (driver.Conn, error) {
+	timer := time.Now()
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -54,6 +63,16 @@ func (d SnowflakeDriver) OpenWithConfig(ctx context.Context, config Config) (dri
 		}
 	}
 	logger.WithContext(ctx).Info("OpenWithConfig")
+
+	if config.ConnectionDiagnosticsEnabled {
+		connDiagDownloadCrl := (config.CertRevocationCheckMode.String() == "ADVISORY") || (config.CertRevocationCheckMode.String() == "ENABLED")
+		logger.WithContext(ctx).Infof("Connection diagnostics enabled. Allowlist file specified in config: %s, will download CRLs in certificates: %s",
+			config.ConnectionDiagnosticsAllowlistFile, strconv.FormatBool(connDiagDownloadCrl))
+		performDiagnosis(&config, connDiagDownloadCrl)
+		logger.WithContext(ctx).Info("Connection diagnostics finished.")
+		logger.WithContext(ctx).Warn("A connection to Snowflake was not created because the driver is running in diagnostics mode. If this is unintended then disable diagnostics check by removing the ConnectionDiagnosticsEnabled connection parameter")
+		os.Exit(0)
+	}
 	sc, err := buildSnowflakeConn(ctx, config)
 	if err != nil {
 		return nil, err
@@ -66,12 +85,18 @@ func (d SnowflakeDriver) OpenWithConfig(ctx context.Context, config Config) (dri
 	}
 
 	if err = authenticateWithConfig(sc); err != nil {
+		logger.WithContext(ctx).Errorf("Failed to authenticate. Connection failed after %v milliseconds", time.Since(timer).String())
 		return nil, err
 	}
 	sc.connectionTelemetry(&config)
 
 	sc.startHeartBeat()
 	sc.internal = &httpClient{sr: sc.rest}
+	// Check context before returning since connectionTelemetry doesn't handle cancellation
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	logger.WithContext(ctx).Infof("Connected successfully after %v milliseconds", time.Since(timer).String())
 	return sc, nil
 }
 

@@ -19,14 +19,16 @@ package array
 import (
 	"fmt"
 	"math"
+	"reflect"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 )
 
 // RecordEqual reports whether the two provided records are equal.
-func RecordEqual(left, right arrow.Record) bool {
+func RecordEqual(left, right arrow.RecordBatch) bool {
 	switch {
 	case left.NumCols() != right.NumCols():
 		return false
@@ -46,7 +48,7 @@ func RecordEqual(left, right arrow.Record) bool {
 
 // RecordApproxEqual reports whether the two provided records are approximately equal.
 // For non-floating point columns, it is equivalent to RecordEqual.
-func RecordApproxEqual(left, right arrow.Record, opts ...EqualOption) bool {
+func RecordApproxEqual(left, right arrow.RecordBatch, opts ...EqualOption) bool {
 	switch {
 	case left.NumCols() != right.NumCols():
 		return false
@@ -72,7 +74,7 @@ func RecordApproxEqual(left, right arrow.Record, opts ...EqualOption) bool {
 func chunkedBinaryApply(left, right *arrow.Chunked, fn func(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64) bool) {
 	var (
 		pos               int64
-		length            int64 = int64(left.Len())
+		length            = int64(left.Len())
 		leftIdx, rightIdx int
 		leftPos, rightPos int64
 	)
@@ -118,7 +120,7 @@ func ChunkedEqual(left, right *arrow.Chunked) bool {
 		return false
 	}
 
-	var isequal bool = true
+	var isequal = true
 	chunkedBinaryApply(left, right, func(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64) bool {
 		isequal = SliceEqual(left, lbeg, lend, right, rbeg, rend)
 		return isequal
@@ -141,7 +143,7 @@ func ChunkedApproxEqual(left, right *arrow.Chunked, opts ...EqualOption) bool {
 		return false
 	}
 
-	var isequal bool
+	var isequal = true
 	chunkedBinaryApply(left, right, func(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64) bool {
 		isequal = SliceApproxEqual(left, lbeg, lend, right, rbeg, rend, opts...)
 		return isequal
@@ -240,37 +242,37 @@ func Equal(left, right arrow.Array) bool {
 		return arrayEqualStringView(l, r)
 	case *Int8:
 		r := right.(*Int8)
-		return arrayEqualInt8(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int16:
 		r := right.(*Int16)
-		return arrayEqualInt16(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int32:
 		r := right.(*Int32)
-		return arrayEqualInt32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int64:
 		r := right.(*Int64)
-		return arrayEqualInt64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint8:
 		r := right.(*Uint8)
-		return arrayEqualUint8(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint16:
 		r := right.(*Uint16)
-		return arrayEqualUint16(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint32:
 		r := right.(*Uint32)
-		return arrayEqualUint32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint64:
 		r := right.(*Uint64)
-		return arrayEqualUint64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Float16:
 		r := right.(*Float16)
-		return arrayEqualFloat16(l, r)
+		return arrayEqualFixedWidthScalar(l, r)
 	case *Float32:
 		r := right.(*Float32)
-		return arrayEqualFloat32(l, r)
+		return arrayEqualFixedWidthScalar(l, r)
 	case *Float64:
 		r := right.(*Float64)
-		return arrayEqualFloat64(l, r)
+		return arrayEqualFixedWidthScalar(l, r)
 	case *Decimal32:
 		r := right.(*Decimal32)
 		return arrayEqualDecimal(l, r)
@@ -285,16 +287,16 @@ func Equal(left, right arrow.Array) bool {
 		return arrayEqualDecimal(l, r)
 	case *Date32:
 		r := right.(*Date32)
-		return arrayEqualDate32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Date64:
 		r := right.(*Date64)
-		return arrayEqualDate64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Time32:
 		r := right.(*Time32)
-		return arrayEqualTime32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Time64:
 		r := right.(*Time64)
-		return arrayEqualTime64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Timestamp:
 		r := right.(*Timestamp)
 		return arrayEqualTimestamp(l, r)
@@ -327,7 +329,7 @@ func Equal(left, right arrow.Array) bool {
 		return arrayEqualMonthDayNanoInterval(l, r)
 	case *Duration:
 		r := right.(*Duration)
-		return arrayEqualDuration(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Map:
 		r := right.(*Map)
 		return arrayEqualMap(l, r)
@@ -353,12 +355,154 @@ func Equal(left, right arrow.Array) bool {
 
 // SliceEqual reports whether slices left[lbeg:lend] and right[rbeg:rend] are equal.
 func SliceEqual(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64) bool {
+	if lbeg == 0 && lend == int64(left.Len()) &&
+		rbeg == 0 && rend == int64(right.Len()) &&
+		canEqualDirectly(left, right) {
+		return Equal(left, right)
+	}
+
 	l := NewSlice(left, lbeg, lend)
 	defer l.Release()
 	r := NewSlice(right, rbeg, rend)
 	defer r.Release()
 
 	return Equal(l, r)
+}
+
+// canEqualDirectly reports whether Equal can handle both arrays without first
+// normalizing them through NewSlice. Equal uses concrete type assertions, so
+// generic arrow.Array implementations and mismatched concrete types must keep
+// the normalization path.
+func canEqualDirectly(left, right arrow.Array) bool {
+	if reflect.TypeOf(left) != reflect.TypeOf(right) {
+		return false
+	}
+
+	switch left.(type) {
+	case *Binary:
+		// Binary builders can retain string datatypes, which need normalization.
+		return left.DataType().ID() == arrow.BINARY && right.DataType().ID() == arrow.BINARY
+	case *LargeBinary:
+		return left.DataType().ID() == arrow.LARGE_BINARY && right.DataType().ID() == arrow.LARGE_BINARY
+	case *Null, *Boolean, *FixedSizeBinary, *String,
+		*LargeString, *BinaryView, *StringView,
+		*Int8, *Int16, *Int32, *Int64, *Uint8, *Uint16, *Uint32, *Uint64,
+		*Float16, *Float32, *Float64,
+		*Decimal32, *Decimal64, *Decimal128, *Decimal256,
+		*Date32, *Date64, *Time32, *Time64, *Timestamp,
+		*List, *LargeList, *ListView, *LargeListView, *FixedSizeList,
+		*Struct, *MonthInterval, *DayTimeInterval, *MonthDayNanoInterval,
+		*Duration, *Map, ExtensionArray, *Dictionary, *SparseUnion,
+		*DenseUnion, *RunEndEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
+type listOffset interface {
+	int32 | int64
+}
+
+func arrayEqualListOffsets[T listOffset](leftValues, rightValues arrow.Array,
+	leftOffsets, rightOffsets []T, leftOffset, rightOffset, length int, validBits []byte) bool {
+	if len(validBits) == 0 {
+		validBits = nil
+	}
+	return bitutils.VisitSetBitRuns(validBits, int64(leftOffset), int64(length),
+		func(pos, runLength int64) error {
+			leftIndex := leftOffset + int(pos)
+			rightIndex := rightOffset + int(pos)
+			for i := range int(runLength) {
+				leftLength := int64(leftOffsets[leftIndex+i+1]) - int64(leftOffsets[leftIndex+i])
+				rightLength := int64(rightOffsets[rightIndex+i+1]) - int64(rightOffsets[rightIndex+i])
+				if leftLength != rightLength {
+					return arrow.ErrInvalid
+				}
+			}
+
+			leftStart := int64(leftOffsets[leftIndex])
+			rightStart := int64(rightOffsets[rightIndex])
+			leftEnd := int64(leftOffsets[leftIndex+int(runLength)])
+			rightEnd := int64(rightOffsets[rightIndex+int(runLength)])
+			if !SliceEqual(leftValues, leftStart, leftEnd, rightValues, rightStart, rightEnd) {
+				return arrow.ErrInvalid
+			}
+			return nil
+		}) == nil
+}
+
+func arrayApproxEqualListOffsets[T listOffset](leftValues, rightValues arrow.Array,
+	leftOffsets, rightOffsets []T, leftOffset, rightOffset, length int, validBits []byte, opt equalOption) bool {
+	if len(validBits) == 0 {
+		validBits = nil
+	}
+	return bitutils.VisitSetBitRuns(validBits, int64(leftOffset), int64(length),
+		func(pos, runLength int64) error {
+			leftIndex := leftOffset + int(pos)
+			rightIndex := rightOffset + int(pos)
+			for i := range int(runLength) {
+				leftLength := int64(leftOffsets[leftIndex+i+1]) - int64(leftOffsets[leftIndex+i])
+				rightLength := int64(rightOffsets[rightIndex+i+1]) - int64(rightOffsets[rightIndex+i])
+				if leftLength != rightLength {
+					return arrow.ErrInvalid
+				}
+			}
+
+			leftStart := int64(leftOffsets[leftIndex])
+			rightStart := int64(rightOffsets[rightIndex])
+			leftEnd := int64(leftOffsets[leftIndex+int(runLength)])
+			rightEnd := int64(rightOffsets[rightIndex+int(runLength)])
+			if !sliceApproxEqual(leftValues, leftStart, leftEnd, rightValues, rightStart, rightEnd, opt) {
+				return arrow.ErrInvalid
+			}
+			return nil
+		}) == nil
+}
+
+type listArrayWithValue interface {
+	arrow.Array
+	newListValue(int) arrow.Array
+}
+
+func arrayApproxEqualListScalar(left, right listArrayWithValue, opt equalOption) bool {
+	for i := 0; i < left.Len(); i++ {
+		if left.IsNull(i) {
+			continue
+		}
+		equal := func() bool {
+			l := left.newListValue(i)
+			defer l.Release()
+			r := right.newListValue(i)
+			defer r.Release()
+			return arrayApproxEqual(l, r, opt)
+		}()
+		if !equal {
+			return false
+		}
+	}
+	return true
+}
+
+func useScalarListEquality(validBits []byte, offset, length int64) bool {
+	if len(validBits) == 0 || length <= 64 {
+		return len(validBits) != 0
+	}
+
+	const (
+		sampleRuns          = 8
+		minAverageRunLength = 4
+	)
+	runs := bitutils.NewSetBitRunReader(validBits, offset, length)
+	validValues := int64(0)
+	for range sampleRuns {
+		run := runs.NextRun()
+		if run.Length == 0 {
+			return false
+		}
+		validValues += run.Length
+	}
+	return validValues < sampleRuns*minAverageRunLength
 }
 
 // SliceApproxEqual reports whether slices left[lbeg:lend] and right[rbeg:rend] are approximately equal.
@@ -368,6 +512,16 @@ func SliceApproxEqual(left arrow.Array, lbeg, lend int64, right arrow.Array, rbe
 }
 
 func sliceApproxEqual(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64, opt equalOption) bool {
+	if lbeg == 0 && lend == int64(left.Len()) &&
+		rbeg == 0 && rend == int64(right.Len()) &&
+		canEqualDirectly(left, right) {
+		return arrayApproxEqual(left, right, opt)
+	}
+
+	return sliceApproxEqualDirect(left, lbeg, lend, right, rbeg, rend, opt)
+}
+
+func sliceApproxEqualDirect(left arrow.Array, lbeg, lend int64, right arrow.Array, rbeg, rend int64, opt equalOption) bool {
 	l := NewSlice(left, lbeg, lend)
 	defer l.Release()
 	r := NewSlice(right, rbeg, rend)
@@ -487,43 +641,43 @@ func arrayApproxEqual(left, right arrow.Array, opt equalOption) bool {
 		return arrayEqualBinary(l, r)
 	case *String:
 		r := right.(*String)
-		return arrayEqualString(l, r)
+		return arrayApproxEqualString(l, r)
 	case *LargeBinary:
 		r := right.(*LargeBinary)
 		return arrayEqualLargeBinary(l, r)
 	case *LargeString:
 		r := right.(*LargeString)
-		return arrayEqualLargeString(l, r)
+		return arrayApproxEqualLargeString(l, r)
 	case *BinaryView:
 		r := right.(*BinaryView)
 		return arrayEqualBinaryView(l, r)
 	case *StringView:
 		r := right.(*StringView)
-		return arrayEqualStringView(l, r)
+		return arrayApproxEqualStringView(l, r)
 	case *Int8:
 		r := right.(*Int8)
-		return arrayEqualInt8(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int16:
 		r := right.(*Int16)
-		return arrayEqualInt16(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int32:
 		r := right.(*Int32)
-		return arrayEqualInt32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Int64:
 		r := right.(*Int64)
-		return arrayEqualInt64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint8:
 		r := right.(*Uint8)
-		return arrayEqualUint8(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint16:
 		r := right.(*Uint16)
-		return arrayEqualUint16(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint32:
 		r := right.(*Uint32)
-		return arrayEqualUint32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Uint64:
 		r := right.(*Uint64)
-		return arrayEqualUint64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Float16:
 		r := right.(*Float16)
 		return arrayApproxEqualFloat16(l, r, opt)
@@ -547,16 +701,16 @@ func arrayApproxEqual(left, right arrow.Array, opt equalOption) bool {
 		return arrayEqualDecimal(l, r)
 	case *Date32:
 		r := right.(*Date32)
-		return arrayEqualDate32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Date64:
 		r := right.(*Date64)
-		return arrayEqualDate64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Time32:
 		r := right.(*Time32)
-		return arrayEqualTime32(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Time64:
 		r := right.(*Time64)
-		return arrayEqualTime64(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Timestamp:
 		r := right.(*Timestamp)
 		return arrayEqualTimestamp(l, r)
@@ -589,7 +743,7 @@ func arrayApproxEqual(left, right arrow.Array, opt equalOption) bool {
 		return arrayEqualMonthDayNanoInterval(l, r)
 	case *Duration:
 		r := right.(*Duration)
-		return arrayEqualDuration(l, r)
+		return arrayEqualFixedWidth(l, r)
 	case *Map:
 		r := right.(*Map)
 		if opt.unorderedMapKeys {
@@ -631,13 +785,62 @@ func baseArrayEqual(left, right arrow.Array) bool {
 }
 
 func validityBitmapEqual(left, right arrow.Array) bool {
-	// TODO(alexandreyc): make it faster by comparing byte slices of the validity bitmap?
-	n := left.Len()
-	if n != right.Len() {
+	if left.Len() != right.Len() {
 		return false
 	}
-	for i := 0; i < n; i++ {
-		if left.IsNull(i) != right.IsNull(i) {
+
+	leftBitmap := left.NullBitmapBytes()
+	rightBitmap := right.NullBitmapBytes()
+	if len(leftBitmap) == 0 {
+		return validityBitmapAllValid(right, rightBitmap)
+	}
+	if len(rightBitmap) == 0 {
+		return validityBitmapAllValid(left, leftBitmap)
+	}
+
+	return bitutil.BitmapEquals(
+		leftBitmap, rightBitmap,
+		int64(left.Data().Offset()), int64(right.Data().Offset()), int64(left.Len()),
+	)
+}
+
+// validityBitmapAllValid reports whether the materialized validity bitmap
+// contains only valid values in the array's logical range. A missing bitmap
+// also represents an all-valid range, matching arrow.Array.IsValid.
+func validityBitmapAllValid(arr arrow.Array, bitmap []byte) bool {
+	return len(bitmap) == 0 || bitutil.BitmapAllSet(bitmap, arr.Data().Offset(), arr.Len())
+}
+
+func arrayApproxEqualString(left, right *String) bool {
+	for i := 0; i < left.Len(); i++ {
+		if left.IsNull(i) {
+			continue
+		}
+		if stripNulls(left.Value(i)) != stripNulls(right.Value(i)) {
+			return false
+		}
+	}
+	return true
+}
+
+func arrayApproxEqualLargeString(left, right *LargeString) bool {
+	for i := 0; i < left.Len(); i++ {
+		if left.IsNull(i) {
+			continue
+		}
+		if stripNulls(left.Value(i)) != stripNulls(right.Value(i)) {
+			return false
+		}
+	}
+	return true
+}
+
+func arrayApproxEqualStringView(left, right *StringView) bool {
+	for i := 0; i < left.Len(); i++ {
+		if left.IsNull(i) {
+			continue
+		}
+		if stripNulls(left.Value(i)) != stripNulls(right.Value(i)) {
 			return false
 		}
 	}
@@ -681,41 +884,19 @@ func arrayApproxEqualFloat64(left, right *Float64, opt equalOption) bool {
 }
 
 func arrayApproxEqualList(left, right *List, opt equalOption) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		o := func() bool {
-			l := left.newListValue(i)
-			defer l.Release()
-			r := right.newListValue(i)
-			defer r.Release()
-			return arrayApproxEqual(l, r, opt)
-		}()
-		if !o {
-			return false
-		}
+	if useScalarListEquality(left.NullBitmapBytes(), int64(left.Offset()), int64(left.Len())) {
+		return arrayApproxEqualListScalar(left, right, opt)
 	}
-	return true
+	return arrayApproxEqualListOffsets(left.values, right.values, left.offsets, right.offsets,
+		left.data.offset, right.data.offset, left.Len(), left.NullBitmapBytes(), opt)
 }
 
 func arrayApproxEqualLargeList(left, right *LargeList, opt equalOption) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		o := func() bool {
-			l := left.newListValue(i)
-			defer l.Release()
-			r := right.newListValue(i)
-			defer r.Release()
-			return arrayApproxEqual(l, r, opt)
-		}()
-		if !o {
-			return false
-		}
+	if useScalarListEquality(left.NullBitmapBytes(), int64(left.Offset()), int64(left.Len())) {
+		return arrayApproxEqualListScalar(left, right, opt)
 	}
-	return true
+	return arrayApproxEqualListOffsets(left.values, right.values, left.offsets, right.offsets,
+		left.data.offset, right.data.offset, left.Len(), left.NullBitmapBytes(), opt)
 }
 
 func arrayApproxEqualListView(left, right *ListView, opt equalOption) bool {
@@ -757,22 +938,24 @@ func arrayApproxEqualLargeListView(left, right *LargeListView, opt equalOption) 
 }
 
 func arrayApproxEqualFixedSizeList(left, right *FixedSizeList, opt equalOption) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		o := func() bool {
-			l := left.newListValue(i)
-			defer l.Release()
-			r := right.newListValue(i)
-			defer r.Release()
-			return arrayApproxEqual(l, r, opt)
-		}()
-		if !o {
-			return false
-		}
+	if useScalarListEquality(left.NullBitmapBytes(), int64(left.Offset()), int64(left.Len())) {
+		return arrayApproxEqualListScalar(left, right, opt)
 	}
-	return true
+	listSize := int64(left.n)
+	validBits := left.NullBitmapBytes()
+	if len(validBits) == 0 {
+		validBits = nil
+	}
+	return bitutils.VisitSetBitRuns(validBits, int64(left.Offset()), int64(left.Len()),
+		func(pos, length int64) error {
+			leftStart := (int64(left.Offset()) + pos) * listSize
+			rightStart := (int64(right.Offset()) + pos) * listSize
+			if !sliceApproxEqual(left.values, leftStart, leftStart+length*listSize,
+				right.values, rightStart, rightStart+length*listSize, opt) {
+				return arrow.ErrInvalid
+			}
+			return nil
+		}) == nil
 }
 
 func arrayApproxEqualStruct(left, right *Struct, opt equalOption) bool {

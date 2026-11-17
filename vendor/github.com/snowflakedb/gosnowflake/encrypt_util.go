@@ -63,9 +63,14 @@ func encryptStreamCBC(
 		// read the stream buffer up to len(chunk) bytes into chunk
 		// note that all spaces in chunk may be used even if Read() returns n < len(chunk)
 		n, err := src.Read(chunk)
-		if n == 0 || err != nil {
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading: %w", err)
+		}
+		if n == 0 {
 			break
-		} else if n%aes.BlockSize != 0 {
+		}
+
+		if n%aes.BlockSize != 0 {
 			// add padding to the end of the chunk and update the length n
 			chunk = padBytesLength(chunk[:n], aes.BlockSize)
 			n = len(chunk)
@@ -95,7 +100,7 @@ func encryptStreamCBC(
 	}
 
 	matDesc := materialDescriptor{
-		strconv.Itoa(int(sfe.SMKID)),
+		fmt.Sprintf("%v", sfe.SMKID),
 		sfe.QueryID,
 		strconv.Itoa(keySize * 8),
 	}
@@ -279,9 +284,14 @@ func decryptStreamCBC(
 	for {
 		chunk := make([]byte, chunkSize)
 		n, err := src.Read(chunk)
-		if n == 0 || err != nil {
+		if err != nil && err != io.EOF {
+			return 0, fmt.Errorf("reading: %w", err)
+		}
+		if n == 0 {
 			break
-		} else if n%aes.BlockSize != 0 {
+		}
+
+		if n%aes.BlockSize != 0 {
 			// add padding to the end of the chunk and update the length n
 			chunk = padBytesLength(chunk[:n], aes.BlockSize)
 			n = len(chunk)
@@ -289,18 +299,16 @@ func decryptStreamCBC(
 		totalFileSize += n
 		chunk = chunk[:n]
 		mode.CryptBlocks(chunk, chunk)
-		if _, err = out.Write(chunk); err != nil {
+		if _, err := out.Write(chunk); err != nil {
 			return 0, err
 		}
 		prevChunk = chunk
 	}
-	if err != nil {
-		return 0, err
-	}
+
 	if prevChunk != nil {
 		totalFileSize -= paddingOffset(prevChunk)
 	}
-	return totalFileSize, err
+	return totalFileSize, nil
 }
 
 func encryptGCM(iv []byte, plaintext []byte, encryptionKey []byte, aad []byte) ([]byte, error) {
@@ -378,7 +386,7 @@ func encryptFileGCM(
 	}
 
 	matDesc := materialDescriptor{
-		strconv.Itoa(int(sfe.SMKID)),
+		fmt.Sprintf("%v", sfe.SMKID),
 		sfe.QueryID,
 		strconv.Itoa(keySize * 8),
 	}
@@ -487,6 +495,8 @@ func paddingTrim(src []byte) ([]byte, error) {
 	unpadding := src[len(src)-1]
 	n := int(unpadding)
 	if n == 0 || n > len(src) {
+		logger.Errorf("padding validation failed - invalid padding detected. data length: %d, padding value: %d",
+			len(src), n)
 		return nil, &SnowflakeError{
 			Number:  ErrInvalidPadding,
 			Message: errMsgInvalidPadding,

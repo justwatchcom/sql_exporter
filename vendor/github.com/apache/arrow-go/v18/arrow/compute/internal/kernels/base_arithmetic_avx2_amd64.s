@@ -7,10 +7,10 @@ DATA LCDATA1<>+0x010(SB)/8, $0x00ff00ff00ff00ff
 DATA LCDATA1<>+0x018(SB)/8, $0x00ff00ff00ff00ff
 GLOBL LCDATA1<>(SB), 8, $32
 
-TEXT ·_arithmetic_binary_avx2(SB), $0-48
+TEXT ·_arithmetic_binary_avx2(SB), $8-48
 
 	MOVQ typ+0(FP), DI
-	MOVQ op+8(FP), SI
+	MOVBQSX op+8(FP), SI
 	MOVQ inLeft+16(FP), DX
 	MOVQ inRight+24(FP), CX
 	MOVQ out+32(FP), R8
@@ -5847,10 +5847,10 @@ DATA LCDATA2<>+0x010(SB)/8, $0x00ff00ff00ff00ff
 DATA LCDATA2<>+0x018(SB)/8, $0x00ff00ff00ff00ff
 GLOBL LCDATA2<>(SB), 8, $32
 
-TEXT ·_arithmetic_arr_scalar_avx2(SB), $0-48
+TEXT ·_arithmetic_arr_scalar_avx2(SB), $8-48
 
 	MOVQ typ+0(FP), DI
-	MOVQ op+8(FP), SI
+	MOVBQSX op+8(FP), SI
 	MOVQ inLeft+16(FP), DX
 	MOVQ inRight+24(FP), CX
 	MOVQ out+32(FP), R8
@@ -13311,10 +13311,10 @@ DATA LCDATA3<>+0x010(SB)/8, $0x00ff00ff00ff00ff
 DATA LCDATA3<>+0x018(SB)/8, $0x00ff00ff00ff00ff
 GLOBL LCDATA3<>(SB), 8, $32
 
-TEXT ·_arithmetic_scalar_arr_avx2(SB), $0-48
+TEXT ·_arithmetic_scalar_arr_avx2(SB), $8-48
 
 	MOVQ typ+0(FP), DI
-	MOVQ op+8(FP), SI
+	MOVBQSX op+8(FP), SI
 	MOVQ inLeft+16(FP), DX
 	MOVQ inRight+24(FP), CX
 	MOVQ out+32(FP), R8
@@ -20559,10 +20559,10 @@ DATA LCDATA4<>+0x0b0(SB)/8, $0x1d1c191815141110
 DATA LCDATA4<>+0x0b8(SB)/8, $0x1f1e1d1c1d1c1918
 GLOBL LCDATA4<>(SB), 8, $192
 
-TEXT ·_arithmetic_unary_same_types_avx2(SB), $0-40
+TEXT ·_arithmetic_unary_same_types_avx2(SB), $8-40
 
 	MOVQ typ+0(FP), DI
-	MOVQ op+8(FP), SI
+	MOVBQSX op+8(FP), SI
 	MOVQ input+16(FP), DX
 	MOVQ output+24(FP), CX
 	MOVQ len+32(FP), R8
@@ -25876,11 +25876,11 @@ DATA LCDATA5<>+0x0f0(SB)/8, $0x0101010101010101
 DATA LCDATA5<>+0x0f8(SB)/8, $0x0101010101010101
 GLOBL LCDATA5<>(SB), 8, $256
 
-TEXT ·_arithmetic_unary_diff_type_avx2(SB), $0-48
+TEXT ·_arithmetic_unary_diff_type_avx2(SB), $8-48
 
 	MOVQ itype+0(FP), DI
 	MOVQ otype+8(FP), SI
-	MOVQ op+16(FP), DX
+	MOVBQSX op+16(FP), DX
 	MOVQ input+24(FP), CX
 	MOVQ output+32(FP), R8
 	MOVQ len+40(FP), R9

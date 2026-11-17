@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//go:build windows
 // +build windows
 
 package windows
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
-
-	"github.com/pkg/errors"
 )
 
 // Syscalls
@@ -86,7 +86,7 @@ func (d VersionData) QueryValue(key string) (string, error) {
 	var dataPtr uintptr
 	var size uint32
 	if _, err := _VerQueryValueW(&d[0], `\VarFileInfo\Translation`, &dataPtr, &size); err != nil || size == 0 {
-		return "", errors.Wrap(err, "failed to get list of languages")
+		return "", fmt.Errorf("failed to get list of languages: %w", err)
 	}
 
 	offset := int(dataPtr - (uintptr)(unsafe.Pointer(&d[0])))
@@ -98,7 +98,7 @@ func (d VersionData) QueryValue(key string) (string, error) {
 
 	subBlock := fmt.Sprintf(`\StringFileInfo\%04x%04x\%v`, l.Language, l.CodePage, key)
 	if _, err := _VerQueryValueW(&d[0], subBlock, &dataPtr, &size); err != nil || size == 0 {
-		return "", errors.Wrapf(err, "failed to query %v", subBlock)
+		return "", fmt.Errorf("failed to query %v: %w", subBlock, err)
 	}
 
 	offset = int(dataPtr - (uintptr)(unsafe.Pointer(&d[0])))
@@ -108,7 +108,7 @@ func (d VersionData) QueryValue(key string) (string, error) {
 
 	str, _, err := UTF16BytesToString(d[offset : offset+int(size)*2])
 	if err != nil {
-		return "", errors.Wrap(err, "failed to decode UTF16 data")
+		return "", fmt.Errorf("failed to decode UTF16 data: %w", err)
 	}
 
 	return str, nil
@@ -126,7 +126,7 @@ func (d VersionData) FixedFileInfo() (*FixedFileInfo, error) {
 	var dataPtr uintptr
 	var size uint32
 	if _, err := _VerQueryValueW(&d[0], `\`, &dataPtr, &size); err != nil {
-		return nil, errors.Wrap(err, "VerQueryValue failed for \\")
+		return nil, fmt.Errorf("VerQueryValue failed for \\: %w", err)
 	}
 
 	offset := int(dataPtr - (uintptr)(unsafe.Pointer(&d[0])))
@@ -145,13 +145,13 @@ func (d VersionData) FixedFileInfo() (*FixedFileInfo, error) {
 func GetFileVersionInfo(filename string) (VersionData, error) {
 	size, err := _GetFileVersionInfoSize(filename, 0)
 	if err != nil {
-		return nil, errors.Wrap(err, "GetFileVersionInfoSize failed")
+		return nil, fmt.Errorf("GetFileVersionInfoSize failed: %w", err)
 	}
 
 	data := make(VersionData, size)
 	_, err = _GetFileVersionInfo(filename, 0, uint32(len(data)), &data[0])
 	if err != nil {
-		return nil, errors.Wrap(err, "GetFileVersionInfo failed")
+		return nil, fmt.Errorf("GetFileVersionInfo failed: %w", err)
 	}
 
 	return data, nil

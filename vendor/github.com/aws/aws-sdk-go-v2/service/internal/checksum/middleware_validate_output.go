@@ -3,6 +3,7 @@ package checksum
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/aws/smithy-go"
@@ -55,7 +56,7 @@ func (m *validateOutputPayloadChecksum) ID() string {
 }
 
 // HandleDeserialize is a Deserialize middleware that wraps the HTTP response
-// body with an io.ReadCloser that will validate the its checksum.
+// body with an io.ReadCloser that will validate its checksum.
 func (m *validateOutputPayloadChecksum) HandleDeserialize(
 	ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler,
 ) (
@@ -66,8 +67,7 @@ func (m *validateOutputPayloadChecksum) HandleDeserialize(
 		return out, metadata, err
 	}
 
-	// If there is no validation mode specified nothing is supported.
-	if mode := getContextOutputValidationMode(ctx); mode != "ENABLED" {
+	if mode := getContextOutputValidationMode(ctx); mode != checksumValidationModeEnabled {
 		return out, metadata, err
 	}
 
@@ -78,6 +78,12 @@ func (m *validateOutputPayloadChecksum) HandleDeserialize(
 		}
 	}
 
+	// Validation is gated on the presence of a supported, non-composite checksum
+	// header (the "no checksum" branch below). Responses without one — error
+	// responses (4xx/5xx) and arbitrary Range GETs — are not validated.
+	// Successful partial-content responses (206) from partNumber or whole-object
+	// Range GETs do carry a validatable checksum covering exactly the returned
+	// bytes, and are validated.
 	var expectedChecksum string
 	var algorithmToUse Algorithm
 	for _, algorithm := range m.Algorithms {
@@ -90,16 +96,17 @@ func (m *validateOutputPayloadChecksum) HandleDeserialize(
 		algorithmToUse = algorithm
 	}
 
-	// TODO this must validate the validation mode is set to enabled.
-
 	logger := middleware.GetLogger(ctx)
 
 	// Skip validation if no checksum algorithm or checksum is available.
 	if len(expectedChecksum) == 0 || len(algorithmToUse) == 0 {
-		if m.LogValidationSkipped {
+		// Only log for successful responses. Error responses (4xx/5xx) carry an
+		// error document rather than an object payload and legitimately have no
+		// checksum, so logging there is just noise.
+		if response.StatusCode < 400 && response.Body != http.NoBody && m.LogValidationSkipped {
 			// TODO this probably should have more information about the
 			// operation output that won't be validated.
-			logger.Logf(logging.Warn,
+			logger.Logf(logging.Debug,
 				"Response has no supported checksum. Not validating response payload.")
 		}
 		return out, metadata, nil

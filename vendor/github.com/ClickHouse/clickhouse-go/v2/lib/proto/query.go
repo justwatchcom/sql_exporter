@@ -1,29 +1,14 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package proto
 
 import (
+	"crypto/sha256"
 	stdbin "encoding/binary"
 	"fmt"
-	chproto "github.com/ClickHouse/ch-go/proto"
-	"go.opentelemetry.io/otel/trace"
 	"os"
 	"strings"
+
+	chproto "github.com/ClickHouse/ch-go/proto"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -44,6 +29,10 @@ type Query struct {
 	Compression              bool
 	InitialUser              string
 	InitialAddress           string
+	// ClusterSecret signs secondary queries.
+	ClusterSecret string
+	// ClusterSalt salts interserver signatures.
+	ClusterSalt string
 }
 
 func (q *Query) Encode(buffer *chproto.Buffer, revision uint64) error {
@@ -59,7 +48,7 @@ func (q *Query) Encode(buffer *chproto.Buffer, revision uint64) error {
 	buffer.PutString("") /* empty string is a marker of the end of setting */
 
 	if revision >= DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET {
-		buffer.PutString("")
+		buffer.PutString(q.interserverHash())
 	}
 	{
 		buffer.PutByte(StateComplete)
@@ -84,8 +73,26 @@ func swap64(b []byte) {
 	}
 }
 
+// interserverHash returns SHA256(salt + secret + query + ID + user).
+func (q *Query) interserverHash() string {
+	if q.ClusterSecret == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(q.ClusterSalt))
+	h.Write([]byte(q.ClusterSecret))
+	h.Write([]byte(q.Body))
+	h.Write([]byte(q.ID))
+	h.Write([]byte(q.InitialUser))
+	return string(h.Sum(nil))
+}
+
 func (q *Query) encodeClientInfo(buffer *chproto.Buffer, revision uint64) error {
-	buffer.PutByte(ClientQueryInitial)
+	queryKind := byte(ClientQueryInitial)
+	if q.ClusterSecret != "" {
+		queryKind = ClientQuerySecondary
+	}
+	buffer.PutByte(queryKind)
 	buffer.PutString(q.InitialUser)    // initial_user
 	buffer.PutString("")               // initial_query_id
 	buffer.PutString(q.InitialAddress) // initial_address
@@ -235,13 +242,25 @@ func (s *Parameter) encode(buffer *chproto.Buffer, revision uint64) error {
 	return nil
 }
 
+// fieldDumpEscaper escapes a string for a quoted Field dump. Control characters
+// (tab, newline, CR, backslash, NUL) and single quotes must be escaped so the
+// server can properly deserialize them through readQuoted then deserializeTextEscaped.
+var fieldDumpEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`'`, `\'`,
+	"\n", `\n`,
+	"\r", `\r`,
+	"\t", `\t`,
+	"\x00", `\0`,
+)
+
 // encodes a field dump with an appropriate type format
 // implements the same logic as in ClickHouse Field::restoreFromDump (https://github.com/ClickHouse/ClickHouse/blob/master/src/Core/Field.cpp#L312)
 // currently, only string type is supported
 func encodeFieldDump(value any) (string, error) {
 	switch v := value.(type) {
 	case string:
-		return fmt.Sprintf("'%v'", strings.ReplaceAll(v, "'", "\\'")), nil
+		return "'" + fieldDumpEscaper.Replace(v) + "'", nil
 	}
 
 	return "", fmt.Errorf("unsupported field type %T", value)

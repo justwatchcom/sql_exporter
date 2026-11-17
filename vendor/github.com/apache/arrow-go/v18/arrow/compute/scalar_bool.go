@@ -93,6 +93,11 @@ var (
 		For a different null behavior, see function "and".`,
 		ArgNames: []string{"x", "y"},
 	}
+	notDoc = FunctionDoc{
+		Summary:     "Logical 'not' boolean values",
+		Description: "Negates the input boolean value",
+		ArgNames:    []string{"x"},
+	}
 )
 
 func makeFunction(reg FunctionRegistry, name string, arity int, ex exec.ArrayKernelExec, doc FunctionDoc, nulls exec.NullHandling) {
@@ -130,4 +135,6 @@ func RegisterScalarBoolean(reg FunctionRegistry) {
 		andNotKleeneDoc, exec.NullComputedPrealloc)
 	makeFunction(reg, "or_kleene", 2, kernels.SimpleBinary[kernels.KleeneOrOpKernel],
 		orKleeneDoc, exec.NullComputedPrealloc)
+	makeFunction(reg, "not", 1, kernels.NotExecKernel, notDoc,
+		exec.NullIntersection)
 }

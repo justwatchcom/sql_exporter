@@ -25,9 +25,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/compute/exec"
 	"github.com/apache/arrow-go/v18/arrow/compute/internal/kernels"
-	"github.com/apache/arrow-go/v18/arrow/scalar"
 )
 
+// compareFunction dispatches binary comparisons. Its DispatchBest assumes
+// exactly two arguments, so unary functions must not use it.
 type compareFunction struct {
 	ScalarFunction
 }
@@ -48,11 +49,26 @@ func (fn *compareFunction) DispatchBest(vals ...arrow.DataType) (exec.Kernel, er
 	}
 
 	if kn, err := fn.DispatchExact(vals...); err == nil {
+		if err := validateTimestampTimezones(vals...); err != nil {
+			return nil, err
+		}
 		return kn, nil
 	}
 
 	ensureDictionaryDecoded(vals...)
+	ensureNoExtensionType(vals...)
 	replaceNullWithOtherType(vals...)
+	if err := validateTimestampTimezones(vals...); err != nil {
+		return nil, err
+	}
+
+	if vals[0].ID() == arrow.TIMESTAMP && vals[1].ID() == arrow.TIMESTAMP {
+		lhs, rhs := vals[0].(*arrow.TimestampType), vals[1].(*arrow.TimestampType)
+		if (lhs.TimeZone == "") != (rhs.TimeZone == "") {
+			return nil, fmt.Errorf("%w: cannot compare timestamp with timezone to timestamp without timezone, got: %s and %s",
+				arrow.ErrInvalid, lhs, rhs)
+		}
+	}
 
 	if dt := commonNumeric(vals...); dt != nil {
 		replaceTypes(dt, vals...)
@@ -63,6 +79,17 @@ func (fn *compareFunction) DispatchBest(vals ...arrow.DataType) (exec.Kernel, er
 	}
 
 	return fn.DispatchExact(vals...)
+}
+
+func validateTimestampTimezones(vals ...arrow.DataType) error {
+	for _, val := range vals {
+		if ts, ok := val.(*arrow.TimestampType); ok {
+			if _, err := ts.GetZone(); err != nil {
+				return fmt.Errorf("%w: invalid timestamp timezone %q: %v", arrow.ErrInvalid, ts.TimeZone, err)
+			}
+		}
+	}
+	return nil
 }
 
 type flippedData struct {
@@ -138,12 +165,13 @@ func RegisterScalarComparisons(reg FunctionRegistry) {
 	reg.AddFunction(lteFn, false)
 
 	isOrNotNullKns := kernels.IsNullNotNullKernels()
-	isNullFn := &compareFunction{*NewScalarFunction("is_null", Unary(), EmptyFuncDoc)}
+	isNullFn := NewScalarFunction("is_null", Unary(), EmptyFuncDoc)
+	isNullFn.SetDefaultOptions(&NullOptions{})
 	if err := isNullFn.AddKernel(isOrNotNullKns[0]); err != nil {
 		panic(err)
 	}
 
-	isNotNullFn := &compareFunction{*NewScalarFunction("is_not_null", Unary(), EmptyFuncDoc)}
+	isNotNullFn := NewScalarFunction("is_not_null", Unary(), EmptyFuncDoc)
 	if err := isNotNullFn.AddKernel(isOrNotNullKns[1]); err != nil {
 		panic(err)
 	}
@@ -151,34 +179,11 @@ func RegisterScalarComparisons(reg FunctionRegistry) {
 	reg.AddFunction(isNullFn, false)
 	reg.AddFunction(isNotNullFn, false)
 
-	reg.AddFunction(NewMetaFunction("is_nan", Unary(), EmptyFuncDoc,
-		func(ctx context.Context, opts FunctionOptions, args ...Datum) (Datum, error) {
-			type hasType interface {
-				Type() arrow.DataType
-			}
-
-			// only Scalar, Array and ChunkedArray have a Type method
-			arg, ok := args[0].(hasType)
-			if !ok {
-				// don't support Table/Record/None kinds
-				return nil, fmt.Errorf("%w: unsupported type for is_nan %s",
-					arrow.ErrNotImplemented, args[0])
-			}
-
-			switch arg.Type() {
-			case arrow.PrimitiveTypes.Float32, arrow.PrimitiveTypes.Float64:
-				return CallFunction(ctx, "not_equal", nil, args[0], args[0])
-			default:
-				if arg, ok := args[0].(ArrayLikeDatum); ok {
-					result, err := scalar.MakeArrayFromScalar(scalar.NewBooleanScalar(false),
-						int(arg.Len()), GetAllocator(ctx))
-					if err != nil {
-						return nil, err
-					}
-					return NewDatumWithoutOwning(result), nil
-				}
-
-				return NewDatum(false), nil
-			}
-		}), false)
+	isNaNFn := NewScalarFunction("is_nan", Unary(), EmptyFuncDoc)
+	for _, k := range kernels.IsNaNKernels() {
+		if err := isNaNFn.AddKernel(k); err != nil {
+			panic(err)
+		}
+	}
+	reg.AddFunction(isNaNFn, false)
 }

@@ -4,10 +4,25 @@ package gosnowflake
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"io"
 	"os"
 	"syscall"
 )
+
+var osVersion = getOSVersion()
+
+func getOSVersion() string {
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err != nil {
+		panic(err)
+	}
+
+	sysname := unix.ByteSliceToString(uts.Sysname[:])
+	release := unix.ByteSliceToString(uts.Release[:])
+
+	return sysname + "-" + release
+}
 
 func provideFileOwner(file *os.File) (uint32, error) {
 	info, err := file.Stat()
@@ -31,7 +46,11 @@ func getFileContents(filePath string, expectedPerm os.FileMode) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err = file.Close(); err != nil {
+			logger.Warnf("failed to close the file: %v", err)
+		}
+	}()
 
 	// validate file permissions and owner
 	if err = validateFilePermissionBits(file, expectedPerm); err != nil {

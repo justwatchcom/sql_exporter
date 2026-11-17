@@ -21,14 +21,15 @@ package exec
 import (
 	"context"
 	"fmt"
-	"hash/maphash"
+	"slices"
 	"strings"
+
+	"github.com/apache/arrow-go/v18/internal/utils/maphash"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"golang.org/x/exp/slices"
 )
 
 var hashSeed = maphash.MakeSeed()
@@ -68,6 +69,7 @@ type NonAggKernel interface {
 	GetNullHandling() NullHandling
 	GetMemAlloc() MemAlloc
 	CanFillSlices() bool
+	Cleanup() error
 }
 
 // KernelCtx is a small struct holding the context for a kernel execution
@@ -176,6 +178,36 @@ func Time64TypeUnit(unit arrow.TimeUnit) TypeMatcher {
 // a Duration datatype with the specified TimeUnit.
 func DurationTypeUnit(unit arrow.TimeUnit) TypeMatcher {
 	return &timeUnitMatcher{arrow.DURATION, unit}
+}
+
+type dateTypeMatcher struct {
+	dateTypeID arrow.Type
+}
+
+func (m *dateTypeMatcher) Matches(typ arrow.DataType) bool {
+	return typ.ID() == m.dateTypeID
+}
+
+func (m *dateTypeMatcher) String() string {
+	if m.dateTypeID == arrow.DATE32 {
+		return "date32"
+	}
+	return "date64"
+}
+
+func (m *dateTypeMatcher) Equals(other TypeMatcher) bool {
+	if o, ok := other.(*dateTypeMatcher); ok {
+		return m.dateTypeID == o.dateTypeID
+	}
+	return false
+}
+
+func Date32Type() TypeMatcher {
+	return &dateTypeMatcher{arrow.DATE32}
+}
+
+func Date64Type() TypeMatcher {
+	return &dateTypeMatcher{arrow.DATE64}
 }
 
 type integerMatcher struct{}
@@ -350,7 +382,7 @@ func (it *InputType) Equals(other *InputType) bool {
 }
 
 func (it InputType) Hash() uint64 {
-	var h maphash.Hash
+	var h maphash.MapHash
 
 	h.SetSeed(hashSeed)
 	result := HashCombine(h.Sum64(), uint64(it.Kind))
@@ -538,7 +570,7 @@ func (k *KernelSignature) Hash() uint64 {
 		return k.hashCode
 	}
 
-	var h maphash.Hash
+	var h maphash.MapHash
 	h.SetSeed(hashSeed)
 	result := h.Sum64()
 	for _, typ := range k.InputTypes {
@@ -604,6 +636,7 @@ type ScalarKernel struct {
 	CanWriteIntoSlices bool
 	NullHandling       NullHandling
 	MemAlloc           MemAlloc
+	CleanupFn          func(KernelState) error
 }
 
 // NewScalarKernel constructs a new kernel for scalar execution, constructing
@@ -627,6 +660,13 @@ func NewScalarKernelWithSig(sig *KernelSignature, exec ArrayKernelExec, init Ker
 		NullHandling:       NullIntersection,
 		MemAlloc:           MemPrealloc,
 	}
+}
+
+func (s *ScalarKernel) Cleanup() error {
+	if s.CleanupFn != nil {
+		return s.CleanupFn(s.Data)
+	}
+	return nil
 }
 
 func (s *ScalarKernel) Exec(ctx *KernelCtx, sp *ExecSpan, out *ExecResult) error {
@@ -693,3 +733,4 @@ func (s *VectorKernel) Exec(ctx *KernelCtx, sp *ExecSpan, out *ExecResult) error
 func (s VectorKernel) GetNullHandling() NullHandling { return s.NullHandling }
 func (s VectorKernel) GetMemAlloc() MemAlloc         { return s.MemAlloc }
 func (s VectorKernel) CanFillSlices() bool           { return s.CanWriteIntoSlices }
+func (s VectorKernel) Cleanup() error                { return nil }

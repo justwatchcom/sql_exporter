@@ -1,3 +1,7 @@
+## Upcoming v2 release
+
+The v2 release is coming. See the [issue](https://github.com/snowflakedb/gosnowflake/issues/1586) for details!
+
 ## Support
 
 For official support and urgent, production-impacting issues, please [contact Snowflake Support](https://community.snowflake.com/s/article/How-To-Submit-a-Support-Case-in-Snowflake-Lodge).
@@ -25,8 +29,7 @@ The following software packages are required to use the Go Snowflake Driver.
 
 ## Go
 
-The latest driver requires the [Go language](https://golang.org/) 1.22 or higher. The supported operating systems are Linux, Mac OS, and Windows, but you may run the driver on other platforms if the Go language works correctly on those platforms.
-
+The latest driver requires the [Go language](https://golang.org/) 1.23 or higher. The supported operating systems are 64-bits Linux, Mac OS, and Windows, but you may run the driver on other platforms if the Go language works correctly on those platforms.
 
 # Installation
 
@@ -47,9 +50,11 @@ go get -u github.com/snowflakedb/gosnowflake
 For detailed documentation and basic usage examples, please see the documentation at
 [godoc.org](https://godoc.org/github.com/snowflakedb/gosnowflake/).
 
-## Note
+## Notes
 
 This driver currently does not support GCP regional endpoints. Please ensure that any workloads using through this driver do not require support for regional endpoints on GCP. If you have questions about this, please contact Snowflake Support.
+
+The driver uses Rust library called sf_mini_core, you can find its source code [here](https://github.com/snowflakedb/universal-driver/tree/main/sf_mini_core)
 
 # Sample Programs
 
@@ -158,13 +163,3 @@ go tool cover -html=coverage.txt
 
 You may use your preferred editor to edit the driver code. Make certain to run ``make fmt lint`` before submitting any pull request to Snowflake. This command formats your source code according to the standard Go style and detects any coding style issues.
 
-## Runaway `dbus-daemon` processes on certain OS
-This only affects certain Linux distributions, one of them is confirmed to be RHEL. Due to a bug in one of the dependencies (`keyring`),
-on the affected OS, each invocation of a program depending on gosnowflake (or any other program depending on the same `keyring`),
-will generate a new instance of `dbus-daemon` fork which can, due to not being cleaned up, eventually fill the fd limits.
-
-Until we replace the offending dependency with one which doesn't have the bug, a workaround needs to be applied, which can be:
-* cleaning up the runaway processes periodically
-* setting envvar `DBUS_SESSION_BUS_ADDRESS=$XDG_RUNTIME_DIR/bus` (if that socket exists, or create it) or even `DBUS_SESSION_BUS_ADDRESS=/dev/null`
-
-Details in [issue 773](https://github.com/snowflakedb/gosnowflake/issues/773)

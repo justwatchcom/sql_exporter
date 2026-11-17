@@ -2,17 +2,23 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws/middleware/private/metrics"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	internalcontext "github.com/aws/aws-sdk-go-v2/internal/context"
+	"github.com/aws/smithy-go"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddle "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/internal/sdk"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 	smithymiddle "github.com/aws/smithy-go/middleware"
+	"github.com/aws/smithy-go/tracing"
 	"github.com/aws/smithy-go/transport/http"
 )
 
@@ -35,9 +41,26 @@ type Attempt struct {
 	// attempts are reached.
 	LogAttempts bool
 
+	// A Meter instance for recording retry-related metrics.
+	OperationMeter metrics.Meter
+
+	// Initial clock skew that would have been saved from a previous operation
+	// call.
+	ClientSkew *atomic.Int64
+
+	// DisableClockSkewCorrection disables clock skew correction per the Clock
+	// Skew Correction SEP: observed skew is not applied to the signing
+	// timestamp, not recorded into ClientSkew, and clock skew error codes are
+	// not treated as retry candidates.
+	DisableClockSkewCorrection bool
+
 	retryer       aws.RetryerV2
 	requestCloner RequestCloner
 }
+
+// define the threshold at which we will consider certain kind of errors to be probably
+// caused by clock skew
+const skewThreshold = 4 * time.Minute
 
 // NewAttemptMiddleware returns a new Attempt retry middleware.
 func NewAttemptMiddleware(retryer aws.Retryer, requestCloner RequestCloner, optFns ...func(*Attempt)) *Attempt {
@@ -48,6 +71,10 @@ func NewAttemptMiddleware(retryer aws.Retryer, requestCloner RequestCloner, optF
 	for _, fn := range optFns {
 		fn(m)
 	}
+	if m.OperationMeter == nil {
+		m.OperationMeter = metrics.NopMeterProvider{}.Meter("")
+	}
+
 	return m
 }
 
@@ -66,17 +93,31 @@ func (r Attempt) logf(logger logging.Logger, classification logging.Classificati
 func (r *Attempt) HandleFinalize(ctx context.Context, in smithymiddle.FinalizeInput, next smithymiddle.FinalizeHandler) (
 	out smithymiddle.FinalizeOutput, metadata smithymiddle.Metadata, err error,
 ) {
-	var attemptNum int
+	ctx, span := tracing.StartSpan(ctx, "RetryLoop")
+	defer span.End()
+
 	var attemptClockSkew time.Duration
+	if !r.DisableClockSkewCorrection && r.ClientSkew != nil {
+		attemptClockSkew = time.Duration(r.ClientSkew.Load())
+	}
+
+	var attemptNum int
 	var attemptResults AttemptResults
 
 	maxAttempts := r.retryer.MaxAttempts()
 	releaseRetryToken := nopRelease
 
+	retryMetrics, err := newAttemptMetrics(r.OperationMeter)
+	if err != nil {
+		return out, metadata, err
+	}
+
 	for {
 		attemptNum++
 		attemptInput := in
 		attemptInput.Request = r.requestCloner(attemptInput.Request)
+
+		ctx = internalcontext.SetAttemptSkewContext(ctx, attemptClockSkew)
 
 		// Record the metadata for the for attempt being started.
 		attemptCtx := setRetryMetadata(ctx, retryMetadata{
@@ -87,7 +128,25 @@ func (r *Attempt) HandleFinalize(ctx context.Context, in smithymiddle.FinalizeIn
 		})
 
 		var attemptResult AttemptResult
+
+		attemptCtx, span := tracing.StartSpan(attemptCtx, "Attempt", func(o *tracing.SpanOptions) {
+			o.Properties.Set("operation.attempt", attemptNum)
+		})
+		retryMetrics.Attempts.Add(ctx, 1, withOperationMetadata(ctx))
+
+		start := sdk.NowTime()
 		out, attemptResult, releaseRetryToken, err = r.handleAttempt(attemptCtx, attemptInput, releaseRetryToken, next)
+		elapsed := sdk.NowTime().Sub(start)
+
+		retryMetrics.AttemptDuration.Record(ctx, float64(elapsed)/1e9, withOperationMetadata(ctx))
+		if err != nil {
+			retryMetrics.Errors.Add(ctx, 1, withOperationMetadata(ctx), func(o *metrics.RecordMetricOptions) {
+				o.Properties.Set("exception.type", errorType(err))
+			})
+		}
+
+		span.End()
+
 		attemptClockSkew, _ = awsmiddle.GetAttemptSkew(attemptResult.ResponseMetadata)
 
 		// AttemptResult Retried states that the attempt was not successful, and
@@ -104,6 +163,14 @@ func (r *Attempt) HandleFinalize(ctx context.Context, in smithymiddle.FinalizeIn
 			metadata = attemptResult.ResponseMetadata.Clone()
 
 			break
+		}
+	}
+
+	// this guarantees we are staying on top of the persistent skew value
+	// (either to apply it or to heal it back if the clocks realign)
+	if !r.DisableClockSkewCorrection && r.ClientSkew != nil {
+		if resultSkew, ok := awsmiddle.GetAttemptSkew(metadata); ok {
+			r.ClientSkew.Store(resultSkew.Nanoseconds())
 		}
 	}
 
@@ -162,6 +229,11 @@ func (r *Attempt) handleAttempt(
 			service, operation, attemptNum)
 	}
 
+	// Not an error for other transports: they have no header to set.
+	if req, ok := in.Request.(*http.Request); ok {
+		setRetryMetricsHeader(ctx, req)
+	}
+
 	var metadata smithymiddle.Metadata
 	out, metadata, err = next.HandleFinalize(ctx, in)
 	attemptResult.ResponseMetadata = metadata
@@ -183,6 +255,11 @@ func (r *Attempt) handleAttempt(
 	// will be nothing to retry.
 	if err == nil {
 		return out, attemptResult, nopRelease, err
+	}
+
+	if !r.DisableClockSkewCorrection {
+		candidateSkew, hasCandidateSkew := awsmiddle.GetAttemptSkew(metadata)
+		err = wrapAsClockSkew(err, candidateSkew, hasCandidateSkew, retryMetadata.AttemptClockSkew)
 	}
 
 	//------------------------------
@@ -216,7 +293,14 @@ func (r *Attempt) handleAttempt(
 	// Get a retry token that will be released after the
 	releaseRetryToken, retryTokenErr := r.retryer.GetRetryToken(ctx, err)
 	if retryTokenErr != nil {
-		return out, attemptResult, nopRelease, retryTokenErr
+		// Long-polling operations must still back off when quota is exceeded.
+		if internalcontext.GetIsLongPolling(ctx) {
+			if retryDelay, delayErr := r.retryer.RetryDelay(attemptNum, err); delayErr == nil {
+				retryDelay = adjustForRetryAfterHeader(retryDelay, err, logger, r.LogAttempts)
+				_ = sdk.SleepWithContext(ctx, retryDelay)
+			}
+		}
+		return out, attemptResult, nopRelease, errors.Join(err, retryTokenErr)
 	}
 
 	//------------------------------
@@ -226,16 +310,10 @@ func (r *Attempt) handleAttempt(
 	// that time. Potentially early exist if the sleep is canceled via the
 	// context.
 	retryDelay, reqErr := r.retryer.RetryDelay(attemptNum, err)
-	mctx := metrics.Context(ctx)
-	if mctx != nil {
-		attempt, err := mctx.Data().LatestAttempt()
-		if err != nil {
-			attempt.RetryDelay = retryDelay
-		}
-	}
 	if reqErr != nil {
 		return out, attemptResult, releaseRetryToken, reqErr
 	}
+	retryDelay = adjustForRetryAfterHeader(retryDelay, err, logger, r.LogAttempts)
 	if reqErr = sdk.SleepWithContext(ctx, retryDelay); reqErr != nil {
 		err = &aws.RequestCanceledError{Err: reqErr}
 		return out, attemptResult, releaseRetryToken, err
@@ -247,15 +325,83 @@ func (r *Attempt) handleAttempt(
 	return out, attemptResult, releaseRetryToken, err
 }
 
+// clockSkewCodes are the error codes that may indicate a clock skew problem.
+// Per the Clock Skew Correction SEP these are retryable only when the absolute
+// skew observed from the response Date header exceeds the detection threshold.
+// The SEP does not distinguish "definite" from "possible" skew errors: modern
+// services overload a single code (e.g. InvalidSignatureException) for both
+// skewed and genuinely malformed signatures, so every code is gated on the
+// observed skew.
+var clockSkewCodes = map[string]struct{}{
+	"InvalidSignatureException": {},
+	"SignatureDoesNotMatch":     {},
+	"AuthFailure":               {},
+	"RequestTimeTooSkewed":      {},
+	"AccessDeniedException":     {},
+}
+
+// wrapAsClockSkew classifies err as a retryable clock skew error when its code
+// is a known clock skew code and the signing time diverges from the server
+// time by more than the detection threshold.
+//
+// The signing time is now() + attemptSkew. The server time is now() +
+// candidateSkew (derived from the response Date header). The signing error is:
+//
+//	|attemptSkew - candidateSkew| > skewThreshold
+//
+// This single check covers both fresh skew detection (attemptSkew is zero on
+// first attempt, so the error equals |candidateSkew|) and stale offset healing
+// (attemptSkew is large but the server and client clocks have realigned, so
+// candidateSkew is near zero).
+//
+// If no candidate was observed (the Date header was absent, unparseable, or
+// discarded as untrusted), the error is not treated as clock skew.
+func wrapAsClockSkew(err error, candidateSkew time.Duration, hasCandidateSkew bool, attemptSkew time.Duration) error {
+	var v interface{ ErrorCode() string }
+	if !errors.As(err, &v) {
+		return err
+	}
+
+	if _, ok := clockSkewCodes[v.ErrorCode()]; !ok {
+		return err
+	}
+
+	if !hasCandidateSkew {
+		return err
+	}
+
+	if absDuration(attemptSkew-candidateSkew) > skewThreshold {
+		return &retryableClockSkewError{Err: err}
+	}
+
+	return err
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+
+	return d
+}
+
 // MetricsHeader attaches SDK request metric header for retries to the transport
+//
+// Deprecated: AWS service clients no longer use this middleware. The
+// Amz-Sdk-Request header is set by the Attempt middleware, which already holds
+// the retry metadata the header describes.
 type MetricsHeader struct{}
 
 // ID returns the middleware identifier
+//
+// Deprecated: MetricsHeader is deprecated.
 func (r *MetricsHeader) ID() string {
 	return "RetryMetricsHeader"
 }
 
 // HandleFinalize attaches the SDK request metric header to the transport layer
+//
+// Deprecated: MetricsHeader is deprecated.
 func (r MetricsHeader) HandleFinalize(ctx context.Context, in smithymiddle.FinalizeInput, next smithymiddle.FinalizeHandler) (
 	out smithymiddle.FinalizeOutput, metadata smithymiddle.Metadata, err error,
 ) {
@@ -289,6 +435,34 @@ func (r MetricsHeader) HandleFinalize(ctx context.Context, in smithymiddle.Final
 	}
 
 	return next.HandleFinalize(ctx, in)
+}
+
+// setRetryMetricsHeader sets the Amz-Sdk-Request header from the retry metadata
+// on the context.
+func setRetryMetricsHeader(ctx context.Context, req *http.Request) {
+	retryMetadata, _ := getRetryMetadata(ctx)
+
+	const retryMetricHeader = "Amz-Sdk-Request"
+	var parts []string
+
+	parts = append(parts, "attempt="+strconv.Itoa(retryMetadata.AttemptNum))
+	if retryMetadata.MaxAttempts != 0 {
+		parts = append(parts, "max="+strconv.Itoa(retryMetadata.MaxAttempts))
+	}
+
+	var ttl time.Time
+	if deadline, ok := ctx.Deadline(); ok {
+		ttl = deadline
+	}
+
+	// Only append the TTL if it can be determined.
+	if !ttl.IsZero() && retryMetadata.AttemptClockSkew > 0 {
+		const unixTimeFormat = "20060102T150405Z"
+		ttl = ttl.Add(retryMetadata.AttemptClockSkew)
+		parts = append(parts, "ttl="+ttl.Format(unixTimeFormat))
+	}
+
+	req.Header[retryMetricHeader] = append(req.Header[retryMetricHeader][:0], strings.Join(parts, "; "))
 }
 
 type retryMetadataKey struct{}
@@ -333,8 +507,52 @@ func AddRetryMiddlewares(stack *smithymiddle.Stack, options AddRetryMiddlewaresO
 		return err
 	}
 
-	if err := stack.Finalize.Insert(&MetricsHeader{}, attempt.ID(), smithymiddle.After); err != nil {
-		return err
-	}
 	return nil
+}
+
+// adjustForRetryAfterHeader checks for the x-amz-retry-after response header
+// and clamps the backoff duration accordingly. The header value is an integer
+// representing milliseconds. The result is clamped to [t_i, 5s + t_i] where
+// t_i is the jittered exponential backoff duration. Invalid header values are
+// ignored.
+func adjustForRetryAfterHeader(backoff time.Duration, err error, logger logging.Logger, logAttempts bool) time.Duration {
+	var re *http.ResponseError
+	if !errors.As(err, &re) || re.Response == nil || re.Response.Response == nil {
+		return backoff
+	}
+
+	headerVal := re.Response.Header.Get("X-Amz-Retry-After")
+	if headerVal == "" {
+		return backoff
+	}
+
+	ms, parseErr := strconv.ParseInt(headerVal, 10, 64)
+	if parseErr != nil || ms < 0 {
+		if logAttempts {
+			logger.Logf(logging.Debug, "ignoring invalid x-amz-retry-after header value %q", headerVal)
+		}
+		return backoff
+	}
+
+	retryAfter := time.Duration(ms) * time.Millisecond
+	minDuration := backoff
+	maxDuration := 5*time.Second + backoff
+
+	if retryAfter < minDuration {
+		return minDuration
+	}
+	if retryAfter > maxDuration {
+		return maxDuration
+	}
+	return retryAfter
+}
+
+// Determines the value of exception.type for metrics purposes. We prefer an
+// API-specific error code, otherwise it's just the Go type for the value.
+func errorType(err error) string {
+	var terr smithy.APIError
+	if errors.As(err, &terr) {
+		return terr.ErrorCode()
+	}
+	return fmt.Sprintf("%T", err)
 }

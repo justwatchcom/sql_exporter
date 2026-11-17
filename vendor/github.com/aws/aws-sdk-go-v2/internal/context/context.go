@@ -2,12 +2,14 @@ package context
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/smithy-go/middleware"
 )
 
 type s3BackendKey struct{}
 type checksumInputAlgorithmKey struct{}
+type clockSkew struct{}
 
 const (
 	// S3BackendS3Express identifies the S3Express backend
@@ -35,5 +37,29 @@ func SetChecksumInputAlgorithm(ctx context.Context, value string) context.Contex
 // GetChecksumInputAlgorithm returns the checksum algorithm from the context.
 func GetChecksumInputAlgorithm(ctx context.Context) string {
 	v, _ := middleware.GetStackValue(ctx, checksumInputAlgorithmKey{}).(string)
+	return v
+}
+
+// SetAttemptSkewContext sets the clock skew value on the context
+func SetAttemptSkewContext(ctx context.Context, v time.Duration) context.Context {
+	return middleware.WithStackValue(ctx, clockSkew{}, v)
+}
+
+// GetAttemptSkewContext gets the clock skew value from the context
+func GetAttemptSkewContext(ctx context.Context) time.Duration {
+	x, _ := middleware.GetStackValue(ctx, clockSkew{}).(time.Duration)
+	return x
+}
+
+type longPollingKey struct{}
+
+// SetIsLongPolling marks the operation as long-polling on the context.
+func SetIsLongPolling(ctx context.Context, v bool) context.Context {
+	return middleware.WithStackValue(ctx, longPollingKey{}, v)
+}
+
+// GetIsLongPolling returns whether the operation is long-polling.
+func GetIsLongPolling(ctx context.Context) bool {
+	v, _ := middleware.GetStackValue(ctx, longPollingKey{}).(bool)
 	return v
 }

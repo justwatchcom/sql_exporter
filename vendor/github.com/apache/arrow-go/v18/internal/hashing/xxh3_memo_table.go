@@ -21,7 +21,6 @@ package hashing
 
 import (
 	"bytes"
-	"math"
 	"unsafe"
 )
 
@@ -43,10 +42,22 @@ type MemoTable interface {
 	TypeTraits() TypeTraits
 	// Reset drops everything in the table allowing it to be reused
 	Reset()
+	// Truncate removes values with an index greater than or equal to size.
+	Truncate(size int)
 	// Size returns the current number of unique values stored in
 	// the table, including whether or not a null value has been
 	// inserted via GetOrInsertNull.
 	Size() int
+	// CopyValues populates out with the values currently in the table, out must
+	// be a slice of the appropriate type for the table type.
+	CopyValues(out any)
+	// CopyValuesSubset is like CopyValues but only copies a subset of values starting
+	// at the indicated index.
+	CopyValuesSubset(start int, out any)
+	// Get returns the index of the table the specified value is, and a boolean indicating
+	// whether or not the value was found in the table. Will panic if val is not the appropriate
+	// type for the underlying table.
+	Get(val interface{}) (int, bool)
 	// GetOrInsert returns the index of the table the specified value is,
 	// and a boolean indicating whether or not the value was found in
 	// the table (if false, the value was inserted). An error is returned
@@ -74,6 +85,18 @@ type MemoTable interface {
 	WriteOutSubset(offset int, out []byte)
 }
 
+type MemoTypes interface {
+	int8 | int16 | int32 | int64 |
+		uint8 | uint16 | uint32 | uint64 |
+		float32 | float64 | []byte
+}
+
+type TypedMemoTable[T MemoTypes] interface {
+	MemoTable
+	Exists(T) bool
+	InsertOrGet(val T) (idx int, found bool, err error)
+}
+
 type NumericMemoTable interface {
 	MemoTable
 	WriteOutLE(out []byte)
@@ -84,15 +107,6 @@ const (
 	sentinel   uint64 = 0
 	loadFactor int64  = 2
 )
-
-func max(a, b uint64) uint64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-var isNan32Cmp = func(v float32) bool { return math.IsNaN(float64(v)) }
 
 // KeyNotFound is the constant returned by memo table functions when a key isn't found in the table
 const KeyNotFound = -1
@@ -117,7 +131,7 @@ type BinaryBuilderIFace interface {
 // while using a hash table to keep track of the indexes into the dictionary that
 // is created as we go.
 type BinaryMemoTable struct {
-	tbl     *Int32HashTable
+	tbl     *HashTable[int32]
 	builder BinaryBuilderIFace
 	nullIdx int
 }
@@ -134,7 +148,7 @@ func NewBinaryMemoTable(initial, valuesize int, bldr BinaryBuilderIFace) *Binary
 		datasize = initial * 4
 	}
 	bldr.ReserveData(datasize)
-	return &BinaryMemoTable{tbl: NewInt32HashTable(uint64(initial)), builder: bldr, nullIdx: KeyNotFound}
+	return &BinaryMemoTable{tbl: NewHashTable[int32](uint64(initial)), builder: bldr, nullIdx: KeyNotFound}
 }
 
 type unimplementedtraits struct{}
@@ -153,6 +167,35 @@ func (s *BinaryMemoTable) Reset() {
 	s.builder.Reserve(int(32))
 	s.builder.ReserveData(int(32) * 4)
 	s.nullIdx = KeyNotFound
+}
+
+func (s *BinaryMemoTable) Truncate(size int) {
+	if size < 0 {
+		panic("cannot truncate a memo table to a negative size")
+	}
+	if size >= s.Size() {
+		return
+	}
+
+	dataLen := 0
+	for i := 0; i < size; i++ {
+		dataLen += len(s.builder.Value(i))
+	}
+	s.builder.Resize(size)
+	s.builder.ResizeData(dataLen)
+
+	truncated := NewHashTable[int32](uint64(size))
+	s.tbl.VisitEntries(func(e *entry[int32]) {
+		if e.payload.val < 0 || uint64(e.payload.val) >= uint64(size) {
+			return
+		}
+		entry, _ := truncated.Lookup(e.h, func(int32) bool { return false })
+		truncated.Insert(entry, e.h, e.payload.val, -1)
+	})
+	s.tbl = truncated
+	if s.nullIdx >= size {
+		s.nullIdx = KeyNotFound
+	}
 }
 
 // GetNull returns the index of a null that has been inserted into the table or
@@ -202,23 +245,41 @@ func (BinaryMemoTable) getHash(val interface{}) uint64 {
 	}
 }
 
-// helper function to append the given value to the builder regardless
-// of the underlying binary type.
-func (b *BinaryMemoTable) appendVal(val interface{}) {
-	switch v := val.(type) {
-	case string:
-		b.builder.AppendString(v)
-	case []byte:
-		b.builder.Append(v)
-	case ByteSlice:
-		b.builder.Append(v.Bytes())
-	}
-}
-
-func (b *BinaryMemoTable) lookup(h uint64, val []byte) (*entryInt32, bool) {
+func (b *BinaryMemoTable) lookup(h uint64, val []byte) (*entry[int32], bool) {
 	return b.tbl.Lookup(h, func(i int32) bool {
 		return bytes.Equal(val, b.builder.Value(int(i)))
 	})
+}
+
+func (b *BinaryMemoTable) Exists(val []byte) bool {
+	_, ok := b.lookup(b.getHash(val), val)
+	return ok
+}
+
+// ExistsDirect checks if val exists in the table by inlining the hash
+// table probe loop directly. This avoids the closure allocation that
+// occurs in the normal Exists -> lookup -> HashTable.Lookup path,
+// where the comparison closure captures val and causes it to escape
+// to the heap.
+func (b *BinaryMemoTable) ExistsDirect(val []byte) bool {
+	const perturbShift uint8 = 5
+
+	h := Hash(val, 0)
+	v := b.tbl.fixHash(h)
+	idx := v & b.tbl.capMask
+	perturb := (v >> uint64(perturbShift)) + 1
+
+	for {
+		e := &b.tbl.entries[idx]
+		if e.h == v && bytes.Equal(val, b.builder.Value(int(e.payload.val))) {
+			return true
+		}
+		if e.h == sentinel {
+			return false
+		}
+		idx = (idx + perturb) & b.tbl.capMask
+		perturb = (perturb >> uint64(perturbShift)) + 1
+	}
 }
 
 // Get returns the index of the specified value in the table or KeyNotFound,
@@ -246,17 +307,21 @@ func (b *BinaryMemoTable) GetOrInsertBytes(val []byte) (idx int, found bool, err
 	return
 }
 
+func (b *BinaryMemoTable) GetOrInsert(val interface{}) (idx int, found bool, err error) {
+	return b.InsertOrGet(b.valAsByteSlice(val))
+}
+
 // GetOrInsert returns the index of the given value in the table, if not found
 // it is inserted into the table. The return value 'found' indicates whether the value
 // was found in the table (true) or inserted (false) along with any possible error.
-func (b *BinaryMemoTable) GetOrInsert(val interface{}) (idx int, found bool, err error) {
-	h := b.getHash(val)
-	p, found := b.lookup(h, b.valAsByteSlice(val))
+func (b *BinaryMemoTable) InsertOrGet(val []byte) (idx int, found bool, err error) {
+	h := Hash(val, 0)
+	p, found := b.lookup(h, val)
 	if found {
 		idx = int(p.payload.val)
 	} else {
 		idx = b.Size()
-		b.appendVal(val)
+		b.builder.Append(val)
 		b.tbl.Insert(p, h, int32(idx), -1)
 	}
 	return
@@ -315,15 +380,14 @@ func (b *BinaryMemoTable) CopyOffsetsSubset(start int, out []int32) {
 		return
 	}
 
-	first := b.findOffset(0)
-	delta := b.findOffset(start)
 	sz := b.Size()
+	offset := 0
 	for i := start; i < sz; i++ {
-		offset := int32(b.findOffset(i) - delta)
-		out[i-start] = offset
+		out[i-start] = int32(offset)
+		offset += len(b.builder.Value(i))
 	}
 
-	out[sz-start] = int32(b.builder.DataLen() - (int(delta) - int(first)))
+	out[sz-start] = int32(offset)
 }
 
 // CopyLargeOffsets copies the list of offsets into the passed in slice, the offsets
@@ -340,15 +404,14 @@ func (b *BinaryMemoTable) CopyLargeOffsetsSubset(start int, out []int64) {
 		return
 	}
 
-	first := b.findOffset(0)
-	delta := b.findOffset(start)
 	sz := b.Size()
+	offset := 0
 	for i := start; i < sz; i++ {
-		offset := int64(b.findOffset(i) - delta)
-		out[i-start] = offset
+		out[i-start] = int64(offset)
+		offset += len(b.builder.Value(i))
 	}
 
-	out[sz-start] = int64(b.builder.DataLen() - (int(delta) - int(first)))
+	out[sz-start] = int64(offset)
 }
 
 // CopyValues copies the raw binary data bytes out, out should be a []byte

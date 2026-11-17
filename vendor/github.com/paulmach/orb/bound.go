@@ -8,6 +8,7 @@ var emptyBound = Bound{Min: Point{1, 1}, Max: Point{-1, -1}}
 
 // A Bound represents a closed box or rectangle.
 // To create a bound with two points you can do something like:
+//
 //	orb.MultiPoint{p1, p2}.Bound()
 type Bound struct {
 	Min, Max Point
@@ -42,6 +43,10 @@ func (b Bound) ToRing() Ring {
 
 // Extend grows the bound to include the new point.
 func (b Bound) Extend(point Point) Bound {
+	if b.IsEmpty() {
+		return point.Bound()
+	}
+
 	// already included, no big deal
 	if b.Contains(point) {
 		return b
@@ -90,6 +95,10 @@ func (b Bound) Contains(point Point) bool {
 // Intersects determines if two bounds intersect.
 // Returns true if they are touching.
 func (b Bound) Intersects(bound Bound) bool {
+	if b.IsEmpty() || bound.IsEmpty() {
+		return false
+	}
+
 	if (b.Max[0] < bound.Min[0]) ||
 		(b.Min[0] > bound.Max[0]) ||
 		(b.Max[1] < bound.Min[1]) ||
@@ -156,12 +165,12 @@ func (b Bound) IsEmpty() bool {
 	return b.Min[0] > b.Max[0] || b.Min[1] > b.Max[1]
 }
 
-// IsZero return true if the bound just includes just null island.
+// IsZero return true if the bound includes just null island.
 func (b Bound) IsZero() bool {
 	return b.Max == Point{} && b.Min == Point{}
 }
 
-// Bound returns the the same bound.
+// Bound returns the same bound.
 func (b Bound) Bound() Bound {
 	return b
 }

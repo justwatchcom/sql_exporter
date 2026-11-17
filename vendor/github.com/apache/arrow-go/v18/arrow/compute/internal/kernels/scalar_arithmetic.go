@@ -342,7 +342,7 @@ func shiftKernelUnsignedImpl[T arrow.UintType](dir ShiftDir, checked bool) exec.
 	case ShiftLeft:
 		if checked {
 			return ScalarBinaryNotNull(func(_ *exec.KernelCtx, lhs, rhs T, e *error) T {
-				if rhs < 0 || rhs >= maxShift {
+				if rhs >= maxShift {
 					*e = errShift
 					return lhs
 				}
@@ -351,7 +351,7 @@ func shiftKernelUnsignedImpl[T arrow.UintType](dir ShiftDir, checked bool) exec.
 		}
 
 		return ScalarBinaryNotNull(func(_ *exec.KernelCtx, lhs, rhs T, _ *error) T {
-			if rhs < 0 || rhs >= maxShift {
+			if rhs >= maxShift {
 				return lhs
 			}
 			return lhs << rhs
@@ -359,7 +359,7 @@ func shiftKernelUnsignedImpl[T arrow.UintType](dir ShiftDir, checked bool) exec.
 	case ShiftRight:
 		if checked {
 			return ScalarBinaryNotNull(func(_ *exec.KernelCtx, lhs, rhs T, e *error) T {
-				if rhs < 0 || rhs >= maxShift {
+				if rhs >= maxShift {
 					*e = errShift
 					return lhs
 				}
@@ -368,7 +368,7 @@ func shiftKernelUnsignedImpl[T arrow.UintType](dir ShiftDir, checked bool) exec.
 		}
 
 		return ScalarBinaryNotNull(func(_ *exec.KernelCtx, lhs, rhs T, _ *error) T {
-			if rhs < 0 || rhs >= maxShift {
+			if rhs >= maxShift {
 				return lhs
 			}
 			return lhs >> rhs

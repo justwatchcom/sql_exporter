@@ -19,9 +19,9 @@
 package compute
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/bitutil"
@@ -30,7 +30,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/internal/utils"
-	"golang.org/x/xerrors"
 )
 
 type bufferWriteSeeker struct {
@@ -84,7 +83,7 @@ func (b *bufferWriteSeeker) Seek(offset int64, whence int) (int64, error) {
 		newpos = b.buf.Len() + offs
 	}
 	if newpos < 0 {
-		return 0, xerrors.New("negative result pos")
+		return 0, errors.New("negative result pos")
 	}
 	b.pos = newpos
 	return int64(newpos), nil
@@ -101,6 +100,14 @@ func ensureDictionaryDecoded(vals ...arrow.DataType) {
 	for i, v := range vals {
 		if v.ID() == arrow.DICTIONARY {
 			vals[i] = v.(*arrow.DictionaryType).ValueType
+		}
+	}
+}
+
+func ensureNoExtensionType(vals ...arrow.DataType) {
+	for i, v := range vals {
+		if v.ID() == arrow.EXTENSION {
+			vals[i] = v.(arrow.ExtensionType).StorageType()
 		}
 	}
 }
@@ -128,10 +135,10 @@ func commonTemporalResolution(vals ...arrow.DataType) (arrow.TimeUnit, bool) {
 			isTimeUnit = true
 			continue
 		case *arrow.Date64Type:
-			finestUnit = exec.Max(finestUnit, arrow.Millisecond)
+			finestUnit = max(finestUnit, arrow.Millisecond)
 			isTimeUnit = true
 		case arrow.TemporalWithUnit:
-			finestUnit = exec.Max(finestUnit, dt.TimeUnit())
+			finestUnit = max(finestUnit, dt.TimeUnit())
 			isTimeUnit = true
 		default:
 			continue
@@ -322,8 +329,8 @@ func commonTemporal(vals ...arrow.DataType) arrow.DataType {
 	var (
 		finestUnit           = arrow.Second
 		zone                 *string
-		loc                  *time.Location
 		sawDate32, sawDate64 bool
+		sawDuration, sawTime bool
 	)
 
 	for _, ty := range vals {
@@ -332,32 +339,55 @@ func commonTemporal(vals ...arrow.DataType) arrow.DataType {
 			// date32's unit is days, but the coarsest we have is seconds
 			sawDate32 = true
 		case arrow.DATE64:
-			finestUnit = exec.Max(finestUnit, arrow.Millisecond)
+			finestUnit = max(finestUnit, arrow.Millisecond)
 			sawDate64 = true
 		case arrow.TIMESTAMP:
 			ts := ty.(*arrow.TimestampType)
-			if ts.TimeZone != "" {
-				tz, _ := ts.GetZone()
-				if loc != nil && loc != tz {
-					return nil
-				}
-				loc = tz
-			}
+			// Timezone-aware timestamp values are normalized to the UTC epoch,
+			// so their location metadata does not prevent promotion for comparison.
+			// compareTimestampKernel rejects mixing aware and naive timestamps.
 			zone = &ts.TimeZone
-			finestUnit = exec.Max(finestUnit, ts.Unit)
+			finestUnit = max(finestUnit, ts.Unit)
+		case arrow.TIME32, arrow.TIME64:
+			ts := ty.(arrow.TemporalWithUnit)
+			finestUnit = max(finestUnit, ts.TimeUnit())
+			sawTime = true
+		case arrow.DURATION:
+			ts := ty.(*arrow.DurationType)
+			finestUnit = max(finestUnit, ts.Unit)
+			sawDuration = true
 		default:
 			return nil
 		}
 	}
 
-	switch {
-	case zone != nil:
-		// at least one timestamp seen
-		return &arrow.TimestampType{Unit: finestUnit, TimeZone: *zone}
-	case sawDate64:
-		return arrow.FixedWidthTypes.Date64
-	case sawDate32:
-		return arrow.FixedWidthTypes.Date32
+	sawTimestampOrDate := zone != nil || sawDate32 || sawDate64
+
+	if sawTimestampOrDate && (sawTime || sawDuration) {
+		// no common type possible
+		return nil
+	}
+
+	if sawTimestampOrDate {
+		switch {
+		case zone != nil:
+			// at least one timestamp seen
+			return &arrow.TimestampType{Unit: finestUnit, TimeZone: *zone}
+		case sawDate64:
+			return arrow.FixedWidthTypes.Date64
+		case sawDate32:
+			return arrow.FixedWidthTypes.Date32
+		}
+	} else if sawTime {
+		switch finestUnit {
+		case arrow.Second, arrow.Millisecond:
+			return &arrow.Time32Type{Unit: finestUnit}
+		case arrow.Microsecond, arrow.Nanosecond:
+			return &arrow.Time64Type{Unit: finestUnit}
+		}
+	} else if sawDuration {
+		// we can only get here if we ONLY saw durations
+		return &arrow.DurationType{Unit: finestUnit}
 	}
 	return nil
 }

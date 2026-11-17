@@ -24,7 +24,9 @@ import (
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/internal/json"
 )
 
@@ -45,17 +47,17 @@ type Binary struct {
 // NewBinaryData constructs a new Binary array from data.
 func NewBinaryData(data arrow.ArrayData) *Binary {
 	a := &Binary{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
 
 // Value returns the slice at index i. This value should not be mutated.
 func (a *Binary) Value(i int) []byte {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	idx := a.array.data.offset + i
+	idx := a.data.offset + i
 	return a.valueBytes[a.valueOffsets[idx]:a.valueOffsets[idx+1]]
 }
 
@@ -75,10 +77,10 @@ func (a *Binary) ValueString(i int) string {
 }
 
 func (a *Binary) ValueOffset(i int) int {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	return int(a.valueOffsets[a.array.data.offset+i])
+	return int(a.valueOffsets[a.data.offset+i])
 }
 
 func (a *Binary) ValueOffset64(i int) int64 {
@@ -86,22 +88,22 @@ func (a *Binary) ValueOffset64(i int) int64 {
 }
 
 func (a *Binary) ValueLen(i int) int {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	beg := a.array.data.offset + i
+	beg := a.data.offset + i
 	return int(a.valueOffsets[beg+1] - a.valueOffsets[beg])
 }
 
 func (a *Binary) ValueOffsets() []int32 {
-	beg := a.array.data.offset
-	end := beg + a.array.data.length + 1
+	beg := a.data.offset
+	end := beg + a.data.length + 1
 	return a.valueOffsets[beg:end]
 }
 
 func (a *Binary) ValueBytes() []byte {
-	beg := a.array.data.offset
-	end := beg + a.array.data.length
+	beg := a.data.offset
+	end := beg + a.data.length
 	return a.valueBytes[a.valueOffsets[beg]:a.valueOffsets[end]]
 }
 
@@ -138,11 +140,11 @@ func (a *Binary) setData(data *Data) {
 		a.valueOffsets = arrow.Int32Traits.CastFromBytes(valueOffsets.Bytes())
 	}
 
-	if a.array.data.length < 1 {
+	if a.data.length < 1 {
 		return
 	}
 
-	expNumOffsets := a.array.data.offset + a.array.data.length + 1
+	expNumOffsets := a.data.offset + a.data.length + 1
 	if len(a.valueOffsets) < expNumOffsets {
 		panic(fmt.Errorf("arrow/array: binary offset buffer must have at least %d values", expNumOffsets))
 	}
@@ -159,6 +161,13 @@ func (a *Binary) GetOneForMarshal(i int) interface{} {
 	return a.Value(i)
 }
 
+func (a *Binary) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
+}
+
 func (a *Binary) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
@@ -169,16 +178,76 @@ func (a *Binary) MarshalJSON() ([]byte, error) {
 	return json.Marshal(vals)
 }
 
-func arrayEqualBinary(left, right *Binary) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		if !bytes.Equal(left.Value(i), right.Value(i)) {
-			return false
+// Validate performs a basic, O(1) consistency check on the array data.
+// It returns an error if:
+//   - The offset buffer is too small for the array length and offset
+//   - The last offset exceeds the data buffer length
+//
+// This is useful for detecting corrupted data from untrusted sources (e.g.
+// Arrow Flight / Flight SQL servers) before accessing values, which may
+// otherwise cause a runtime panic.
+func (a *Binary) Validate() error {
+	if a.data.length == 0 {
+		return nil
+	}
+	if a.data.buffers[1] == nil {
+		return fmt.Errorf("arrow/array: non-empty binary array has no offsets buffer")
+	}
+	expNumOffsets := a.data.offset + a.data.length + 1
+	if len(a.valueOffsets) < expNumOffsets {
+		return fmt.Errorf("arrow/array: binary offset buffer must have at least %d values, got %d", expNumOffsets, len(a.valueOffsets))
+	}
+	firstOffset := int(a.valueOffsets[a.data.offset])
+	if firstOffset > len(a.valueBytes) {
+		return fmt.Errorf("arrow/array: binary offset %d out of bounds of data buffer (length %d)", firstOffset, len(a.valueBytes))
+	}
+
+	lastOffset := int(a.valueOffsets[expNumOffsets-1])
+	if lastOffset > len(a.valueBytes) {
+		return fmt.Errorf("arrow/array: binary offset %d out of bounds of data buffer (length %d)", lastOffset, len(a.valueBytes))
+	}
+	return nil
+}
+
+// ValidateFull performs a full O(n) consistency check on the array data.
+// In addition to the checks performed by Validate, it also verifies that
+// all offsets are non-negative and monotonically non-decreasing.
+func (a *Binary) ValidateFull() error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if a.data.length == 0 {
+		return nil
+	}
+	offsets := a.valueOffsets[a.data.offset : a.data.offset+a.data.length+1]
+	if offsets[0] < 0 {
+		return fmt.Errorf("arrow/array: binary offset at index %d is negative: %d", a.data.offset, offsets[0])
+	}
+	for i := 1; i < len(offsets); i++ {
+		if offsets[i] < offsets[i-1] {
+			return fmt.Errorf("arrow/array: binary offsets are not monotonically non-decreasing at index %d: %d < %d",
+				a.data.offset+i, offsets[i], offsets[i-1])
 		}
 	}
-	return true
+	return nil
+}
+
+func arrayEqualBinary(left, right *Binary) bool {
+	if useScalarVariableWidthEquality(left) {
+		for i := range left.Len() {
+			if !left.IsNull(i) && !bytes.Equal(left.Value(i), right.Value(i)) {
+				return false
+			}
+		}
+		return true
+	}
+	return arrayEqualVariableWidth(
+		left.valueOffsets, right.valueOffsets,
+		left.valueBytes, right.valueBytes,
+		left.Offset(), right.Offset(), left.Len(),
+		left.NullN(), left.NullBitmapBytes(),
+		bytes.Equal,
+	)
 }
 
 type LargeBinary struct {
@@ -189,16 +258,16 @@ type LargeBinary struct {
 
 func NewLargeBinaryData(data arrow.ArrayData) *LargeBinary {
 	a := &LargeBinary{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
 
 func (a *LargeBinary) Value(i int) []byte {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	idx := a.array.data.offset + i
+	idx := a.data.offset + i
 	return a.valueBytes[a.valueOffsets[idx]:a.valueOffsets[idx+1]]
 }
 
@@ -208,16 +277,17 @@ func (a *LargeBinary) ValueStr(i int) string {
 	}
 	return base64.StdEncoding.EncodeToString(a.Value(i))
 }
+
 func (a *LargeBinary) ValueString(i int) string {
 	b := a.Value(i)
 	return *(*string)(unsafe.Pointer(&b))
 }
 
 func (a *LargeBinary) ValueOffset(i int) int64 {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	return a.valueOffsets[a.array.data.offset+i]
+	return a.valueOffsets[a.data.offset+i]
 }
 
 func (a *LargeBinary) ValueOffset64(i int) int64 {
@@ -225,22 +295,22 @@ func (a *LargeBinary) ValueOffset64(i int) int64 {
 }
 
 func (a *LargeBinary) ValueLen(i int) int {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	beg := a.array.data.offset + i
+	beg := a.data.offset + i
 	return int(a.valueOffsets[beg+1] - a.valueOffsets[beg])
 }
 
 func (a *LargeBinary) ValueOffsets() []int64 {
-	beg := a.array.data.offset
-	end := beg + a.array.data.length + 1
+	beg := a.data.offset
+	end := beg + a.data.length + 1
 	return a.valueOffsets[beg:end]
 }
 
 func (a *LargeBinary) ValueBytes() []byte {
-	beg := a.array.data.offset
-	end := beg + a.array.data.length
+	beg := a.data.offset
+	end := beg + a.data.length
 	return a.valueBytes[a.valueOffsets[beg]:a.valueOffsets[end]]
 }
 
@@ -277,11 +347,11 @@ func (a *LargeBinary) setData(data *Data) {
 		a.valueOffsets = arrow.Int64Traits.CastFromBytes(valueOffsets.Bytes())
 	}
 
-	if a.array.data.length < 1 {
+	if a.data.length < 1 {
 		return
 	}
 
-	expNumOffsets := a.array.data.offset + a.array.data.length + 1
+	expNumOffsets := a.data.offset + a.data.length + 1
 	if len(a.valueOffsets) < expNumOffsets {
 		panic(fmt.Errorf("arrow/array: large binary offset buffer must have at least %d values", expNumOffsets))
 	}
@@ -298,6 +368,13 @@ func (a *LargeBinary) GetOneForMarshal(i int) interface{} {
 	return a.Value(i)
 }
 
+func (a *LargeBinary) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
+}
+
 func (a *LargeBinary) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
@@ -308,16 +385,184 @@ func (a *LargeBinary) MarshalJSON() ([]byte, error) {
 	return json.Marshal(vals)
 }
 
-func arrayEqualLargeBinary(left, right *LargeBinary) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
+// Validate performs a basic, O(1) consistency check on the array data.
+// It returns an error if:
+//   - The offset buffer is too small for the array length and offset
+//   - The last offset exceeds the data buffer length
+//
+// This is useful for detecting corrupted data from untrusted sources (e.g.
+// Arrow Flight / Flight SQL servers) before accessing values, which may
+// otherwise cause a runtime panic.
+func (a *LargeBinary) Validate() error {
+	if a.data.length == 0 {
+		return nil
+	}
+	if a.data.buffers[1] == nil {
+		return fmt.Errorf("arrow/array: non-empty large binary array has no offsets buffer")
+	}
+	expNumOffsets := a.data.offset + a.data.length + 1
+	if len(a.valueOffsets) < expNumOffsets {
+		return fmt.Errorf("arrow/array: large binary offset buffer must have at least %d values, got %d", expNumOffsets, len(a.valueOffsets))
+	}
+	firstOffset := int(a.valueOffsets[a.data.offset])
+	if firstOffset > len(a.valueBytes) {
+		return fmt.Errorf("arrow/array: large binary offset %d out of bounds of data buffer (length %d)", firstOffset, len(a.valueBytes))
+	}
+
+	lastOffset := int(a.valueOffsets[expNumOffsets-1])
+	if lastOffset > len(a.valueBytes) {
+		return fmt.Errorf("arrow/array: large binary offset %d out of bounds of data buffer (length %d)", lastOffset, len(a.valueBytes))
+	}
+	return nil
+}
+
+// ValidateFull performs a full O(n) consistency check on the array data.
+// In addition to the checks performed by Validate, it also verifies that
+// all offsets are non-negative and monotonically non-decreasing.
+func (a *LargeBinary) ValidateFull() error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if a.data.length == 0 {
+		return nil
+	}
+	offsets := a.valueOffsets[a.data.offset : a.data.offset+a.data.length+1]
+	if offsets[0] < 0 {
+		return fmt.Errorf("arrow/array: large binary offset at index %d is negative: %d", a.data.offset, offsets[0])
+	}
+	for i := 1; i < len(offsets); i++ {
+		if offsets[i] < offsets[i-1] {
+			return fmt.Errorf("arrow/array: large binary offsets are not monotonically non-decreasing at index %d: %d < %d",
+				a.data.offset+i, offsets[i], offsets[i-1])
 		}
-		if !bytes.Equal(left.Value(i), right.Value(i)) {
+	}
+	return nil
+}
+
+func arrayEqualLargeBinary(left, right *LargeBinary) bool {
+	if useScalarVariableWidthEquality(left) {
+		for i := range left.Len() {
+			if !left.IsNull(i) && !bytes.Equal(left.Value(i), right.Value(i)) {
+				return false
+			}
+		}
+		return true
+	}
+	return arrayEqualVariableWidth(
+		left.valueOffsets, right.valueOffsets,
+		left.valueBytes, right.valueBytes,
+		left.Offset(), right.Offset(), left.Len(),
+		left.NullN(), left.NullBitmapBytes(),
+		bytes.Equal,
+	)
+}
+
+type binaryOffset interface {
+	~int32 | ~int64
+}
+
+func useScalarVariableWidthEquality(values arrow.Array) bool {
+	if values.NullN() == 0 {
+		return false
+	}
+	return useScalarEqualityForValidityRuns(values)
+}
+
+func useScalarEqualityForValidityRuns(values arrow.Array) bool {
+	if values.Len() <= 64 || len(values.NullBitmapBytes()) == 0 {
+		return true
+	}
+
+	// Very short validity runs cost more to set up than direct value comparisons.
+	// Sample a few runs and retain the scalar path when they average under four values.
+	const (
+		sampleRuns          = 8
+		minAverageRunLength = 4
+	)
+	runs := bitutils.NewSetBitRunReader(
+		values.NullBitmapBytes(), int64(values.Data().Offset()), int64(values.Len()),
+	)
+	validValues := int64(0)
+	for range sampleRuns {
+		run := runs.NextRun()
+		if run.Length == 0 {
+			return false
+		}
+		validValues += run.Length
+	}
+	return validValues < sampleRuns*minAverageRunLength
+}
+
+func arrayEqualVariableWidth[T binaryOffset, V ~[]byte | ~string](
+	leftOffsets, rightOffsets []T,
+	leftValues, rightValues V,
+	leftOffset, rightOffset, length, nulls int,
+	validity []byte,
+	equalValues func(V, V) bool,
+) bool {
+	if length == 0 {
+		return true
+	}
+
+	// A declared null count may be inconsistent with the validity bitmap.
+	// Verify zero-null bitmaps before comparing the whole payload.
+	if len(validity) == 0 ||
+		(nulls == 0 && bitutil.CountSetBits(validity, leftOffset, length) == length) {
+		return arrayEqualVariableWidthRun(
+			leftOffsets, rightOffsets,
+			leftValues, rightValues,
+			leftOffset, rightOffset, length,
+			equalValues,
+		)
+	}
+
+	runs := bitutils.NewSetBitRunReader(validity, int64(leftOffset), int64(length))
+	for {
+		run := runs.NextRun()
+		if run.Length == 0 {
+			return true
+		}
+		if !arrayEqualVariableWidthRun(
+			leftOffsets, rightOffsets,
+			leftValues, rightValues,
+			leftOffset+int(run.Pos), rightOffset+int(run.Pos), int(run.Length),
+			equalValues,
+		) {
+			return false
+		}
+	}
+}
+
+func arrayEqualVariableWidthRun[T binaryOffset, V ~[]byte | ~string](
+	leftOffsets, rightOffsets []T,
+	leftValues, rightValues V,
+	leftOffset, rightOffset, length int,
+	equalValues func(V, V) bool,
+) bool {
+	leftStart, leftEnd := leftOffsets[leftOffset], leftOffsets[leftOffset+length]
+	rightStart, rightEnd := rightOffsets[rightOffset], rightOffsets[rightOffset+length]
+	if leftEnd-leftStart != rightEnd-rightStart ||
+		!equalValues(
+			sliceBinaryValues(leftValues, leftStart, leftEnd),
+			sliceBinaryValues(rightValues, rightStart, rightEnd),
+		) {
+		return false
+	}
+	if length == 1 {
+		return true
+	}
+
+	for i := range length {
+		if leftOffsets[leftOffset+i+1]-leftOffsets[leftOffset+i] !=
+			rightOffsets[rightOffset+i+1]-rightOffsets[rightOffset+i] {
 			return false
 		}
 	}
 	return true
+}
+
+func sliceBinaryValues[T binaryOffset, V ~[]byte | ~string](values V, start, end T) V {
+	return values[start:end]
 }
 
 type ViewLike interface {
@@ -333,7 +578,7 @@ type BinaryView struct {
 
 func NewBinaryViewData(data arrow.ArrayData) *BinaryView {
 	a := &BinaryView{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -352,10 +597,10 @@ func (a *BinaryView) setData(data *Data) {
 }
 
 func (a *BinaryView) ValueHeader(i int) *arrow.ViewHeader {
-	if i < 0 || i >= a.array.data.length {
+	if i < 0 || i >= a.data.length {
 		panic("arrow/array: index out of range")
 	}
-	return &a.values[a.array.data.offset+i]
+	return &a.values[a.data.offset+i]
 }
 
 func (a *BinaryView) Value(i int) []byte {
@@ -371,6 +616,17 @@ func (a *BinaryView) Value(i int) []byte {
 func (a *BinaryView) ValueLen(i int) int {
 	s := a.ValueHeader(i)
 	return s.Len()
+}
+
+func (a *BinaryView) Validate() error {
+	return validateViewLayout(a, "binary view")
+}
+
+func (a *BinaryView) ValidateFull() error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	return validateViewValues(a, a.dataBuffers, nil)
 }
 
 // ValueString returns the value at index i as a string instead of
@@ -420,6 +676,13 @@ func (a *BinaryView) GetOneForMarshal(i int) interface{} {
 	return a.Value(i)
 }
 
+func (a *BinaryView) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
+}
+
 func (a *BinaryView) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
@@ -443,6 +706,89 @@ func arrayEqualBinaryView(left, right *BinaryView) bool {
 	return true
 }
 
+func validateViewLayout(arr ViewLike, kind string) error {
+	data := arr.Data().(*Data)
+	if data.length == 0 {
+		return nil
+	}
+	if data.buffers[1] == nil {
+		return fmt.Errorf("arrow/array: non-empty %s array has no view buffer", kind)
+	}
+
+	expNumViews := data.offset + data.length
+	if len(data.buffers[1].Bytes())/arrow.ViewHeaderSizeBytes < expNumViews {
+		return fmt.Errorf("arrow/array: %s buffer must have at least %d view values", kind, expNumViews)
+	}
+	return nil
+}
+
+func validateViewValues(arr ViewLike, dataBuffers []*memory.Buffer, validateValue func(int, []byte) error) error {
+	data := arr.Data().(*Data)
+	if data.length == 0 {
+		return nil
+	}
+	rawViews := data.buffers[1].Bytes()
+	for i := 0; i < data.length; i++ {
+		if arr.IsNull(i) {
+			continue
+		}
+
+		view := arr.ValueHeader(i)
+		if view.Len() < 0 {
+			return fmt.Errorf("arrow/array: view at slot %d has negative size %d", i, view.Len())
+		}
+
+		if view.IsInline() {
+			rawOffset := (data.offset + i) * arrow.ViewHeaderSizeBytes
+			raw := rawViews[rawOffset : rawOffset+arrow.ViewHeaderSizeBytes]
+			for _, b := range raw[4+view.Len() : arrow.ViewHeaderSizeBytes] {
+				if b != 0 {
+					return fmt.Errorf("arrow/array: view at slot %d was inline with size %d but its padding bytes were not all zero", i, view.Len())
+				}
+			}
+			if validateValue != nil {
+				if err := validateValue(i, view.InlineBytes()); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+
+		if view.BufferIndex() < 0 {
+			return fmt.Errorf("arrow/array: view at slot %d has negative buffer index %d", i, view.BufferIndex())
+		}
+		if view.BufferOffset() < 0 {
+			return fmt.Errorf("arrow/array: view at slot %d has negative offset %d", i, view.BufferOffset())
+		}
+		if int(view.BufferIndex()) >= len(dataBuffers) {
+			return fmt.Errorf("arrow/array: view at slot %d references buffer %d but there are only %d data buffers", i, view.BufferIndex(), len(dataBuffers))
+		}
+
+		buf := dataBuffers[view.BufferIndex()]
+		if buf == nil {
+			return fmt.Errorf("arrow/array: view at slot %d references nil data buffer %d", i, view.BufferIndex())
+		}
+
+		offset := int(view.BufferOffset())
+		end := offset + view.Len()
+		if end > buf.Len() {
+			return fmt.Errorf("arrow/array: view at slot %d references range %d-%d of buffer %d but that buffer is only %d bytes long", i, offset, end, view.BufferIndex(), buf.Len())
+		}
+
+		value := buf.Bytes()[offset:end]
+		prefix := view.Prefix()
+		if !bytes.Equal(value[:arrow.ViewPrefixLen], prefix[:]) {
+			return fmt.Errorf("arrow/array: view at slot %d has inlined prefix %x but the out-of-line data begins with %x", i, prefix, value[:arrow.ViewPrefixLen])
+		}
+		if validateValue != nil {
+			if err := validateValue(i, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 var (
 	_ arrow.Array = (*Binary)(nil)
 	_ arrow.Array = (*LargeBinary)(nil)
@@ -450,4 +796,8 @@ var (
 
 	_ BinaryLike = (*Binary)(nil)
 	_ BinaryLike = (*LargeBinary)(nil)
+
+	_ arrow.TypedArray[[]byte] = (*Binary)(nil)
+	_ arrow.TypedArray[[]byte] = (*LargeBinary)(nil)
+	_ arrow.TypedArray[[]byte] = (*BinaryView)(nil)
 )

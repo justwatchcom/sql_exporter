@@ -19,11 +19,12 @@ package compute
 import (
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/apache/arrow-go/v18/internal/utils/maphash"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -162,7 +163,7 @@ func (f FieldPath) GetField(field arrow.Field) (*arrow.Field, error) {
 
 // GetColumn will return the correct child array by traversing the fieldpath
 // going to the nested arrays of the columns in the record batch.
-func (f FieldPath) GetColumn(batch arrow.Record) (arrow.Array, error) {
+func (f FieldPath) GetColumn(batch arrow.RecordBatch) (arrow.Array, error) {
 	return f.getArray(batch.Columns())
 }
 
@@ -191,7 +192,7 @@ func (ref nameRef) findAll(fields []arrow.Field) []FieldPath {
 	return out
 }
 
-func (ref nameRef) hash(h *maphash.Hash) { h.WriteString(string(ref)) }
+func (ref nameRef) hash(h *maphash.MapHash) { h.WriteString(string(ref)) }
 
 type matches struct {
 	prefixes []FieldPath
@@ -223,7 +224,7 @@ func (r refList) String() string {
 	return ret[:len(ret)-1] + ")"
 }
 
-func (ref refList) hash(h *maphash.Hash) {
+func (ref refList) hash(h *maphash.MapHash) {
 	for _, r := range ref {
 		r.hash(h)
 	}
@@ -254,7 +255,7 @@ func (ref refList) findAll(fields []arrow.Field) []FieldPath {
 type refImpl interface {
 	fmt.Stringer
 	findAll(fields []arrow.Field) []FieldPath
-	hash(h *maphash.Hash)
+	hash(h *maphash.MapHash)
 }
 
 // FieldRef is a descriptor of a (potentially nested) field within a schema.
@@ -407,12 +408,12 @@ func NewFieldRefFromDotPath(dotpath string) (out FieldRef, err error) {
 	return
 }
 
-func (f FieldRef) hash(h *maphash.Hash) { f.impl.hash(h) }
+func (f FieldRef) hash(h *maphash.MapHash) { f.impl.hash(h) }
 
 // Hash produces a hash of this field reference and takes in a seed so that
 // it can maintain consistency across multiple places / processes /etc.
 func (f FieldRef) Hash(seed maphash.Seed) uint64 {
-	h := maphash.Hash{}
+	h := maphash.MapHash{}
 	h.SetSeed(seed)
 	f.hash(&h)
 	return h.Sum64()
@@ -514,7 +515,7 @@ func (f FieldRef) FindOneOrNone(schema *arrow.Schema) (FieldPath, error) {
 
 // FindOneOrNoneRecord is like FindOneOrNone but for the schema of a record,
 // returning an error only if there are multiple matches.
-func (f FieldRef) FindOneOrNoneRecord(root arrow.Record) (FieldPath, error) {
+func (f FieldRef) FindOneOrNoneRecord(root arrow.RecordBatch) (FieldPath, error) {
 	return f.FindOneOrNone(root.Schema())
 }
 
@@ -533,7 +534,7 @@ func (f FieldRef) FindOne(schema *arrow.Schema) (FieldPath, error) {
 
 // GetAllColumns gets all the matching column arrays from the given record that
 // this FieldRef references.
-func (f FieldRef) GetAllColumns(root arrow.Record) ([]arrow.Array, error) {
+func (f FieldRef) GetAllColumns(root arrow.RecordBatch) ([]arrow.Array, error) {
 	out := make([]arrow.Array, 0)
 	for _, m := range f.FindAll(root.Schema().Fields()) {
 		n, err := m.GetColumn(root)
@@ -571,7 +572,7 @@ func (f FieldRef) GetOneOrNone(schema *arrow.Schema) (*arrow.Field, error) {
 
 // GetOneColumnOrNone returns either a nil or the referenced array if it can be
 // found, erroring only if there is an ambiguous multiple matches.
-func (f FieldRef) GetOneColumnOrNone(root arrow.Record) (arrow.Array, error) {
+func (f FieldRef) GetOneColumnOrNone(root arrow.RecordBatch) (arrow.Array, error) {
 	match, err := f.FindOneOrNoneRecord(root)
 	if err != nil {
 		return nil, err

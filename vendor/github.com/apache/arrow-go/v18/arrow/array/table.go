@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -46,7 +47,7 @@ func NewColumnSlice(col *arrow.Column, i, j int64) *arrow.Column {
 // NewSlice panics if the slice is outside the valid range of the input array.
 // NewSlice panics if j < i.
 func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
-	if j > int64(a.Len()) || i > j || i > int64(a.Len()) {
+	if i < 0 || j < 0 || j > int64(a.Len()) || i > j || i > int64(a.Len()) {
 		panic("arrow/array: index out of range")
 	}
 
@@ -68,7 +69,12 @@ func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
 		if end > int64(arr.Len()) {
 			end = int64(arr.Len())
 		}
-		chunks = append(chunks, NewSlice(arr, beg, end))
+		if beg == 0 && end == int64(arr.Len()) {
+			arr.Retain()
+			chunks = append(chunks, arr)
+		} else {
+			chunks = append(chunks, NewSlice(arr, beg, end))
+		}
 		sz -= int64(arr.Len()) - beg
 		beg = 0
 		cur++
@@ -85,7 +91,7 @@ func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
 
 // simpleTable is a basic, non-lazy in-memory table.
 type simpleTable struct {
-	refCount int64
+	refCount atomic.Int64
 
 	rows int64
 	cols []arrow.Column
@@ -101,11 +107,11 @@ type simpleTable struct {
 // NewTable panics if rows is larger than the height of the columns.
 func NewTable(schema *arrow.Schema, cols []arrow.Column, rows int64) arrow.Table {
 	tbl := simpleTable{
-		refCount: 1,
-		rows:     rows,
-		cols:     cols,
-		schema:   schema,
+		rows:   rows,
+		cols:   slices.Clone(cols),
+		schema: schema,
 	}
+	tbl.refCount.Add(1)
 
 	if tbl.rows < 0 {
 		switch len(tbl.cols) {
@@ -142,32 +148,39 @@ func NewTableFromSlice(schema *arrow.Schema, data [][]arrow.Array) arrow.Table {
 	}
 
 	cols := make([]arrow.Column, schema.NumFields())
+	constructed := 0
+	complete := false
+	defer func() {
+		if !complete {
+			for i := 0; i < constructed; i++ {
+				cols[i].Release()
+			}
+		}
+	}()
+
 	for i, arrs := range data {
 		field := schema.Field(i)
 		chunked := arrow.NewChunked(field.Type, arrs)
 		cols[i] = *arrow.NewColumn(field, chunked)
 		chunked.Release()
+		constructed++
+	}
+
+	var rows int64
+	if len(cols) > 0 {
+		rows = int64(cols[0].Len())
 	}
 
 	tbl := simpleTable{
-		refCount: 1,
-		schema:   schema,
-		cols:     cols,
-		rows:     int64(cols[0].Len()),
+		schema: schema,
+		cols:   cols,
+		rows:   rows,
 	}
+	tbl.refCount.Add(1)
 
-	defer func() {
-		if r := recover(); r != nil {
-			// if validate panics, let's release the columns
-			// so that we don't leak them, then propagate the panic
-			for _, c := range cols {
-				c.Release()
-			}
-			panic(r)
-		}
-	}()
 	// validate the table and its constituents.
 	tbl.validate()
+	complete = true
 
 	return &tbl
 }
@@ -175,12 +188,22 @@ func NewTableFromSlice(schema *arrow.Schema, data [][]arrow.Array) arrow.Table {
 // NewTableFromRecords returns a new basic, non-lazy in-memory table.
 //
 // NewTableFromRecords panics if the records and schema are inconsistent.
-func NewTableFromRecords(schema *arrow.Schema, recs []arrow.Record) arrow.Table {
+func NewTableFromRecords(schema *arrow.Schema, recs []arrow.RecordBatch) arrow.Table {
 	arrs := make([]arrow.Array, len(recs))
 	cols := make([]arrow.Column, schema.NumFields())
+	rows := int64(-1)
+	if len(cols) == 0 {
+		rows = 0
+		for _, rec := range recs {
+			rows += rec.NumRows()
+		}
+	}
 
 	defer func(cols []arrow.Column) {
 		for i := range cols {
+			if cols[i].Data() == nil {
+				continue
+			}
 			cols[i].Release()
 		}
 	}(cols)
@@ -195,7 +218,7 @@ func NewTableFromRecords(schema *arrow.Schema, recs []arrow.Record) arrow.Table 
 		chunk.Release()
 	}
 
-	return NewTable(schema, cols, -1)
+	return NewTable(schema, cols, rows)
 }
 
 func (tbl *simpleTable) Schema() *arrow.Schema { return tbl.schema }
@@ -204,7 +227,7 @@ func (tbl *simpleTable) AddColumn(i int, field arrow.Field, column arrow.Column)
 	if int64(column.Len()) != tbl.rows {
 		return nil, fmt.Errorf("arrow/array: column length mismatch: %d != %d", column.Len(), tbl.rows)
 	}
-	if field.Type != column.DataType() {
+	if !arrow.TypeEqual(field.Type, column.DataType()) {
 		return nil, fmt.Errorf("arrow/array: column type mismatch: %v != %v", field.Type, column.DataType())
 	}
 	newSchema, err := tbl.schema.AddField(i, field)
@@ -241,16 +264,16 @@ func (tbl *simpleTable) validate() {
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (tbl *simpleTable) Retain() {
-	atomic.AddInt64(&tbl.refCount, 1)
+	tbl.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (tbl *simpleTable) Release() {
-	debug.Assert(atomic.LoadInt64(&tbl.refCount) > 0, "too many releases")
+	debug.Assert(tbl.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&tbl.refCount, -1) == 0 {
+	if tbl.refCount.Add(-1) == 0 {
 		for i := range tbl.cols {
 			tbl.cols[i].Release()
 		}
@@ -279,17 +302,19 @@ func (tbl *simpleTable) String() string {
 
 // TableReader is a Record iterator over a (possibly chunked) Table
 type TableReader struct {
-	refCount int64
+	refCount atomic.Int64
 
 	tbl   arrow.Table
-	cur   int64        // current row
-	max   int64        // total number of rows
-	rec   arrow.Record // current Record
-	chksz int64        // chunk size
+	cur   int64             // current row
+	max   int64             // total number of rows
+	rec   arrow.RecordBatch // current RecordBatch
+	chksz int64             // chunk size
 
 	chunks  []*arrow.Chunked
 	slots   []int   // chunk indices
 	offsets []int64 // chunk offsets
+	// batch is reused as scratch input; NewRecordBatch copies the slice.
+	batch []arrow.Array
 }
 
 // NewTableReader returns a new TableReader to iterate over the (possibly chunked) Table.
@@ -297,15 +322,16 @@ type TableReader struct {
 func NewTableReader(tbl arrow.Table, chunkSize int64) *TableReader {
 	ncols := tbl.NumCols()
 	tr := &TableReader{
-		refCount: 1,
-		tbl:      tbl,
-		cur:      0,
-		max:      int64(tbl.NumRows()),
-		chksz:    chunkSize,
-		chunks:   make([]*arrow.Chunked, ncols),
-		slots:    make([]int, ncols),
-		offsets:  make([]int64, ncols),
+		tbl:     tbl,
+		cur:     0,
+		max:     int64(tbl.NumRows()),
+		chksz:   chunkSize,
+		chunks:  make([]*arrow.Chunked, ncols),
+		slots:   make([]int, ncols),
+		offsets: make([]int64, ncols),
+		batch:   make([]arrow.Array, ncols),
 	}
+	tr.refCount.Add(1)
 	tr.tbl.Retain()
 
 	if tr.chksz <= 0 {
@@ -320,8 +346,11 @@ func NewTableReader(tbl arrow.Table, chunkSize int64) *TableReader {
 	return tr
 }
 
-func (tr *TableReader) Schema() *arrow.Schema { return tr.tbl.Schema() }
-func (tr *TableReader) Record() arrow.Record  { return tr.rec }
+func (tr *TableReader) Schema() *arrow.Schema          { return tr.tbl.Schema() }
+func (tr *TableReader) RecordBatch() arrow.RecordBatch { return tr.rec }
+
+// Deprecated: Use [RecordBatch] instead.
+func (tr *TableReader) Record() arrow.Record { return tr.RecordBatch() }
 
 func (tr *TableReader) Next() bool {
 	if tr.cur >= tr.max {
@@ -333,22 +362,24 @@ func (tr *TableReader) Next() bool {
 	}
 
 	// determine the minimum contiguous slice across all columns
-	chunksz := imin64(tr.max, tr.chksz)
-	chunks := make([]arrow.Array, len(tr.chunks))
-	for i := range chunks {
+	chunksz := imin64(tr.max-tr.cur, tr.chksz)
+	for i := range tr.chunks {
 		j := tr.slots[i]
 		chunk := tr.chunks[i].Chunk(j)
+		for chunk.Len() == 0 && j+1 < len(tr.chunks[i].Chunks()) {
+			j++
+			tr.slots[i] = j
+			chunk = tr.chunks[i].Chunk(j)
+		}
 		remain := int64(chunk.Len()) - tr.offsets[i]
 		if remain < chunksz {
 			chunksz = remain
 		}
 
-		chunks[i] = chunk
 	}
-
 	// slice the chunks, advance each chunk slot as appropriate.
-	batch := make([]arrow.Array, len(tr.chunks))
-	for i, chunk := range chunks {
+	for i := range tr.chunks {
+		chunk := tr.chunks[i].Chunk(tr.slots[i])
 		var slice arrow.Array
 		offset := tr.offsets[i]
 		switch int64(chunk.Len()) - offset {
@@ -367,13 +398,13 @@ func (tr *TableReader) Next() bool {
 			tr.offsets[i] += chunksz
 			slice = NewSlice(chunk, offset, offset+chunksz)
 		}
-		batch[i] = slice
+		tr.batch[i] = slice
 	}
 
 	tr.cur += chunksz
-	tr.rec = NewRecord(tr.tbl.Schema(), batch, chunksz)
+	tr.rec = NewRecordBatch(tr.tbl.Schema(), tr.batch, chunksz)
 
-	for _, arr := range batch {
+	for _, arr := range tr.batch {
 		arr.Release()
 	}
 
@@ -383,16 +414,16 @@ func (tr *TableReader) Next() bool {
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (tr *TableReader) Retain() {
-	atomic.AddInt64(&tr.refCount, 1)
+	tr.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (tr *TableReader) Release() {
-	debug.Assert(atomic.LoadInt64(&tr.refCount) > 0, "too many releases")
+	debug.Assert(tr.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&tr.refCount, -1) == 0 {
+	if tr.refCount.Add(-1) == 0 {
 		tr.tbl.Release()
 		for _, chk := range tr.chunks {
 			chk.Release()
@@ -404,6 +435,7 @@ func (tr *TableReader) Release() {
 		tr.chunks = nil
 		tr.slots = nil
 		tr.offsets = nil
+		tr.batch = nil
 	}
 }
 func (tr *TableReader) Err() error { return nil }

@@ -21,6 +21,7 @@ package kernels
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -28,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/compute/exec"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/decimal256"
+	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/scalar"
@@ -36,9 +38,11 @@ import (
 
 type binaryKernel func(left, right, out []byte, offset int)
 
-type cmpFn[LeftT, RightT arrow.FixedWidthType] func([]LeftT, []RightT, []uint32)
-type cmpScalarLeft[LeftT, RightT arrow.FixedWidthType] func(LeftT, []RightT, []uint32)
-type cmpScalarRight[LeftT, RightT arrow.FixedWidthType] func([]LeftT, RightT, []uint32)
+type (
+	cmpFn[LeftT, RightT arrow.FixedWidthType]          func([]LeftT, []RightT, []uint32)
+	cmpScalarLeft[LeftT, RightT arrow.FixedWidthType]  func(LeftT, []RightT, []uint32)
+	cmpScalarRight[LeftT, RightT arrow.FixedWidthType] func([]LeftT, RightT, []uint32)
+)
 
 type cmpOp[T arrow.FixedWidthType] struct {
 	arrArr    cmpFn[T, T]
@@ -53,24 +57,28 @@ func comparePrimitiveArrayArray[T arrow.FixedWidthType](op cmpFn[T, T]) binaryKe
 			left      = arrow.GetData[T](leftBytes)
 			right     = arrow.GetData[T](rightBytes)
 			nvals     = len(left)
-			nbatches  = nvals / batchSize
 			tmpOutput [batchSize]uint32
 		)
 
 		tmpOutSlice := tmpOutput[:]
 		if prefix := offset % 8; prefix != 0 {
-			vals := 8 - prefix
+			vals := min(nvals, 8-prefix)
 			op(left[:vals], right[:vals], tmpOutSlice[:vals])
 			left, right = left[vals:], right[vals:]
+			nvals -= vals
 
 			for i, v := range tmpOutSlice[:vals] {
 				bitutil.SetBitTo(out, prefix+i, v != 0)
 			}
+			if nvals == 0 {
+				return
+			}
 			out = out[1:]
 		}
 
+		nbatches := nvals / batchSize
 		for j := 0; j < nbatches; j++ {
-			op(left, right, tmpOutSlice)
+			op(left[:batchSize], right[:batchSize], tmpOutSlice)
 			left, right = left[batchSize:], right[batchSize:]
 			packBits(tmpOutput, out)
 			out = out[batchSize/8:]
@@ -91,24 +99,28 @@ func comparePrimitiveArrayScalar[T arrow.FixedWidthType](op cmpScalarRight[T, T]
 			left      = arrow.GetData[T](leftBytes)
 			rightVal  = *(*T)(unsafe.Pointer(&rightBytes[0]))
 			nvals     = len(left)
-			nbatches  = nvals / batchSize
 			tmpOutput [batchSize]uint32
 		)
 
 		tmpOutSlice := tmpOutput[:]
 		if prefix := offset % 8; prefix != 0 {
-			vals := 8 - prefix
+			vals := min(nvals, 8-prefix)
 			op(left[:vals], rightVal, tmpOutSlice[:vals])
 			left = left[vals:]
+			nvals -= vals
 
 			for i, v := range tmpOutSlice[:vals] {
 				bitutil.SetBitTo(out, prefix+i, v != 0)
 			}
+			if nvals == 0 {
+				return
+			}
 			out = out[1:]
 		}
 
+		nbatches := nvals / batchSize
 		for j := 0; j < nbatches; j++ {
-			op(left, rightVal, tmpOutSlice)
+			op(left[:batchSize], rightVal, tmpOutSlice)
 			left = left[batchSize:]
 			packBits(tmpOutput, out)
 			out = out[batchSize/8:]
@@ -130,24 +142,28 @@ func comparePrimitiveScalarArray[T arrow.FixedWidthType](op cmpScalarLeft[T, T])
 			right   = arrow.GetData[T](rightBytes)
 
 			nvals     = len(right)
-			nbatches  = nvals / batchSize
 			tmpOutput [batchSize]uint32
 		)
 
 		tmpOutSlice := tmpOutput[:]
 		if prefix := offset % 8; prefix != 0 {
-			vals := 8 - prefix
+			vals := min(nvals, 8-prefix)
 			op(leftVal, right[:vals], tmpOutSlice[:vals])
 			right = right[vals:]
+			nvals -= vals
 
 			for i, v := range tmpOutSlice[:vals] {
 				bitutil.SetBitTo(out, prefix+i, v != 0)
 			}
+			if nvals == 0 {
+				return
+			}
 			out = out[1:]
 		}
 
+		nbatches := nvals / batchSize
 		for j := 0; j < nbatches; j++ {
-			op(leftVal, right, tmpOutSlice)
+			op(leftVal, right[:batchSize], tmpOutSlice)
 			right = right[batchSize:]
 			packBits(tmpOutput, out)
 			out = out[batchSize/8:]
@@ -589,7 +605,7 @@ func compareTimestampKernel(ty exec.InputType, op CompareOperator) exec.ScalarKe
 var (
 	boolEQ = binaryBoolOps{
 		arrArr: func(_ *exec.KernelCtx, lhs, rhs, out bitutil.Bitmap) error {
-			bitutil.BitmapAnd(lhs.Data, rhs.Data, lhs.Offset, rhs.Offset, out.Data, out.Offset, out.Len)
+			bitutil.BitmapXnor(lhs.Data, rhs.Data, lhs.Offset, rhs.Offset, out.Data, out.Offset, out.Len)
 			return nil
 		},
 		arrScalar: func(_ *exec.KernelCtx, lhs bitutil.Bitmap, rhs bool, out bitutil.Bitmap) error {
@@ -701,15 +717,221 @@ func CompareKernels(op CompareOperator) []exec.ScalarKernel {
 	return kns
 }
 
+func dictHasNullValues(input *exec.ArraySpan) bool {
+	if input.Type.ID() != arrow.DICTIONARY {
+		return false
+	}
+	dict := input.Dictionary()
+	return dict.MayHaveNulls() || dict.Type.ID() == arrow.NULL
+}
+
+// dictValidity writes a bitmap to out, starting at bit 0, with a bit set for
+// each slot that is logically null when wantNull is true, or logically valid
+// otherwise. A slot is null if its index is null or refers to a null
+// dictionary value, or to a NaN floating-point value when nanIsNull is true.
+func dictValidity(ctx *exec.KernelCtx, input *exec.ArraySpan, out *exec.ExecResult, wantNull, nanIsNull bool) error {
+	var set func(*exec.ArraySpan, []byte, int64, []byte, bool)
+	switch input.Type.(*arrow.DictionaryType).IndexType.ID() {
+	case arrow.INT8, arrow.UINT8:
+		set = setDictBits[uint8]
+	case arrow.INT16, arrow.UINT16:
+		set = setDictBits[uint16]
+	case arrow.INT32, arrow.UINT32:
+		set = setDictBits[uint32]
+	case arrow.INT64, arrow.UINT64:
+		set = setDictBits[uint64]
+	default:
+		return fmt.Errorf("%w: unsupported dictionary index type", arrow.ErrInvalid)
+	}
+
+	dict := input.Dictionary()
+	valueValidity, valueOffset := dict.Buffers[0].Buf, dict.Offset
+	if nanIsNull && arrow.IsFloating(dict.Type.ID()) {
+		buf := ctx.AllocateBitmap(dict.Len)
+		defer buf.Release()
+		valueValidity, valueOffset = buf.Bytes(), 0
+		if dict.Buffers[0].Buf != nil {
+			bitutil.CopyBitmap(dict.Buffers[0].Buf, int(dict.Offset), int(dict.Len), valueValidity, 0)
+		} else {
+			bitutil.SetBitsTo(valueValidity, 0, dict.Len, true)
+		}
+		setNaNBits(dict, valueValidity, false)
+	}
+
+	out.Buffers[1].WrapBuffer(ctx.AllocateBitmap(input.Len))
+	set(input, valueValidity, valueOffset, out.Buffers[1].Buf, wantNull)
+	return nil
+}
+
+func setDictBits[T arrow.UintType](input *exec.ArraySpan, valueValidity []byte, valueOffset int64, out []byte, wantNull bool) {
+	indexValidity := input.Buffers[0].Buf
+	for i, idx := range exec.GetSpanValues[T](input, 1) {
+		// Signed indices are read as unsigned. Only a valid slot's index must
+		// be in range, so check index validity first. Null-type values have no
+		// validity bitmap and are all null.
+		valid := (indexValidity == nil || bitutil.BitIsSet(indexValidity, int(input.Offset)+i)) &&
+			valueValidity != nil && bitutil.BitIsSet(valueValidity, int(valueOffset)+int(idx))
+		bitutil.SetBitTo(out, i, valid != wantNull)
+	}
+}
+
+// hasLogicalNulls reports whether input's nulls are not described by a
+// validity bitmap, as for null, union and run-end encoded types.
+func hasLogicalNulls(input *exec.ArraySpan) bool {
+	// a run-end encoded scalar promoted to an array has a validity bitmap and
+	// no children
+	if input.Buffers[0].Buf != nil {
+		return false
+	}
+	switch input.Type.ID() {
+	case arrow.NULL, arrow.SPARSE_UNION, arrow.DENSE_UNION, arrow.RUN_END_ENCODED:
+		return true
+	}
+	return false
+}
+
+// logicalValidity writes a bitmap to out like dictValidity, for the types
+// accepted by hasLogicalNulls. It follows Arrow C++'s SetLogicalNullBits: a
+// union slot takes the validity of its child slot, and a run-end encoded slot
+// takes the validity bitmap of its value.
+func logicalValidity(ctx *exec.KernelCtx, input *exec.ArraySpan, out *exec.ExecResult, wantNull bool) error {
+	out.Buffers[1].WrapBuffer(ctx.AllocateBitmap(input.Len))
+	bits := out.Buffers[1].Buf
+	switch input.Type.ID() {
+	case arrow.NULL:
+		bitutil.SetBitsTo(bits, 0, input.Len, wantNull)
+	case arrow.RUN_END_ENCODED:
+		values := &input.Children[1]
+		run := findRun(input, 0)
+		for pos := int64(0); pos < input.Len; run++ {
+			end := min(runEnd(input, run)-input.Offset, input.Len)
+			valid := values.Buffers[0].Buf == nil ||
+				bitutil.BitIsSet(values.Buffers[0].Buf, int(values.Offset)+run)
+			bitutil.SetBitsTo(bits, pos, end-pos, valid != wantNull)
+			pos = end
+		}
+	default:
+		for i := int64(0); i < input.Len; i++ {
+			bitutil.SetBitTo(bits, int(i), isValidAt(input, i) != wantNull)
+		}
+	}
+	return nil
+}
+
+// findRun returns the index of the run that holds slot i of a run-end encoded
+// span.
+func findRun(span *exec.ArraySpan, i int64) int {
+	return sort.Search(int(span.Children[0].Len), func(j int) bool { return runEnd(span, j) > span.Offset+i })
+}
+
+// runEnd returns the logical end of run j of a run-end encoded span.
+func runEnd(span *exec.ArraySpan, j int) int64 {
+	runEnds := &span.Children[0]
+	switch runEnds.Type.ID() {
+	case arrow.INT16:
+		return int64(exec.GetSpanValues[int16](runEnds, 1)[j])
+	case arrow.INT32:
+		return int64(exec.GetSpanValues[int32](runEnds, 1)[j])
+	default:
+		return int64(exec.GetSpanValues[int64](runEnds, 1)[j])
+	}
+}
+
+// isValidAt reports whether slot i of span is valid, following Arrow C++'s
+// ArraySpan::IsValid. Unlike the top-level kernels, it ignores null dictionary
+// values, and it checks the value of a run-end encoded array with isValidAt
+// rather than the validity bitmap of the values.
+func isValidAt(span *exec.ArraySpan, i int64) bool {
+	if span.Buffers[0].Buf != nil {
+		return bitutil.BitIsSet(span.Buffers[0].Buf, int(span.Offset+i))
+	}
+	switch span.Type.ID() {
+	case arrow.NULL:
+		return false
+	case arrow.SPARSE_UNION, arrow.DENSE_UNION:
+		code := exec.GetSpanValues[arrow.UnionTypeCode](span, 1)[i]
+		child := &span.Children[span.Type.(arrow.UnionType).ChildIDs()[code]]
+		j := span.Offset + i
+		if span.Type.ID() == arrow.DENSE_UNION {
+			j = int64(exec.GetSpanValues[int32](span, 2)[i])
+		}
+		return isValidAt(child, j)
+	case arrow.RUN_END_ENCODED:
+		return isValidAt(&span.Children[1], int64(findRun(span, i)))
+	}
+	return true
+}
+
+// setNaNBits sets bit i of out to v for each NaN slot i of a float16, float32
+// or float64 span, and does nothing for other types.
+func setNaNBits(input *exec.ArraySpan, out []byte, v bool) {
+	switch input.Type.ID() {
+	case arrow.FLOAT16:
+		for i, x := range exec.GetSpanValues[float16.Num](input, 1) {
+			if x.IsNaN() {
+				bitutil.SetBitTo(out, i, v)
+			}
+		}
+	case arrow.FLOAT32:
+		for i, x := range exec.GetSpanValues[float32](input, 1) {
+			if x != x {
+				bitutil.SetBitTo(out, i, v)
+			}
+		}
+	case arrow.FLOAT64:
+		for i, x := range exec.GetSpanValues[float64](input, 1) {
+			if x != x {
+				bitutil.SetBitTo(out, i, v)
+			}
+		}
+	}
+}
+
+type NullOptions struct {
+	NanIsNull bool `compute:"nan_is_null"`
+}
+
+func (NullOptions) TypeName() string { return "NullOptions" }
+
+func initIsNull(_ *exec.KernelCtx, args exec.KernelInitArgs) (exec.KernelState, error) {
+	switch opts := args.Options.(type) {
+	// exprs initializes kernels without applying the default options
+	case nil:
+		return NullOptions{}, nil
+	case NullOptions:
+		return opts, nil
+	case *NullOptions:
+		if opts == nil {
+			return NullOptions{}, nil
+		}
+		return *opts, nil
+	}
+	return nil, fmt.Errorf("%w: attempted to initialize kernel state from invalid function options",
+		arrow.ErrInvalid)
+}
+
 func isNullExec(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
 	out.Release()
 	input := batch.Values[0].Array
+	opts, _ := ctx.State.(NullOptions)
+
+	floatDict := input.Type.ID() == arrow.DICTIONARY && arrow.IsFloating(input.Dictionary().Type.ID())
+	if dictHasNullValues(&input) || (opts.NanIsNull && floatDict) {
+		return dictValidity(ctx, &input, out, true, opts.NanIsNull)
+	}
+
+	if hasLogicalNulls(&input) {
+		return logicalValidity(ctx, &input, out, true)
+	}
 
 	validityBuf := input.GetBuffer(0)
 	out.Buffers[1].WrapBuffer(ctx.AllocateBitmap(input.Len))
 	if validityBuf != nil {
 		bitutil.InvertBitmap(validityBuf.Bytes(), int(input.Offset), int(input.Len),
 			out.Buffers[1].Buf, 0)
+	}
+	if opts.NanIsNull {
+		setNaNBits(&input, out.Buffers[1].Buf, true)
 	}
 
 	return nil
@@ -719,12 +941,25 @@ func isNotNullExec(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResu
 	out.Release()
 	input := batch.Values[0].Array
 
+	if dictHasNullValues(&input) {
+		return dictValidity(ctx, &input, out, false, false)
+	}
+
+	if hasLogicalNulls(&input) {
+		return logicalValidity(ctx, &input, out, false)
+	}
+
 	validityBuf := input.GetBuffer(0)
-	if validityBuf == nil {
+	switch {
+	case validityBuf == nil:
 		out.Buffers[1].WrapBuffer(ctx.AllocateBitmap(input.Len))
 		memory.Set(out.Buffers[1].Buf, 0xFF)
-	} else {
+	case input.Offset == 0:
 		out.Buffers[1].SetBuffer(validityBuf)
+	default:
+		out.Buffers[1].WrapBuffer(ctx.AllocateBitmap(input.Len))
+		bitutil.CopyBitmap(validityBuf.Bytes(), int(input.Offset), int(input.Len),
+			out.Buffers[1].Buf, 0)
 	}
 
 	return nil
@@ -735,7 +970,7 @@ func IsNullNotNullKernels() []exec.ScalarKernel {
 	out := exec.NewOutputType(arrow.FixedWidthTypes.Boolean)
 
 	results := make([]exec.ScalarKernel, 2)
-	results[0] = exec.NewScalarKernel([]exec.InputType{in}, out, isNullExec, nil)
+	results[0] = exec.NewScalarKernel([]exec.InputType{in}, out, isNullExec, initIsNull)
 	results[0].NullHandling = exec.NullComputedNoPrealloc
 	results[0].MemAlloc = exec.MemNoPrealloc
 
@@ -744,4 +979,56 @@ func IsNullNotNullKernels() []exec.ScalarKernel {
 	results[1].MemAlloc = exec.MemNoPrealloc
 
 	return results
+}
+
+func ConstBoolExec(val bool) func(*exec.KernelCtx, *exec.ExecSpan, *exec.ExecResult) error {
+	return func(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
+		bitutil.SetBitsTo(out.Buffers[1].Buf, out.Offset, batch.Len, val)
+		return nil
+	}
+}
+
+func isNanKernelExec[T float32 | float64](ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
+	kn := ctx.Kernel.(*exec.ScalarKernel)
+	knData := kn.Data.(CompareFuncData).Funcs()
+
+	outPrefix := int(out.Offset % 8)
+	outBuf := out.Buffers[1].Buf[out.Offset/8:]
+
+	inputBytes := getOffsetSpanBytes(&batch.Values[0].Array)
+	knData.funcAA(inputBytes, inputBytes, outBuf, outPrefix)
+	return nil
+}
+
+func IsNaNKernels() []exec.ScalarKernel {
+	outputType := exec.NewOutputType(arrow.FixedWidthTypes.Boolean)
+
+	knFloat32 := exec.NewScalarKernel([]exec.InputType{exec.NewExactInput(arrow.PrimitiveTypes.Float32)},
+		outputType, isNanKernelExec[float32], nil)
+	knFloat32.Data = genCompareKernel[float32](CmpNE)
+	knFloat32.NullHandling = exec.NullNoOutput
+	knFloat64 := exec.NewScalarKernel([]exec.InputType{exec.NewExactInput(arrow.PrimitiveTypes.Float64)},
+		outputType, isNanKernelExec[float64], nil)
+	knFloat64.Data = genCompareKernel[float64](CmpNE)
+	knFloat64.NullHandling = exec.NullNoOutput
+
+	kernels := []exec.ScalarKernel{knFloat32, knFloat64}
+
+	for _, dt := range intTypes {
+		kn := exec.NewScalarKernel(
+			[]exec.InputType{exec.NewExactInput(dt)},
+			outputType, ConstBoolExec(false), nil)
+		kn.NullHandling = exec.NullNoOutput
+		kernels = append(kernels, kn)
+	}
+
+	for _, id := range []arrow.Type{arrow.NULL, arrow.DURATION, arrow.DECIMAL32, arrow.DECIMAL64, arrow.DECIMAL128, arrow.DECIMAL256} {
+		kn := exec.NewScalarKernel(
+			[]exec.InputType{exec.NewIDInput(id)},
+			outputType, ConstBoolExec(false), nil)
+		kn.NullHandling = exec.NullNoOutput
+		kernels = append(kernels, kn)
+	}
+
+	return kernels
 }

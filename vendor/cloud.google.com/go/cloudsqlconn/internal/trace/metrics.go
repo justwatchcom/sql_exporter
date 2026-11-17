@@ -108,14 +108,14 @@ var (
 		Name:        "cloudsqlconn/bytes_sent",
 		Measure:     mBytesSent,
 		Description: "The number of bytes sent to Cloud SQL",
-		Aggregation: view.LastValue(),
+		Aggregation: view.Sum(),
 		TagKeys:     []tag.Key{keyInstance, keyDialerID},
 	}
 	bytesReceivedView = &view.View{
 		Name:        "cloudsqlconn/bytes_received",
 		Measure:     mBytesReceived,
 		Description: "The number of bytes received from Cloud SQL",
-		Aggregation: view.LastValue(),
+		Aggregation: view.Sum(),
 		TagKeys:     []tag.Key{keyInstance, keyDialerID},
 	}
 
@@ -137,7 +137,7 @@ func InitMetrics() error {
 			bytesSentView,
 			bytesReceivedView,
 		); rErr != nil {
-			registerErr = fmt.Errorf("failed to initialize metrics: %v", rErr)
+			registerErr = fmt.Errorf("failed to initialize metrics: %w", rErr)
 		}
 	})
 	return registerErr

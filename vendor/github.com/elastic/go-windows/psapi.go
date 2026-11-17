@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//go:build windows
 // +build windows
 
 package windows
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
-
-	"github.com/pkg/errors"
 )
 
 // Syscalls
@@ -58,7 +58,7 @@ type ProcessMemoryCountersEx struct {
 func GetProcessMemoryInfo(process syscall.Handle) (ProcessMemoryCountersEx, error) {
 	var info ProcessMemoryCountersEx
 	if err := _GetProcessMemoryInfo(process, &info, sizeofProcessMemoryCountersEx); err != nil {
-		return ProcessMemoryCountersEx{}, errors.Wrap(err, "GetProcessMemoryInfo failed")
+		return ProcessMemoryCountersEx{}, fmt.Errorf("GetProcessMemoryInfo failed: %w", err)
 	}
 	return info, nil
 }

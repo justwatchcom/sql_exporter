@@ -61,14 +61,40 @@ func WithStartOffset(off int64) FromJSONOption {
 	}
 }
 
-// WithUseNumber enables the 'UseNumber' option on the json decoder, using
-// the json.Number type instead of assuming float64 for numbers. This is critical
-// if you have numbers that are larger than what can fit into the 53 bits of
-// an IEEE float64 mantissa and want to preserve its value.
+// WithUseNumber previously enabled the 'UseNumber' option on the json decoder.
+// As of issue #804, FromJSON, RecordFromJSON, and TableFromJSON unconditionally
+// enable UseNumber so that integer values too large to fit in float64 (i.e.
+// beyond 2^53) are preserved without silent corruption. This option is now a
+// no-op and is retained for backward compatibility.
+//
+// Deprecated: UseNumber is now always enabled; this option has no effect.
 func WithUseNumber() FromJSONOption {
 	return func(c *fromJSONCfg) {
 		c.useNumber = true
 	}
+}
+
+func seekJSONStartOffset(r io.Reader, offset int64) error {
+	if offset < 0 {
+		return fmt.Errorf("seek JSON start offset must be non-negative: %d", offset)
+	}
+	if offset == 0 {
+		return nil
+	}
+
+	seeker, ok := r.(io.ReadSeeker)
+	if !ok {
+		return errors.New("using StartOffset option requires reader to be a ReadSeeker, cannot seek")
+	}
+
+	pos, err := seeker.Seek(offset, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("seek JSON start offset %d: %w", offset, err)
+	}
+	if pos != offset {
+		return fmt.Errorf("seek JSON start offset: got %d, want %d", pos, offset)
+	}
+	return nil
 }
 
 // FromJSON creates an arrow.Array from a corresponding JSON stream and defined data type. If the types in the
@@ -130,28 +156,20 @@ func FromJSON(mem memory.Allocator, dt arrow.DataType, r io.Reader, opts ...From
 		o(&cfg)
 	}
 
-	if cfg.startOffset != 0 {
-		seeker, ok := r.(io.ReadSeeker)
-		if !ok {
-			return nil, 0, errors.New("using StartOffset option requires reader to be a ReadSeeker, cannot seek")
-		}
-
-		seeker.Seek(cfg.startOffset, io.SeekStart)
+	if err = seekJSONStartOffset(r, cfg.startOffset); err != nil {
+		return nil, 0, err
 	}
 
 	bldr := NewBuilder(mem, dt)
 	defer bldr.Release()
 
 	dec := json.NewDecoder(r)
+	dec.UseNumber()
 	defer func() {
 		if errors.Is(err, io.EOF) {
 			err = fmt.Errorf("failed parsing json: %w", io.ErrUnexpectedEOF)
 		}
 	}()
-
-	if cfg.useNumber {
-		dec.UseNumber()
-	}
 
 	if !cfg.multiDocument {
 		t, err := dec.Token()
@@ -180,7 +198,7 @@ func FromJSON(mem memory.Allocator, dt arrow.DataType, r io.Reader, opts ...From
 
 // RecordToStructArray constructs a struct array from the columns of the record batch
 // by referencing them, zero-copy.
-func RecordToStructArray(rec arrow.Record) *Struct {
+func RecordToStructArray(rec arrow.RecordBatch) *Struct {
 	cols := make([]arrow.ArrayData, rec.NumCols())
 	for i, c := range rec.Columns() {
 		cols[i] = c.Data()
@@ -197,12 +215,12 @@ func RecordToStructArray(rec arrow.Record) *Struct {
 // of the struct will be used to define the record batch. Otherwise the passed in
 // schema will be used to create the record batch. If passed in, the schema must match
 // the fields of the struct column.
-func RecordFromStructArray(in *Struct, schema *arrow.Schema) arrow.Record {
+func RecordFromStructArray(in *Struct, schema *arrow.Schema) arrow.RecordBatch {
 	if schema == nil {
 		schema = arrow.NewSchema(in.DataType().(*arrow.StructType).Fields(), nil)
 	}
 
-	return NewRecord(schema, in.fields, int64(in.Len()))
+	return NewRecordBatch(schema, in.fields, int64(in.Len()))
 }
 
 // RecordFromJSON creates a record batch from JSON data. See array.FromJSON for the details
@@ -210,20 +228,67 @@ func RecordFromStructArray(in *Struct, schema *arrow.Schema) arrow.Record {
 //
 // A record batch from JSON is equivalent to reading a struct array in from json and then
 // converting it to a record batch.
-func RecordFromJSON(mem memory.Allocator, schema *arrow.Schema, r io.Reader, opts ...FromJSONOption) (arrow.Record, int64, error) {
-	st := arrow.StructOf(schema.Fields()...)
-	arr, off, err := FromJSON(mem, st, r, opts...)
-	if err != nil {
-		return nil, off, err
+//
+// See https://github.com/apache/arrow-go/issues/448 for more details on
+// why this isn't a simple wrapper around FromJSON.
+func RecordFromJSON(mem memory.Allocator, schema *arrow.Schema, r io.Reader, opts ...FromJSONOption) (arrow.RecordBatch, int64, error) {
+	var cfg fromJSONCfg
+	for _, o := range opts {
+		o(&cfg)
 	}
-	defer arr.Release()
 
-	return RecordFromStructArray(arr.(*Struct), schema), off, nil
+	if err := seekJSONStartOffset(r, cfg.startOffset); err != nil {
+		return nil, 0, err
+	}
+
+	if mem == nil {
+		mem = memory.DefaultAllocator
+	}
+
+	bldr := NewRecordBuilder(mem, schema)
+	defer bldr.Release()
+
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+
+	if !cfg.multiDocument {
+		t, err := dec.Token()
+		if err != nil {
+			return nil, dec.InputOffset(), err
+		}
+		if delim, ok := t.(json.Delim); !ok || delim != '[' {
+			return nil, dec.InputOffset(), fmt.Errorf("json doc must be an array, found %s", delim)
+		}
+
+		for dec.More() {
+			if err := bldr.UnmarshalOne(dec); err != nil {
+				return nil, dec.InputOffset(), fmt.Errorf("failed to decode json: %w", err)
+			}
+		}
+
+		// consume the last ']'
+		if _, err = dec.Token(); err != nil {
+			return nil, dec.InputOffset(), fmt.Errorf("failed to decode json: %w", err)
+		}
+
+		return bldr.NewRecordBatch(), dec.InputOffset(), nil
+	}
+
+	for {
+		if err := bldr.UnmarshalOne(dec); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, dec.InputOffset(), fmt.Errorf("failed to decode json: %w", err)
+		}
+	}
+
+	return bldr.NewRecordBatch(), dec.InputOffset(), nil
 }
 
 // RecordToJSON writes out the given record following the format of each row is a single object
 // on a single line of the output.
-func RecordToJSON(rec arrow.Record, w io.Writer) error {
+func RecordToJSON(rec arrow.RecordBatch, w io.Writer) error {
 	enc := json.NewEncoder(w)
 
 	fields := rec.Schema().Fields()
@@ -241,7 +306,7 @@ func RecordToJSON(rec arrow.Record, w io.Writer) error {
 }
 
 func TableFromJSON(mem memory.Allocator, sc *arrow.Schema, recJSON []string, opt ...FromJSONOption) (arrow.Table, error) {
-	batches := make([]arrow.Record, len(recJSON))
+	batches := make([]arrow.RecordBatch, len(recJSON))
 	for i, batchJSON := range recJSON {
 		batch, _, err := RecordFromJSON(mem, sc, strings.NewReader(batchJSON), opt...)
 		if err != nil {
@@ -262,9 +327,18 @@ func GetDictArrayData(mem memory.Allocator, valueType arrow.DataType, memoTable 
 
 	switch tbl := memoTable.(type) {
 	case hashing.NumericMemoTable:
-		nbytes := tbl.TypeTraits().BytesRequired(dictLen)
-		buffers[1].Resize(nbytes)
-		tbl.WriteOutSubset(startOffset, buffers[1].Bytes())
+		if valueType.ID() == arrow.BOOL {
+			values := make([]uint8, dictLen)
+			tbl.CopyValuesSubset(startOffset, values)
+			buffers[1].Resize(int(bitutil.BytesForBits(int64(dictLen))))
+			for i, value := range values {
+				bitutil.SetBitTo(buffers[1].Bytes(), i, value != 0)
+			}
+		} else {
+			nbytes := tbl.TypeTraits().BytesRequired(dictLen)
+			buffers[1].Resize(nbytes)
+			tbl.WriteOutSubset(startOffset, buffers[1].Bytes())
+		}
 	case *hashing.BinaryMemoTable:
 		switch valueType.ID() {
 		case arrow.BINARY, arrow.STRING:
@@ -305,7 +379,7 @@ func GetDictArrayData(mem memory.Allocator, valueType arrow.DataType, memoTable 
 		nullcount = 1
 		buffers[0].Resize(int(bitutil.BytesForBits(int64(dictLen))))
 		memory.Set(buffers[0].Bytes(), 0xFF)
-		bitutil.ClearBit(buffers[0].Bytes(), idx)
+		bitutil.ClearBit(buffers[0].Bytes(), idx-startOffset)
 	}
 
 	return NewData(valueType, dictLen, buffers, nil, nullcount, 0), nil
@@ -359,6 +433,8 @@ func getMaxBufferLen(dt arrow.DataType, length int) int {
 	}
 
 	switch dt := dt.(type) {
+	case *arrow.NullType:
+		return bufferLen
 	case *arrow.DictionaryType:
 		bufferLen = maxOf(getMaxBufferLen(dt.ValueType, length))
 		return maxOf(getMaxBufferLen(dt.IndexType, length))
@@ -389,10 +465,25 @@ func getMaxBufferLen(dt arrow.DataType, length int) int {
 			bufferLen = maxOf(getMaxBufferLen(f.Type, 1))
 		}
 		return bufferLen
+	case *arrow.ListViewType:
+		// list values are empty, but a dense union among them still
+		// creates children of length 1 that share this buffer
+		bufferLen = maxOf(getMaxBufferLen(dt.Elem(), 0))
+		return maxOf(dt.OffsetTypeTraits().BytesRequired(length))
+	case *arrow.LargeListViewType:
+		bufferLen = maxOf(getMaxBufferLen(dt.Elem(), 0))
+		return maxOf(dt.OffsetTypeTraits().BytesRequired(length))
 	case arrow.OffsetsDataType:
+		if list, ok := dt.(arrow.ListLikeType); ok {
+			bufferLen = maxOf(getMaxBufferLen(list.Elem(), 0))
+		}
 		return maxOf(dt.OffsetTypeTraits().BytesRequired(length + 1))
+	case arrow.BinaryViewDataType:
+		return maxOf(arrow.ViewHeaderSizeBytes * length)
 	case *arrow.FixedSizeListType:
 		return maxOf(getMaxBufferLen(dt.Elem(), int(dt.Len())*length))
+	case *arrow.RunEndEncodedType:
+		return bufferLen
 	case arrow.ExtensionType:
 		return maxOf(getMaxBufferLen(dt.StorageType(), length))
 	default:
@@ -421,7 +512,11 @@ func (n *nullArrayFactory) create() *Data {
 		childData []arrow.ArrayData
 		dictData  arrow.ArrayData
 	)
-	defer bufs[0].Release()
+	defer func() {
+		if bufs[0] != nil {
+			bufs[0].Release()
+		}
+	}()
 
 	if ex, ok := dt.(arrow.ExtensionType); ok {
 		dt = ex.StorageType()
@@ -433,6 +528,8 @@ func (n *nullArrayFactory) create() *Data {
 
 	switch dt := dt.(type) {
 	case *arrow.NullType:
+		bufs[0].Release()
+		bufs[0] = nil
 	case *arrow.DictionaryType:
 		bufs = append(bufs, n.buf)
 		arr := MakeArrayOfNull(n.mem, dt.ValueType, 0)
@@ -440,43 +537,16 @@ func (n *nullArrayFactory) create() *Data {
 		dictData = arr.Data()
 	case arrow.FixedWidthDataType:
 		bufs = append(bufs, n.buf)
+	case arrow.BinaryViewDataType:
+		bufs = append(bufs, n.buf)
 	case arrow.BinaryDataType:
 		bufs = append(bufs, n.buf, n.buf)
-	case arrow.OffsetsDataType:
-		bufs = append(bufs, n.buf)
-		childData[0] = n.createChild(dt, 0, 0)
-		defer childData[0].Release()
-	case *arrow.FixedSizeListType:
-		childData[0] = n.createChild(dt, 0, n.len*int(dt.Len()))
-		defer childData[0].Release()
-	case *arrow.StructType:
-		for i := range dt.Fields() {
-			childData[i] = n.createChild(dt, i, n.len)
-			defer childData[i].Release()
-		}
-	case *arrow.RunEndEncodedType:
-		bldr := NewBuilder(n.mem, dt.RunEnds())
-		defer bldr.Release()
-
-		switch b := bldr.(type) {
-		case *Int16Builder:
-			b.Append(int16(n.len))
-		case *Int32Builder:
-			b.Append(int32(n.len))
-		case *Int64Builder:
-			b.Append(int64(n.len))
-		}
-
-		childData[0] = bldr.newData()
-		defer childData[0].Release()
-		childData[1] = n.createChild(dt.Encoded(), 1, 1)
-		defer childData[1].Release()
 	case arrow.UnionType:
 		bufs[0].Release()
 		bufs[0] = nil
 		bufs = append(bufs, n.buf)
 		// buffer is zeroed, but 0 may not be a valid type code
-		if dt.TypeCodes()[0] != 0 {
+		if n.len > 0 && dt.TypeCodes()[0] != 0 {
 			bufs[1] = memory.NewResizableBuffer(n.mem)
 			bufs[1].Resize(n.len)
 			defer bufs[1].Release()
@@ -495,16 +565,58 @@ func (n *nullArrayFactory) create() *Data {
 			childData[i] = n.createChild(dt, i, childLen)
 			defer childData[i].Release()
 		}
+	case *arrow.ListViewType:
+		bufs = append(bufs, n.buf, n.buf)
+		childData[0] = n.createChild(dt, 0, 0)
+		defer childData[0].Release()
+	case *arrow.LargeListViewType:
+		bufs = append(bufs, n.buf, n.buf)
+		childData[0] = n.createChild(dt, 0, 0)
+		defer childData[0].Release()
+	case arrow.OffsetsDataType:
+		bufs = append(bufs, n.buf)
+		childData[0] = n.createChild(dt, 0, 0)
+		defer childData[0].Release()
+	case *arrow.FixedSizeListType:
+		childData[0] = n.createChild(dt, 0, n.len*int(dt.Len()))
+		defer childData[0].Release()
+	case *arrow.StructType:
+		for i := range dt.Fields() {
+			childData[i] = n.createChild(dt, i, n.len)
+			defer childData[i].Release()
+		}
+	case *arrow.RunEndEncodedType:
+		// Build the run ends separately from encoded types without builders.
+		bldr := NewRunEndEncodedBuilder(n.mem, dt.RunEnds(), arrow.Null)
+		defer bldr.Release()
+
+		if n.len > 0 {
+			bldr.AppendNull()
+			bldr.ContinueRun(uint64(n.len - 1))
+		}
+
+		arr := bldr.NewArray()
+		defer arr.Release()
+		values := MakeArrayOfNull(n.mem, dt.Encoded(), arr.Data().Children()[1].Len())
+		defer values.Release()
+		childData[0] = arr.Data().Children()[0]
+		childData[1] = values.Data()
+		bufs[0].Release()
+		bufs[0] = nil
 	}
 
-	out := NewData(n.dt, n.len, bufs, childData, n.len, 0)
+	nulls := n.len
+	if dt.ID() == arrow.RUN_END_ENCODED || arrow.IsUnion(dt.ID()) {
+		nulls = 0
+	}
+	out := NewData(n.dt, n.len, bufs, childData, nulls, 0)
 	if dictData != nil {
 		out.SetDictionary(dictData)
 	}
 	return out
 }
 
-func (n *nullArrayFactory) createChild(dt arrow.DataType, i, length int) *Data {
+func (n *nullArrayFactory) createChild(_ arrow.DataType, i, length int) *Data {
 	childFactory := &nullArrayFactory{
 		mem: n.mem, dt: n.dt.(arrow.NestedType).Fields()[i].Type,
 		len: length, buf: n.buf}
@@ -520,4 +632,8 @@ func MakeArrayOfNull(mem memory.Allocator, dt arrow.DataType, length int) arrow.
 	data := (&nullArrayFactory{mem: mem, dt: dt, len: length}).create()
 	defer data.Release()
 	return MakeFromData(data)
+}
+
+func stripNulls(s string) string {
+	return strings.TrimRight(s, "\x00")
 }

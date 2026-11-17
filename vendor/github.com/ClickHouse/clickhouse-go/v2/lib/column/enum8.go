@@ -1,28 +1,12 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package column
 
 import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
+
+	"github.com/ClickHouse/ch-go/proto"
 )
 
 type Enum8 struct {
@@ -73,6 +57,31 @@ func (col *Enum8) ScanRow(dest any, row int) error {
 	case **string:
 		*d = new(string)
 		**d = col.vi[v]
+	case *int8:
+		*d = int8(v)
+	case **int8:
+		*d = new(int8)
+		**d = int8(v)
+	case *int16:
+		*d = int16(v)
+	case **int16:
+		*d = new(int16)
+		**d = int16(v)
+	case *int32:
+		*d = int32(v)
+	case **int32:
+		*d = new(int32)
+		**d = int32(v)
+	case *int64:
+		*d = int64(v)
+	case **int64:
+		*d = new(int64)
+		**d = int64(v)
+	case *int:
+		*d = int(v)
+	case **int:
+		*d = new(int)
+		**d = int(v)
 	default:
 		if scan, ok := dest.(sql.Scanner); ok {
 			return scan.Scan(col.vi[v])

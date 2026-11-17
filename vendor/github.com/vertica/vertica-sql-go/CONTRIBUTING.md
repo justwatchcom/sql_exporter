@@ -76,7 +76,7 @@ were args are one of the following:
 | Query Argument | Description | Values |
 |----------------|-------------|--------|
 | use_prepared_statements    | whether to use client-side query interpolation or server-side argument binding | <li>true = (default) use server-side bindings </li><li>false = user client side interpolation</li> |
-| tlsmode            | the ssl policy for this connection | <li>none (default) = don't use SSL for this connection</li><li>server = server must support SSL, but skip verification (INSECURE!)</li><li>server-strict = server must support SSL</li><li>custom = use custom TLS config (Need to generate certs with `resources/tests/genCerts.sh` in advance) </li> |
+| tlsmode            | the ssl policy for this connection | <li>none = don't use SSL for this connection</li><li>prefer (default) = checks for SSL/TLS server support; if unsupported, SSL/TLS is not used for this connection. </li><li>server = server must support SSL, but skip verification (INSECURE!)</li><li>server-strict = server must support SSL</li><li>custom = use custom TLS config (Need to generate certs with `resources/tests/genCerts.sh` in advance) </li> |
 | locator        | host and port of the Vertica connection | (default) localhost:5433 |
 | user           | Vertica user name | (default) dbadmin |
 | password       | Vertica password for the connecting user | (default) (empty) |

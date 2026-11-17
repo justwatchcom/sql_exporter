@@ -14,16 +14,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build go1.18
+//go:build go1.23
 
 package compute
 
 import (
+	"fmt"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
 )
 
 type FunctionRegistry interface {
@@ -48,11 +49,17 @@ func GetFunctionRegistry() FunctionRegistry {
 		registry = NewRegistry()
 		RegisterScalarCast(registry)
 		RegisterVectorSelection(registry)
+		RegisterScalarNested(registry)
+		RegisterVectorSort(registry)
 		RegisterScalarBoolean(registry)
 		RegisterScalarArithmetic(registry)
 		RegisterScalarComparisons(registry)
 		RegisterVectorHash(registry)
+		RegisterVectorCumulative(registry)
 		RegisterVectorRunEndFuncs(registry)
+		RegisterScalarSetLookup(registry)
+		RegisterScalarString(registry)
+		RegisterScalarAggregates(registry)
 	})
 	return registry
 }
@@ -137,7 +144,7 @@ func (reg *funcRegistry) GetFunctionNames() (out []string) {
 	reg.mx.RLock()
 	defer reg.mx.RUnlock()
 
-	out = append(out, maps.Keys(reg.nameToFunction)...)
+	out = append(out, slices.Collect(maps.Keys(reg.nameToFunction))...)
 	slices.Sort(out)
 	return
 }
@@ -168,7 +175,7 @@ func (reg *funcRegistry) canAddFuncName(name string, allowOverwrite bool) bool {
 }
 
 func (reg *funcRegistry) doAddFunction(fn Function, allowOverwrite bool, add bool) bool {
-	debug.Assert(fn.Validate() == nil, "invalid function")
+	debug.Assert(fn.Validate() == nil, fmt.Sprintf("invalid function: %v", fn.Validate()))
 
 	lk := reg.getLocker(add)
 	lk.Lock()

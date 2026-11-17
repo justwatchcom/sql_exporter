@@ -10,13 +10,10 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/99designs/keyring"
 )
 
 type tokenType string
@@ -94,20 +91,7 @@ type secureStorageManager interface {
 var credentialsStorage = newSecureStorageManager()
 
 func newSecureStorageManager() secureStorageManager {
-	switch runtime.GOOS {
-	case "linux":
-		ssm, err := newFileBasedSecureStorageManager()
-		if err != nil {
-			logger.Debugf("failed to create credentials cache dir. %v", err)
-			return newNoopSecureStorageManager()
-		}
-		return &threadSafeSecureStorageManager{&sync.Mutex{}, ssm}
-	case "darwin", "windows":
-		return &threadSafeSecureStorageManager{&sync.Mutex{}, newKeyringBasedSecureStorageManager()}
-	default:
-		logger.Warnf("OS %v does not support credentials cache", runtime.GOOS)
-		return newNoopSecureStorageManager()
-	}
+	return defaultOsSpecificSecureStorageManager()
 }
 
 type fileBasedSecureStorageManager struct {
@@ -237,6 +221,10 @@ func (ssm *fileBasedSecureStorageManager) withCacheFile(action func(*os.File)) {
 }
 
 func (ssm *fileBasedSecureStorageManager) setCredential(tokenSpec *secureTokenSpec, value string) {
+	if value == "" {
+		logger.Debug("no token provided")
+		return
+	}
 	credentialsKey, err := tokenSpec.buildKey()
 	if err != nil {
 		logger.Warn(err)
@@ -255,6 +243,8 @@ func (ssm *fileBasedSecureStorageManager) setCredential(tokenSpec *secureTokenSp
 		err = ssm.writeTemporaryCacheFile(credCache, cacheFile)
 		if err != nil {
 			logger.Warnf("Set credential failed. Unable to write cache. %v", err)
+		} else {
+			logger.Debugf("Set credential succeeded. Authentication type: %v, User: %v,  file location: %v", tokenSpec.tokenType, tokenSpec.user, ssm.credFilePath())
 		}
 	})
 }
@@ -268,18 +258,45 @@ func (ssm *fileBasedSecureStorageManager) lockFile() error {
 	const retryInterval = 100 * time.Millisecond
 	lockPath := ssm.lockPath()
 
-	fileInfo, err := os.Stat(lockPath)
+	lockFile, err := os.Open(lockPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to stat %v and determine if lock is stale. err: %v", lockPath, err)
+		return fmt.Errorf("failed to open %v. err: %v", lockPath, err)
 	}
+	defer func() {
+		if lockFile != nil {
+			err = lockFile.Close()
+			if err != nil {
+				logger.Debugf("error while closing lock file. %v", err)
+			}
+		}
+	}()
 
-	// removing stale lock
-	now := time.Now()
-	if !errors.Is(err, os.ErrNotExist) && fileInfo.ModTime().Add(time.Second).UnixNano() < now.UnixNano() {
-		logger.Debugf("removing credentials cache lock file, stale for %vms", (now.UnixNano()-fileInfo.ModTime().UnixNano())/1000/1000)
-		err = os.Remove(lockPath)
+	if err == nil { // file exists
+		fileInfo, err := lockFile.Stat()
 		if err != nil {
-			return fmt.Errorf("failed to remove %v while trying to remove stale lock. err: %v", lockPath, err)
+			return fmt.Errorf("failed to stat %v and determine if lock is stale. err: %v", lockPath, err)
+		}
+
+		ownerUID, err := provideFileOwner(lockFile)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		currentUser, err := user.Current()
+		if err != nil {
+			return err
+		}
+		if strconv.Itoa(int(ownerUID)) != currentUser.Uid {
+			return errors.New("incorrect owner of " + lockFile.Name())
+		}
+
+		// removing stale lock
+		now := time.Now()
+		if fileInfo.ModTime().Add(time.Second).UnixNano() < now.UnixNano() {
+			logger.Debugf("removing credentials cache lock file, stale for %vms", (now.UnixNano()-fileInfo.ModTime().UnixNano())/1000/1000)
+			err = os.Remove(lockPath)
+			if err != nil {
+				return fmt.Errorf("failed to remove %v while trying to remove stale lock. err: %v", lockPath, err)
+			}
 		}
 	}
 
@@ -415,6 +432,8 @@ func (ssm *fileBasedSecureStorageManager) deleteCredential(tokenSpec *secureToke
 		err = ssm.writeTemporaryCacheFile(credCache, cacheFile)
 		if err != nil {
 			logger.Warnf("Set credential failed. Unable to write cache. %v", err)
+		} else {
+			logger.Debugf("Deleted credential succeeded. Authentication type: %v, User: %v,  file location: %v", tokenSpec.tokenType, tokenSpec.user, ssm.credFilePath())
 		}
 	})
 }
@@ -433,113 +452,6 @@ func (ssm *fileBasedSecureStorageManager) writeTemporaryCacheFile(cache map[stri
 		return fmt.Errorf("failed to write the credential cache file: %w", err)
 	}
 	return nil
-}
-
-type keyringSecureStorageManager struct {
-}
-
-func newKeyringBasedSecureStorageManager() *keyringSecureStorageManager {
-	return &keyringSecureStorageManager{}
-}
-
-func (ssm *keyringSecureStorageManager) setCredential(tokenSpec *secureTokenSpec, value string) {
-	if value == "" {
-		logger.Debug("no token provided")
-	} else {
-		credentialsKey, err := tokenSpec.buildKey()
-		if err != nil {
-			logger.Warn(err)
-			return
-		}
-		if runtime.GOOS == "windows" {
-			ring, _ := keyring.Open(keyring.Config{
-				WinCredPrefix: strings.ToUpper(tokenSpec.host),
-				ServiceName:   strings.ToUpper(tokenSpec.user),
-			})
-			item := keyring.Item{
-				Key:  credentialsKey,
-				Data: []byte(value),
-			}
-			if err := ring.Set(item); err != nil {
-				logger.Debugf("Failed to write to Windows credential manager. Err: %v", err)
-			}
-		} else if runtime.GOOS == "darwin" {
-			ring, _ := keyring.Open(keyring.Config{
-				ServiceName: credentialsKey,
-			})
-			account := strings.ToUpper(tokenSpec.user)
-			item := keyring.Item{
-				Key:  account,
-				Data: []byte(value),
-			}
-			if err := ring.Set(item); err != nil {
-				logger.Debugf("Failed to write to keychain. Err: %v", err)
-			}
-		}
-	}
-}
-
-func (ssm *keyringSecureStorageManager) getCredential(tokenSpec *secureTokenSpec) string {
-	cred := ""
-	credentialsKey, err := tokenSpec.buildKey()
-	if err != nil {
-		logger.Warn(err)
-		return ""
-	}
-	if runtime.GOOS == "windows" {
-		ring, _ := keyring.Open(keyring.Config{
-			WinCredPrefix: strings.ToUpper(tokenSpec.host),
-			ServiceName:   strings.ToUpper(tokenSpec.user),
-		})
-		i, err := ring.Get(credentialsKey)
-		if err != nil {
-			logger.Debugf("Failed to read credentialsKey or could not find it in Windows Credential Manager. Error: %v", err)
-		}
-		cred = string(i.Data)
-	} else if runtime.GOOS == "darwin" {
-		ring, _ := keyring.Open(keyring.Config{
-			ServiceName: credentialsKey,
-		})
-		account := strings.ToUpper(tokenSpec.user)
-		i, err := ring.Get(account)
-		if err != nil {
-			logger.Debugf("Failed to find the item in keychain or item does not exist. Error: %v", err)
-		}
-		cred = string(i.Data)
-		if cred == "" {
-			logger.Debug("Returned credential is empty")
-		} else {
-			logger.Debug("Successfully read token. Returning as string")
-		}
-	}
-	return cred
-}
-
-func (ssm *keyringSecureStorageManager) deleteCredential(tokenSpec *secureTokenSpec) {
-	credentialsKey, err := tokenSpec.buildKey()
-	if err != nil {
-		logger.Warn(err)
-		return
-	}
-	if runtime.GOOS == "windows" {
-		ring, _ := keyring.Open(keyring.Config{
-			WinCredPrefix: strings.ToUpper(tokenSpec.host),
-			ServiceName:   strings.ToUpper(tokenSpec.user),
-		})
-		err := ring.Remove(string(credentialsKey))
-		if err != nil {
-			logger.Debugf("Failed to delete credentialsKey in Windows Credential Manager. Error: %v", err)
-		}
-	} else if runtime.GOOS == "darwin" {
-		ring, _ := keyring.Open(keyring.Config{
-			ServiceName: credentialsKey,
-		})
-		account := strings.ToUpper(tokenSpec.user)
-		err := ring.Remove(account)
-		if err != nil {
-			logger.Debugf("Failed to delete credentialsKey in keychain. Error: %v", err)
-		}
-	}
 }
 
 func buildCredentialsKey(host, user string, credType tokenType) (string, error) {

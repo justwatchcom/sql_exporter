@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/bitutil"
@@ -51,7 +50,7 @@ type MonthInterval struct {
 
 func NewMonthIntervalData(data arrow.ArrayData) *MonthInterval {
 	a := &MonthInterval{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -63,7 +62,8 @@ func (a *MonthInterval) ValueStr(i int) string {
 	}
 	return fmt.Sprintf("%v", a.Value(i))
 }
-func (a *MonthInterval) MonthIntervalValues() []arrow.MonthInterval { return a.values }
+func (a *MonthInterval) MonthIntervalValues() []arrow.MonthInterval { return a.Values() }
+func (a *MonthInterval) Values() []arrow.MonthInterval              { return a.values }
 
 func (a *MonthInterval) String() string {
 	o := new(strings.Builder)
@@ -88,8 +88,8 @@ func (a *MonthInterval) setData(data *Data) {
 	vals := data.buffers[1]
 	if vals != nil {
 		a.values = arrow.MonthIntervalTraits.CastFromBytes(vals.Bytes())
-		beg := a.array.data.offset
-		end := beg + a.array.data.length
+		beg := a.data.offset
+		end := beg + a.data.length
 		a.values = a.values[beg:end]
 	}
 }
@@ -99,6 +99,13 @@ func (a *MonthInterval) GetOneForMarshal(i int) interface{} {
 		return a.values[i]
 	}
 	return nil
+}
+
+func (a *MonthInterval) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
 }
 
 // MarshalJSON will create a json array out of a MonthInterval array,
@@ -140,7 +147,9 @@ type MonthIntervalBuilder struct {
 }
 
 func NewMonthIntervalBuilder(mem memory.Allocator) *MonthIntervalBuilder {
-	return &MonthIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
+	mib := &MonthIntervalBuilder{builder: builder{mem: mem}}
+	mib.refCount.Add(1)
+	return mib
 }
 
 func (b *MonthIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidthTypes.MonthInterval }
@@ -148,9 +157,9 @@ func (b *MonthIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidthTy
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *MonthIntervalBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -174,9 +183,15 @@ func (b *MonthIntervalBuilder) AppendNull() {
 }
 
 func (b *MonthIntervalBuilder) AppendNulls(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendNull()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendNull()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendNulls(n)
 }
 
 func (b *MonthIntervalBuilder) AppendEmptyValue() {
@@ -184,9 +199,15 @@ func (b *MonthIntervalBuilder) AppendEmptyValue() {
 }
 
 func (b *MonthIntervalBuilder) AppendEmptyValues(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendEmptyValue()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendEmptyValue()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendEmptyValues(b.data.Bytes(), arrow.MonthIntervalTraits.BytesRequired(1), n)
 }
 
 func (b *MonthIntervalBuilder) UnsafeAppend(v arrow.MonthInterval) {
@@ -218,7 +239,7 @@ func (b *MonthIntervalBuilder) AppendValues(v []arrow.MonthInterval, valid []boo
 
 	b.Reserve(len(v))
 	arrow.MonthIntervalTraits.Copy(b.rawData[b.length:], v)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(v))
+	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 
 func (b *MonthIntervalBuilder) init(capacity int) {
@@ -233,7 +254,7 @@ func (b *MonthIntervalBuilder) init(capacity int) {
 // Reserve ensures there is enough space for appending n elements
 // by checking the capacity and calling Resize if necessary.
 func (b *MonthIntervalBuilder) Reserve(n int) {
-	b.builder.reserve(n, b.Resize)
+	b.reserve(n, b.Resize)
 }
 
 // Resize adjusts the space allocated by b to n elements. If n is greater than b.Cap(),
@@ -247,7 +268,7 @@ func (b *MonthIntervalBuilder) Resize(n int) {
 	if b.capacity == 0 {
 		b.init(n)
 	} else {
-		b.builder.resize(nBuilder, b.init)
+		b.resize(nBuilder, b.init)
 		b.data.Resize(arrow.MonthIntervalTraits.BytesRequired(n))
 		b.rawData = arrow.MonthIntervalTraits.CastFromBytes(b.data.Bytes())
 	}
@@ -328,6 +349,7 @@ func (b *MonthIntervalBuilder) Unmarshal(dec *json.Decoder) error {
 // value that will be added to the builder.
 func (b *MonthIntervalBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err
@@ -348,7 +370,7 @@ type DayTimeInterval struct {
 
 func NewDayTimeIntervalData(data arrow.ArrayData) *DayTimeInterval {
 	a := &DayTimeInterval{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -390,8 +412,8 @@ func (a *DayTimeInterval) setData(data *Data) {
 	vals := data.buffers[1]
 	if vals != nil {
 		a.values = arrow.DayTimeIntervalTraits.CastFromBytes(vals.Bytes())
-		beg := a.array.data.offset
-		end := beg + a.array.data.length
+		beg := a.data.offset
+		end := beg + a.data.length
 		a.values = a.values[beg:end]
 	}
 }
@@ -401,6 +423,13 @@ func (a *DayTimeInterval) GetOneForMarshal(i int) interface{} {
 		return a.values[i]
 	}
 	return nil
+}
+
+func (a *DayTimeInterval) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
 }
 
 // MarshalJSON will marshal this array to JSON as an array of objects,
@@ -440,7 +469,9 @@ type DayTimeIntervalBuilder struct {
 }
 
 func NewDayTimeIntervalBuilder(mem memory.Allocator) *DayTimeIntervalBuilder {
-	return &DayTimeIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
+	dtb := &DayTimeIntervalBuilder{builder: builder{mem: mem}}
+	dtb.refCount.Add(1)
+	return dtb
 }
 
 func (b *DayTimeIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidthTypes.DayTimeInterval }
@@ -448,9 +479,9 @@ func (b *DayTimeIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidth
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *DayTimeIntervalBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -474,9 +505,15 @@ func (b *DayTimeIntervalBuilder) AppendNull() {
 }
 
 func (b *DayTimeIntervalBuilder) AppendNulls(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendNull()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendNull()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendNulls(n)
 }
 
 func (b *DayTimeIntervalBuilder) AppendEmptyValue() {
@@ -484,9 +521,15 @@ func (b *DayTimeIntervalBuilder) AppendEmptyValue() {
 }
 
 func (b *DayTimeIntervalBuilder) AppendEmptyValues(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendEmptyValue()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendEmptyValue()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendEmptyValues(b.data.Bytes(), arrow.DayTimeIntervalTraits.BytesRequired(1), n)
 }
 
 func (b *DayTimeIntervalBuilder) UnsafeAppend(v arrow.DayTimeInterval) {
@@ -518,7 +561,7 @@ func (b *DayTimeIntervalBuilder) AppendValues(v []arrow.DayTimeInterval, valid [
 
 	b.Reserve(len(v))
 	arrow.DayTimeIntervalTraits.Copy(b.rawData[b.length:], v)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(v))
+	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 
 func (b *DayTimeIntervalBuilder) init(capacity int) {
@@ -533,7 +576,7 @@ func (b *DayTimeIntervalBuilder) init(capacity int) {
 // Reserve ensures there is enough space for appending n elements
 // by checking the capacity and calling Resize if necessary.
 func (b *DayTimeIntervalBuilder) Reserve(n int) {
-	b.builder.reserve(n, b.Resize)
+	b.reserve(n, b.Resize)
 }
 
 // Resize adjusts the space allocated by b to n elements. If n is greater than b.Cap(),
@@ -547,7 +590,7 @@ func (b *DayTimeIntervalBuilder) Resize(n int) {
 	if b.capacity == 0 {
 		b.init(n)
 	} else {
-		b.builder.resize(nBuilder, b.init)
+		b.resize(nBuilder, b.init)
 		b.data.Resize(arrow.DayTimeIntervalTraits.BytesRequired(n))
 		b.rawData = arrow.DayTimeIntervalTraits.CastFromBytes(b.data.Bytes())
 	}
@@ -627,6 +670,7 @@ func (b *DayTimeIntervalBuilder) Unmarshal(dec *json.Decoder) error {
 // with the values expected to be objects of the form {"days": #, "milliseconds": #}
 func (b *DayTimeIntervalBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err
@@ -647,7 +691,7 @@ type MonthDayNanoInterval struct {
 
 func NewMonthDayNanoIntervalData(data arrow.ArrayData) *MonthDayNanoInterval {
 	a := &MonthDayNanoInterval{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -691,8 +735,8 @@ func (a *MonthDayNanoInterval) setData(data *Data) {
 	vals := data.buffers[1]
 	if vals != nil {
 		a.values = arrow.MonthDayNanoIntervalTraits.CastFromBytes(vals.Bytes())
-		beg := a.array.data.offset
-		end := beg + a.array.data.length
+		beg := a.data.offset
+		end := beg + a.data.length
 		a.values = a.values[beg:end]
 	}
 }
@@ -702,6 +746,13 @@ func (a *MonthDayNanoInterval) GetOneForMarshal(i int) interface{} {
 		return a.values[i]
 	}
 	return nil
+}
+
+func (a *MonthDayNanoInterval) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
+	return a.Value(i)
 }
 
 // MarshalJSON will marshal this array to a JSON array with elements
@@ -741,7 +792,9 @@ type MonthDayNanoIntervalBuilder struct {
 }
 
 func NewMonthDayNanoIntervalBuilder(mem memory.Allocator) *MonthDayNanoIntervalBuilder {
-	return &MonthDayNanoIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
+	mb := &MonthDayNanoIntervalBuilder{builder: builder{mem: mem}}
+	mb.refCount.Add(1)
+	return mb
 }
 
 func (b *MonthDayNanoIntervalBuilder) Type() arrow.DataType {
@@ -751,9 +804,9 @@ func (b *MonthDayNanoIntervalBuilder) Type() arrow.DataType {
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *MonthDayNanoIntervalBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -777,9 +830,15 @@ func (b *MonthDayNanoIntervalBuilder) AppendNull() {
 }
 
 func (b *MonthDayNanoIntervalBuilder) AppendNulls(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendNull()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendNull()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendNulls(n)
 }
 
 func (b *MonthDayNanoIntervalBuilder) AppendEmptyValue() {
@@ -787,9 +846,15 @@ func (b *MonthDayNanoIntervalBuilder) AppendEmptyValue() {
 }
 
 func (b *MonthDayNanoIntervalBuilder) AppendEmptyValues(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendEmptyValue()
+	if n <= 0 {
+		return
 	}
+	if n == 1 {
+		b.AppendEmptyValue()
+		return
+	}
+	b.Reserve(n)
+	b.unsafeAppendEmptyValues(b.data.Bytes(), arrow.MonthDayNanoIntervalTraits.BytesRequired(1), n)
 }
 
 func (b *MonthDayNanoIntervalBuilder) UnsafeAppend(v arrow.MonthDayNanoInterval) {
@@ -821,7 +886,7 @@ func (b *MonthDayNanoIntervalBuilder) AppendValues(v []arrow.MonthDayNanoInterva
 
 	b.Reserve(len(v))
 	arrow.MonthDayNanoIntervalTraits.Copy(b.rawData[b.length:], v)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(v))
+	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 
 func (b *MonthDayNanoIntervalBuilder) init(capacity int) {
@@ -836,7 +901,7 @@ func (b *MonthDayNanoIntervalBuilder) init(capacity int) {
 // Reserve ensures there is enough space for appending n elements
 // by checking the capacity and calling Resize if necessary.
 func (b *MonthDayNanoIntervalBuilder) Reserve(n int) {
-	b.builder.reserve(n, b.Resize)
+	b.reserve(n, b.Resize)
 }
 
 // Resize adjusts the space allocated by b to n elements. If n is greater than b.Cap(),
@@ -850,7 +915,7 @@ func (b *MonthDayNanoIntervalBuilder) Resize(n int) {
 	if b.capacity == 0 {
 		b.init(n)
 	} else {
-		b.builder.resize(nBuilder, b.init)
+		b.resize(nBuilder, b.init)
 		b.data.Resize(arrow.MonthDayNanoIntervalTraits.BytesRequired(n))
 		b.rawData = arrow.MonthDayNanoIntervalTraits.CastFromBytes(b.data.Bytes())
 	}
@@ -930,6 +995,7 @@ func (b *MonthDayNanoIntervalBuilder) Unmarshal(dec *json.Decoder) error {
 // {"months": #, "days": #, "nanoseconds": #}
 func (b *MonthDayNanoIntervalBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err
@@ -950,4 +1016,8 @@ var (
 	_ Builder = (*MonthIntervalBuilder)(nil)
 	_ Builder = (*DayTimeIntervalBuilder)(nil)
 	_ Builder = (*MonthDayNanoIntervalBuilder)(nil)
+
+	_ arrow.TypedArray[arrow.MonthInterval]        = (*MonthInterval)(nil)
+	_ arrow.TypedArray[arrow.DayTimeInterval]      = (*DayTimeInterval)(nil)
+	_ arrow.TypedArray[arrow.MonthDayNanoInterval] = (*MonthDayNanoInterval)(nil)
 )

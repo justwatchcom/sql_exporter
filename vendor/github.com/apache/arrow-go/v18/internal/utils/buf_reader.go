@@ -18,10 +18,97 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 )
+
+type Reader interface {
+	io.ReadSeeker
+	io.ReaderAt
+}
+
+// byteReader is a wrapper for bytes.NewReader
+type byteReader struct {
+	r   *bytes.Reader
+	buf []byte
+	pos int
+}
+
+// NewByteReader creates a new ByteReader instance from the given byte slice.
+// It wraps the bytes.NewReader function to implement BufferedReader interface.
+func NewByteReader(buf []byte) *byteReader {
+	r := bytes.NewReader(buf)
+	return &byteReader{
+		r,
+		buf,
+		0,
+	}
+}
+
+func (r *byteReader) Read(buf []byte) (n int, err error) {
+	n, err = r.r.Read(buf)
+	r.pos += n
+	return
+}
+
+func (r *byteReader) Seek(offset int64, whence int) (pos int64, err error) {
+	pos, err = r.r.Seek(offset, whence)
+	if err == nil {
+		r.pos = int(pos)
+	}
+	return
+}
+
+func (r *byteReader) ReadAt(buf []byte, off int64) (n int, err error) {
+	return r.r.ReadAt(buf, off)
+}
+
+func (r *byteReader) Peek(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("arrow/bytereader: %w", bufio.ErrNegativeCount)
+	}
+	available := len(r.buf) - r.pos
+	read := min(n, available)
+	var err error
+	if read < n {
+		err = io.EOF
+	}
+	return r.buf[r.pos : r.pos+read], err
+}
+
+func (r *byteReader) Discard(n int) (int, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("arrow/bytereader: %w", bufio.ErrNegativeCount)
+	}
+
+	var (
+		err    error
+		newPos = r.pos + n
+	)
+
+	if newPos > len(r.buf) {
+		newPos = len(r.buf)
+		n = newPos - r.pos
+		err = io.EOF
+	}
+
+	_, seekErr := r.Seek(int64(n), io.SeekCurrent)
+	if seekErr != nil {
+		return n, seekErr
+	}
+	return n, err
+}
+
+// Outer returns the byteReader itself, since it has already implemented Reader interface.
+func (r *byteReader) Outer() Reader {
+	return r
+}
+
+func (r *byteReader) Reset(Reader) {}
+
+func (r *byteReader) BufferSize() int { return len(r.buf) }
 
 // bufferedReader is similar to bufio.Reader except
 // it will expand the buffer if necessary when asked to Peek
@@ -30,26 +117,28 @@ type bufferedReader struct {
 	bufferSz int
 	buf      []byte
 	r, w     int
-	rd       io.Reader
+	rd       Reader
 	err      error
 }
 
 // NewBufferedReader returns a buffered reader with similar semantics to bufio.Reader
 // except Peek will expand the internal buffer if needed rather than return
 // an error.
-func NewBufferedReader(rd io.Reader, sz int) *bufferedReader {
-	// if rd is already a buffered reader whose buffer is >= the requested size
-	// then just return it as is. no need to make a new object.
-	b, ok := rd.(*bufferedReader)
-	if ok && len(b.buf) >= sz {
-		return b
-	}
-
+func NewBufferedReader(rd Reader, sz int) *bufferedReader {
 	r := &bufferedReader{
 		rd: rd,
 	}
 	r.resizeBuffer(sz)
 	return r
+}
+
+func (b *bufferedReader) Outer() Reader { return b.rd }
+
+func (b *bufferedReader) Reset(rd Reader) {
+	b.resetBuffer()
+	b.rd = rd
+	b.r, b.w = 0, 0
+	b.err = nil
 }
 
 func (b *bufferedReader) resetBuffer() {
@@ -97,6 +186,8 @@ func (b *bufferedReader) readErr() error {
 	return err
 }
 
+func (b *bufferedReader) BufferSize() int { return b.bufferSz }
+
 // Buffered returns the number of bytes currently buffered
 func (b *bufferedReader) Buffered() int { return b.w - b.r }
 
@@ -134,7 +225,7 @@ func (b *bufferedReader) Peek(n int) ([]byte, error) {
 		b.fill() // b.w-b.r < len(b.buf) => buffer is not full
 	}
 
-	return b.buf[b.r : b.r+n], b.readErr()
+	return b.buf[b.r : b.r+min(n, b.w-b.r)], b.readErr()
 }
 
 // Discard skips the next n bytes either by advancing the internal buffer

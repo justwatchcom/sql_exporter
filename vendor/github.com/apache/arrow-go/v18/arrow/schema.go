@@ -18,7 +18,7 @@ package arrow
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow/endian"
@@ -56,7 +56,7 @@ func MetadataFrom(kv map[string]string) Metadata {
 	for k := range kv {
 		md.keys = append(md.keys, k)
 	}
-	sort.Strings(md.keys)
+	slices.Sort(md.keys)
 	for _, k := range md.keys {
 		md.values = append(md.values, kv[k])
 	}
@@ -123,14 +123,47 @@ func (md Metadata) clone() Metadata {
 	return o
 }
 
+const smallMetadataLimit = 12
+
+func sortSmallMetadataIndices(keys []string, idxes []int) {
+	for i := range idxes {
+		idxes[i] = i
+	}
+	for i := 1; i < len(idxes); i++ {
+		for j := i; j > 0 && keys[idxes[j]] < keys[idxes[j-1]]; j-- {
+			idxes[j], idxes[j-1] = idxes[j-1], idxes[j]
+		}
+	}
+}
+
+// Keep the small-sort arrays out of Equal's general frame.
+//
+//go:noinline
+func smallMetadataEqual(left, right Metadata) bool {
+	var leftStorage, rightStorage [smallMetadataLimit]int
+	leftIdxes := leftStorage[:len(left.keys)]
+	rightIdxes := rightStorage[:len(right.keys)]
+	sortSmallMetadataIndices(left.keys, leftIdxes)
+	sortSmallMetadataIndices(right.keys, rightIdxes)
+
+	for i := range leftIdxes {
+		j := leftIdxes[i]
+		k := rightIdxes[i]
+		if left.keys[j] != right.keys[k] || left.values[j] != right.values[k] {
+			return false
+		}
+	}
+	return true
+}
+
 func (md Metadata) sortedIndices() []int {
 	idxes := make([]int, len(md.keys))
 	for i := range idxes {
 		idxes[i] = i
 	}
 
-	sort.Slice(idxes, func(i, j int) bool {
-		return md.keys[idxes[i]] < md.keys[idxes[j]]
+	slices.SortFunc(idxes, func(i, j int) int {
+		return strings.Compare(md.keys[i], md.keys[j])
 	})
 	return idxes
 }
@@ -138,6 +171,9 @@ func (md Metadata) sortedIndices() []int {
 func (md Metadata) Equal(rhs Metadata) bool {
 	if md.Len() != rhs.Len() {
 		return false
+	}
+	if md.Len() <= smallMetadataLimit {
+		return smallMetadataEqual(md, rhs)
 	}
 
 	idxes := md.sortedIndices()
@@ -169,26 +205,38 @@ func NewSchema(fields []Field, metadata *Metadata) *Schema {
 }
 
 func NewSchemaWithEndian(fields []Field, metadata *Metadata, e endian.Endianness) *Schema {
+	var mdClone *Metadata
+	if metadata != nil {
+		md := metadata.clone()
+		mdClone = &md
+	}
+
+	fClone := make([]Field, len(fields))
+	copy(fClone, fields)
+
+	return newSchema(fClone, mdClone, e)
+}
+
+func newSchema(fields []Field, metadata *Metadata, e endian.Endianness) *Schema {
 	sc := &Schema{
-		fields:     make([]Field, 0, len(fields)),
+		fields:     fields,
 		index:      make(map[string][]int, len(fields)),
 		endianness: e,
 	}
 	if metadata != nil {
-		sc.meta = metadata.clone()
+		sc.meta = *metadata
 	}
 	for i, field := range fields {
 		if field.Type == nil {
 			panic("arrow: field with nil DataType")
 		}
-		sc.fields = append(sc.fields, field)
 		sc.index[field.Name] = append(sc.index[field.Name], i)
 	}
 	return sc
 }
 
 func (sc *Schema) WithEndianness(e endian.Endianness) *Schema {
-	return NewSchemaWithEndian(sc.fields, &sc.meta, e)
+	return newSchema(sc.fields, &sc.meta, e)
 }
 
 func (sc *Schema) Endianness() endian.Endianness { return sc.endianness }
@@ -207,19 +255,25 @@ func (sc *Schema) FieldsByName(n string) ([]Field, bool) {
 	if !ok {
 		return nil, ok
 	}
-	fields := make([]Field, 0, len(indices))
-	for _, v := range indices {
-		fields = append(fields, sc.fields[v])
+	if len(indices) == 1 {
+		return []Field{sc.fields[indices[0]]}, ok
+	} else if len(indices) > 1 {
+		fields := make([]Field, 0, len(indices))
+		for _, v := range indices {
+			fields = append(fields, sc.fields[v])
+		}
+		return fields, ok
 	}
-	return fields, ok
+
+	return nil, false
 }
 
-// FieldIndices returns the indices of the named field or nil.
+// FieldIndices returns a copy of the indices of the named field or nil.
 func (sc *Schema) FieldIndices(n string) []int {
-	return sc.index[n]
+	return slices.Clone(sc.index[n])
 }
 
-func (sc *Schema) HasField(n string) bool { return len(sc.FieldIndices(n)) > 0 }
+func (sc *Schema) HasField(n string) bool { return len(sc.index[n]) > 0 }
 func (sc *Schema) HasMetadata() bool      { return len(sc.meta.keys) > 0 }
 
 // Equal returns whether two schema are equal.
@@ -254,7 +308,8 @@ func (s *Schema) AddField(i int, field Field) (*Schema, error) {
 	copy(fields[:i], s.fields[:i])
 	fields[i] = field
 	copy(fields[i+1:], s.fields[i:])
-	return NewSchema(fields, &s.meta), nil
+
+	return newSchema(fields, &s.meta, s.endianness), nil
 }
 
 func (s *Schema) String() string {

@@ -43,7 +43,7 @@ type bufBuilder interface {
 // A bufferBuilder provides common functionality for populating memory with a sequence of type-specific values.
 // Specialized implementations provide type-safe APIs for appending and accessing the memory.
 type bufferBuilder struct {
-	refCount int64
+	refCount atomic.Int64
 	mem      memory.Allocator
 	buffer   *memory.Buffer
 	length   int
@@ -55,16 +55,16 @@ type bufferBuilder struct {
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (b *bufferBuilder) Retain() {
-	atomic.AddInt64(&b.refCount, 1)
+	b.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (b *bufferBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.buffer != nil {
 			b.buffer.Release()
 			b.buffer, b.bytes = nil, nil
@@ -114,6 +114,7 @@ func (b *bufferBuilder) Advance(length int) {
 		newCapacity := bitutil.NextPowerOf2(b.length + length)
 		b.resize(newCapacity)
 	}
+	memory.Set(b.bytes[b.length:b.length+length], 0)
 	b.length += length
 }
 
@@ -144,7 +145,9 @@ func (b *bufferBuilder) Finish() (buffer *memory.Buffer) {
 	b.buffer = nil
 	b.Reset()
 	if buffer == nil {
-		buffer = memory.NewBufferBytes(nil)
+		// Use an empty slice instead of nil to ensure slicing returns an empty slice
+		// This fixes issue #625 where all empty values were incorrectly treated as NULL
+		buffer = memory.NewBufferBytes([]byte{})
 	}
 	return
 }
@@ -155,27 +158,28 @@ func (b *bufferBuilder) unsafeAppend(data []byte) {
 }
 
 type multiBufferBuilder struct {
-	refCount  int64
+	refCount  atomic.Int64
 	blockSize int
 
 	mem              memory.Allocator
 	blocks           []*memory.Buffer
 	currentOutBuffer int
+	checkpoint       *multiBufferCheckpoint
 }
 
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
 func (b *multiBufferBuilder) Retain() {
-	atomic.AddInt64(&b.refCount, 1)
+	b.refCount.Add(1)
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 // Release may be called simultaneously from multiple goroutines.
 func (b *multiBufferBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		b.Reset()
 	}
 }
@@ -235,12 +239,60 @@ func (b *multiBufferBuilder) Reset() {
 	}
 }
 
+type multiBufferCheckpoint struct {
+	builder       *multiBufferBuilder
+	blockCount    int
+	blockLengths  map[int]int
+	currentOutput int
+}
+
+func (b *multiBufferBuilder) newCheckpoint() *multiBufferCheckpoint {
+	checkpoint := &multiBufferCheckpoint{builder: b}
+	b.checkpoint = checkpoint
+	return checkpoint
+}
+
+func (c *multiBufferCheckpoint) capture() {
+	c.blockCount = len(c.builder.blocks)
+	clear(c.blockLengths)
+	c.currentOutput = c.builder.currentOutBuffer
+}
+
+func (c *multiBufferCheckpoint) recordBlock(index, length int) {
+	if index >= c.blockCount {
+		return
+	}
+	if c.blockLengths == nil {
+		c.blockLengths = make(map[int]int)
+	}
+	if _, ok := c.blockLengths[index]; !ok {
+		c.blockLengths[index] = length
+	}
+}
+
+func (c *multiBufferCheckpoint) restore() {
+	for _, block := range c.builder.blocks[c.blockCount:] {
+		block.Release()
+	}
+	c.builder.blocks = c.builder.blocks[:c.blockCount]
+	for i, length := range c.blockLengths {
+		c.builder.blocks[i].Resize(length)
+	}
+	c.builder.currentOutBuffer = c.currentOutput
+}
+
 func (b *multiBufferBuilder) UnsafeAppend(hdr *arrow.ViewHeader, val []byte) {
 	buf := b.blocks[b.currentOutBuffer]
 	idx, offset := b.currentOutBuffer, buf.Len()
+	if b.checkpoint != nil {
+		b.checkpoint.recordBlock(idx, offset)
+	}
 	hdr.SetIndexOffset(int32(idx), int32(offset))
 
 	n := copy(buf.Buf()[offset:], val)
+	if n != len(val) {
+		panic("arrow/array: multibufferbuilder could not append full value")
+	}
 	buf.ResizeNoShrink(offset + n)
 }
 

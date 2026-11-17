@@ -6,6 +6,7 @@ import (
 )
 
 // InternalSnowflakeDriver is the interface for an internal Snowflake driver
+// Deprecated: will be removed in a future release.
 type InternalSnowflakeDriver interface {
 	Open(dsn string) (driver.Conn, error)
 	OpenWithConfig(ctx context.Context, config Config) (driver.Conn, error)

@@ -26,7 +26,7 @@ import (
 
 type computeWordFN func(leftTrue, leftFalse, rightTrue, rightFalse uint64) (outValid, outData uint64)
 
-func computeKleene(computeWord computeWordFN, ctx *exec.KernelCtx, left, right *exec.ArraySpan, out *exec.ExecResult) error {
+func computeKleene(computeWord computeWordFN, _ *exec.KernelCtx, left, right *exec.ArraySpan, out *exec.ExecResult) error {
 	var (
 		inBMs = [4]bitutil.Bitmap{
 			{Data: left.Buffers[0].Buf, Offset: left.Offset, Len: left.Len},
@@ -331,4 +331,10 @@ func (KleeneAndNotOpKernel) CallScalarLeft(ctx *exec.KernelCtx, left scalar.Scal
 
 func (KleeneAndNotOpKernel) CallScalarRight(ctx *exec.KernelCtx, left *exec.ArraySpan, right scalar.Scalar, out *exec.ExecResult) error {
 	return (KleeneAndOpKernel{}).CallScalarRight(ctx, left, invertScalar(right), out)
+}
+
+func NotExecKernel(ctx *exec.KernelCtx, batch *exec.ExecSpan, out *exec.ExecResult) error {
+	bitutil.InvertBitmap(batch.Values[0].Array.Buffers[1].Buf, int(batch.Values[0].Array.Offset),
+		int(batch.Values[0].Array.Len), out.Buffers[1].Buf, int(out.Offset))
+	return nil
 }
