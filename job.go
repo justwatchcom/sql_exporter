@@ -25,7 +25,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 

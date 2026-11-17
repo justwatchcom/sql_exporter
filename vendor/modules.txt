@@ -145,15 +145,11 @@ github.com/apache/arrow-go/v18/arrow
 github.com/apache/arrow-go/v18/arrow/array
 github.com/apache/arrow-go/v18/arrow/arrio
 github.com/apache/arrow-go/v18/arrow/bitutil
-github.com/apache/arrow-go/v18/arrow/compute
-github.com/apache/arrow-go/v18/arrow/compute/exec
-github.com/apache/arrow-go/v18/arrow/compute/internal/kernels
 github.com/apache/arrow-go/v18/arrow/decimal
 github.com/apache/arrow-go/v18/arrow/decimal128
 github.com/apache/arrow-go/v18/arrow/decimal256
 github.com/apache/arrow-go/v18/arrow/encoded
 github.com/apache/arrow-go/v18/arrow/endian
-github.com/apache/arrow-go/v18/arrow/extensions
 github.com/apache/arrow-go/v18/arrow/float16
 github.com/apache/arrow-go/v18/arrow/internal
 github.com/apache/arrow-go/v18/arrow/internal/debug
@@ -163,21 +159,11 @@ github.com/apache/arrow-go/v18/arrow/ipc
 github.com/apache/arrow-go/v18/arrow/memory
 github.com/apache/arrow-go/v18/arrow/memory/internal/cgoalloc
 github.com/apache/arrow-go/v18/arrow/memory/mallocator
-github.com/apache/arrow-go/v18/arrow/scalar
 github.com/apache/arrow-go/v18/internal/bitutils
 github.com/apache/arrow-go/v18/internal/hashing
 github.com/apache/arrow-go/v18/internal/json
 github.com/apache/arrow-go/v18/internal/utils
 github.com/apache/arrow-go/v18/internal/utils/maphash
-github.com/apache/arrow-go/v18/parquet
-github.com/apache/arrow-go/v18/parquet/compress
-github.com/apache/arrow-go/v18/parquet/internal/debug
-github.com/apache/arrow-go/v18/parquet/internal/gen-go/parquet
-github.com/apache/arrow-go/v18/parquet/schema
-github.com/apache/arrow-go/v18/parquet/variant
-# github.com/apache/thrift v0.25.0
-## explicit; go 1.26
-github.com/apache/thrift/lib/go/thrift
 # github.com/aws/aws-sdk-go v1.55.8
 ## explicit; go 1.19
 github.com/aws/aws-sdk-go/aws
@@ -238,7 +224,6 @@ github.com/aws/aws-sdk-go-v2/aws/signer/v4
 github.com/aws/aws-sdk-go-v2/aws/transport/http
 github.com/aws/aws-sdk-go-v2/internal/auth
 github.com/aws/aws-sdk-go-v2/internal/auth/smithy
-github.com/aws/aws-sdk-go-v2/internal/awsutil
 github.com/aws/aws-sdk-go-v2/internal/context
 github.com/aws/aws-sdk-go-v2/internal/endpoints
 github.com/aws/aws-sdk-go-v2/internal/endpoints/awsrulesfn
@@ -272,9 +257,10 @@ github.com/aws/aws-sdk-go-v2/credentials/stscreds
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds/internal/config
-# github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.23.25
+# github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.5
 ## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/feature/s3/manager
+github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager
+github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types
 # github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.12
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/internal/configsources
@@ -633,17 +619,12 @@ github.com/jmoiron/sqlx/reflectx
 # github.com/klauspost/compress v1.20.4
 ## explicit; go 1.25
 github.com/klauspost/compress
-github.com/klauspost/compress/flate
 github.com/klauspost/compress/fse
-github.com/klauspost/compress/gzip
 github.com/klauspost/compress/huff0
 github.com/klauspost/compress/internal/cpuinfo
 github.com/klauspost/compress/internal/le
-github.com/klauspost/compress/internal/race
 github.com/klauspost/compress/internal/regmask
 github.com/klauspost/compress/internal/snapref
-github.com/klauspost/compress/s2
-github.com/klauspost/compress/snappy
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/klauspost/cpuid/v2 v2.4.2
@@ -741,14 +722,19 @@ github.com/segmentio/go-athena
 # github.com/shopspring/decimal v1.6.0
 ## explicit; go 1.10
 github.com/shopspring/decimal
-# github.com/sirupsen/logrus v1.10.2
-## explicit; go 1.23
-github.com/sirupsen/logrus
-# github.com/snowflakedb/gosnowflake v1.19.1
-## explicit; go 1.24.0
-github.com/snowflakedb/gosnowflake
-github.com/snowflakedb/gosnowflake/internal/compilation
-github.com/snowflakedb/gosnowflake/internal/os
+# github.com/snowflakedb/gosnowflake/v2 v2.4.0
+## explicit; go 1.25.0
+github.com/snowflakedb/gosnowflake/v2
+github.com/snowflakedb/gosnowflake/v2/internal/arrow
+github.com/snowflakedb/gosnowflake/v2/internal/compilation
+github.com/snowflakedb/gosnowflake/v2/internal/config
+github.com/snowflakedb/gosnowflake/v2/internal/errors
+github.com/snowflakedb/gosnowflake/v2/internal/logger
+github.com/snowflakedb/gosnowflake/v2/internal/os
+github.com/snowflakedb/gosnowflake/v2/internal/query
+github.com/snowflakedb/gosnowflake/v2/internal/spcs
+github.com/snowflakedb/gosnowflake/v2/internal/types
+github.com/snowflakedb/gosnowflake/v2/sflog
 # github.com/vertica/vertica-sql-go v1.3.9
 ## explicit; go 1.18
 github.com/vertica/vertica-sql-go
@@ -890,7 +876,6 @@ golang.org/x/oauth2/jws
 golang.org/x/oauth2/jwt
 # golang.org/x/sync v0.25.0
 ## explicit; go 1.26.0
-golang.org/x/sync/errgroup
 golang.org/x/sync/semaphore
 # golang.org/x/sys v0.50.0
 ## explicit; go 1.26.0

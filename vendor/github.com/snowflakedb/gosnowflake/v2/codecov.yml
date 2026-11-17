@@ -1,0 +1,6 @@
+parsers:
+  go:
+    partials_as_hits: true
+
+ignore:
+  - "cmd/"

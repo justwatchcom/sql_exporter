@@ -1,0 +1,68 @@
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  # modernize is deliberately NOT enabled here. ci/gofix.sh already runs the
+  # same gopls analyzers across every GOOS/GOARCH/tag and gates CI on the
+  # result, and it does so correctly: it honours the go.mod language version.
+  # golangci-lint's copy ignores it (even with run.go set) and so demands
+  # Go 1.27-only rewrites such as reflect.TypeAssert while our floor is 1.25 -
+  # applying those would break the 1.25 and 1.26 matrix legs.
+  enable:
+    # Catches fmt.Sprintf("%s:%d", host, port), which breaks on literal IPv6 hosts.
+    - nosprintfhostport
+    - perfsprint
+    - usetesting
+  settings:
+    govet:
+      enable:
+        # Both added to go vet in Go 1.25; not in golangci-lint's default govet set.
+        - hostport
+        - waitgroup
+    perfsprint:
+      # fmt.Errorf without a format verb is idiomatic enough here; the ~220
+      # existing call sites are out of scope for the toolchain bump.
+      errorf: false
+      # concat-loop is right in principle but its autofix names the builder
+      # after the source line (contentsSb292), and 7 of the 9 hits here are the
+      # same copy-pasted read loop in put_get_test.go that wants a real
+      # refactor rather than a wrapped builder. Left for a follow-up.
+      concat-loop: false
+    usetesting:
+      # t.Context() instead of context.Background() is a sweep of its own
+      # (500+ test call sites), so keep it out of the default lint gate.
+      context-background: false
+      context-todo: false
+      # os-create-temp and os-chdir stay enforced: they autofix cleanly and the
+      # tree is already clean for both. The other two are switched off because
+      # they cannot be autofixed and each hit is a hand edit in test setup
+      # unrelated to the toolchain bump - os.MkdirTemp -> t.TempDir() drops an
+      # error return plus a paired defer os.RemoveAll (40 hits), and
+      # os.Setenv -> t.Setenv drops an error return plus the paired
+      # os.Unsetenv/restore (23 hits). Both are worth doing as their own PR.
+      os-mkdir-temp: false
+      os-setenv: false
+  exclusions:
+    rules:
+      - path: "_test.go"
+        linters:
+          - errcheck
+      - path: "cmd/"
+        linters:
+          - errcheck
+      - path: "_test.go"
+        linters:
+          - staticcheck
+        text: "implement StmtQueryContext"
+      - path: "_test.go"
+        linters:
+          - staticcheck
+        text: "implement StmtExecContext"
+      - linters:
+          - staticcheck
+        text: "QF1001"
+      - linters:
+          - staticcheck
+        text: "SA1019: .+\\.(LoginTimeout|RequestTimeout|JWTExpireTimeout|ClientTimeout|JWTClientTimeout|ExternalBrowserTimeout|CloudStorageTimeout|Tracing) is deprecated"
