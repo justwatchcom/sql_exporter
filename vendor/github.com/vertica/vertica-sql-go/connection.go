@@ -1,6 +1,6 @@
 package vertigo
 
-// Copyright (c) 2019-2023 Open Text.
+// Copyright (c) 2019-2024 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ package vertigo
 // THE SOFTWARE.
 
 import (
+	"bufio"
 	"context"
 	"crypto/md5"
 	"crypto/sha512"
@@ -44,6 +45,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -54,10 +56,12 @@ import (
 )
 
 var (
-	connectionLogger = logger.New("connection")
+	connectionLogger    = logger.New("connection")
+	asciiTotpRegex      = regexp.MustCompile(`^[0-9]{6}$`) // precompiled: exactly 6 ASCII digits
 )
 
 const (
+	tlsModePrefer       = "prefer"
 	tlsModeServer       = "server"
 	tlsModeServerStrict = "server-strict"
 	tlsModeNone         = "none"
@@ -85,9 +89,9 @@ func (t *_tlsConfigs) get(name string) (*tls.Config, bool) {
 var tlsConfigs = &_tlsConfigs{m: make(map[string]*tls.Config)}
 
 // db, err := sql.Open("vertica", "user@tcp(localhost:3306)/test?tlsmode=custom")
-// reserved modes: 'server', 'server-strict' or 'none'
+// reserved modes: 'prefer', 'server', 'server-strict' or 'none'
 func RegisterTLSConfig(name string, config *tls.Config) error {
-	if name == tlsModeServer || name == tlsModeServerStrict || name == tlsModeNone {
+	if name == tlsModePrefer || name == tlsModeServer || name == tlsModeServerStrict || name == tlsModeNone {
 		return fmt.Errorf("config name '%s' is reserved therefore cannot be used", name)
 	}
 	return tlsConfigs.add(name, config)
@@ -114,6 +118,8 @@ type connection struct {
 	dead             bool // used if a ROLLBACK severity error is encountered
 	sessMutex        sync.Mutex
 	workload         string
+	totp             string
+	lastNotice       string
 }
 
 // Begin - Begin starts and returns a new transaction. (DEPRECATED)
@@ -158,7 +164,13 @@ func (v *connection) PrepareContext(ctx context.Context, query string) (driver.S
 		return nil, err
 	}
 
-	if v.usePreparedStmts {
+	if len(strings.TrimSpace(s.command)) == 0 {
+		return s, nil
+	}
+
+	// LOCAL COPY statements must use the simple query protocol at execution time,
+	// so skip server-side preparation entirely to avoid orphaned prepared statements.
+	if v.usePreparedStmts && !s.multiStatements && !s.isLocalCopyStatement() {
 		if err = s.prepareAndDescribe(); err != nil {
 			return nil, err
 		}
@@ -240,6 +252,14 @@ func newConnection(connString string) (*connection, error) {
 
 	// Read OAuth access token flag.
 	result.oauthaccesstoken = result.connURL.Query().Get("oauth_access_token")
+
+	// Read TOTP (MFA) value. If provided, validate now so we fail fast before handshake.
+	if t := result.connURL.Query().Get("totp"); t != "" {
+		if err := validateTOTP(t); err != nil {
+			return nil, err
+		}
+		result.totp = t
+	}
 
 	// Read connection load balance flag.
 	loadBalanceFlag := result.connURL.Query().Get("connection_load_balance")
@@ -449,6 +469,7 @@ func (v *connection) handshake() error {
 		Autocommit:       v.autocommit,
 		OAuthAccessToken: v.oauthaccesstoken,
 		Workload:         v.workload,
+		Totp:             v.totp,
 	}
 
 	if err := v.sendMessage(msg); err != nil {
@@ -492,41 +513,32 @@ func (v *connection) initializeSession() error {
 		return err
 	}
 
-	result, err := stmt.QueryContextRaw(context.Background(), []driver.NamedValue{})
-
+	resultRows, err := stmt.QueryContextRaw(context.Background(), []driver.NamedValue{})
 	if err != nil {
 		return err
 	}
+	defer resultRows.Close()
 
-	firstRow := result.resultData.Peek()
-
-	if len(result.Columns()) != 1 && result.Columns()[1] != "now" || firstRow == nil {
+	columns := resultRows.Columns()
+	if len(columns) != 1 || strings.ToLower(columns[0]) != "now" {
 		return fmt.Errorf("unable to initialize session; functionality may be unreliable")
 	}
 
-	// Peek into the results manually.
-	colData := firstRow.Columns()
-	str := string(colData.Chunk())
-
-	if len(str) < 23 {
-		return fmt.Errorf("can't get server timezone: %s", str)
+	values := make([]driver.Value, len(columns))
+	if err := resultRows.Next(values); err != nil {
+		return fmt.Errorf("unable to read server time: %w", err)
 	}
 
-	v.serverTZOffset = getTimeZoneOffset(str)
+	timestamp, ok := values[0].(time.Time)
+	if !ok {
+		return fmt.Errorf("unexpected time value %T", values[0])
+	}
+
+	v.serverTZOffset = timestamp.Format("-07:00")
 
 	connectionLogger.Debug("Setting server timezone offset to %s", v.serverTZOffset)
 
 	return nil
-}
-
-func getTimeZoneOffset(str string) string {
-	for i := len(str) - 1; i >= 0 && i >= len(str)-8; i-- {
-		ch := str[i]
-		if ch == '+' || ch == '-' {
-			return str[i:]
-		}
-	}
-	return "+00"
 }
 
 func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {
@@ -534,7 +546,6 @@ func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {
 	handled := true
 
 	var err error = nil
-
 	switch msg := bMsg.(type) {
 	case *msgs.BEAuthenticationMsg:
 		switch msg.Response {
@@ -548,14 +559,20 @@ func (v *connection) defaultMessageHandler(bMsg msgs.BackEndMsg) (bool, error) {
 			err = v.authSendSHA512Password(msg.ExtraAuthData)
 		case common.AuthenticationOAuth:
 			err = v.authSendOAuthAccessToken()
+		case common.AuthenticationTOTP:
+			err = v.authSendTOTP()
 		default:
 			handled = false
 			err = fmt.Errorf("unsupported authentication scheme: %d", msg.Response)
 		}
 	case *msgs.BENoticeMsg:
-		break
+		// Capture NOTICE text so tests (like MFA secret retrieval) can parse it
+		v.lastNotice = msg.Message
+		connectionLogger.Info("NOTICE: %s", msg.Message)
 	case *msgs.BEParamStatusMsg:
 		connectionLogger.Debug("%v", msg)
+	case *msgs.BEParseCompleteMsg:
+		connectionLogger.Trace("parse complete")
 	default:
 		handled = false
 		err = fmt.Errorf("unhandled message: %v", msg)
@@ -665,6 +682,10 @@ func (v *connection) initializeSSL(sslFlag string) error {
 	}
 
 	if buf[0] == 'N' {
+		if sslFlag == tlsModePrefer {
+			connectionLogger.Info("SSL/TLS is not supported, proceeding with non-SSL connection in prefer mode")
+			return nil
+		}
 		return fmt.Errorf("SSL/TLS is not enabled on this server")
 	}
 
@@ -673,6 +694,9 @@ func (v *connection) initializeSSL(sslFlag string) error {
 	}
 
 	switch sslFlag {
+	case tlsModePrefer:
+		connectionLogger.Info("enabling SSL/TLS prefer mode")
+		v.conn = tls.Client(v.conn, &tls.Config{InsecureSkipVerify: true})
 	case tlsModeServer:
 		connectionLogger.Info("enabling SSL/TLS server mode")
 		v.conn = tls.Client(v.conn, &tls.Config{InsecureSkipVerify: true})
@@ -742,6 +766,52 @@ func (v *connection) authSendOAuthAccessToken() error {
 	return v.sendMessage(msg)
 }
 
+// validateTOTP ensures the TOTP string is a 1-6 digit numeric code.
+// Returns an error if blank, non-numeric, or longer than 6 digits.
+func validateTOTP(t string) error {
+	// Enforce exactly six ASCII digits. Avoid \d which matches Unicode digits.
+	if !asciiTotpRegex.MatchString(t) {
+		if t == "" {
+			return fmt.Errorf("Invalid TOTP: cannot be empty")
+		}
+		// Provide more granular feedback for common cases.
+		for _, ch := range t {
+			if ch < '0' || ch > '9' { // Non-ASCII digit
+				return fmt.Errorf("Invalid TOTP: contains non-numeric characters")
+			}
+		}
+		// All chars are digits but length wrong
+		return fmt.Errorf("Invalid TOTP: must be 6 digits")
+	}
+	return nil
+}
+
+func (v *connection) authSendTOTP() error {
+	// If TOTP already supplied via connection string, just validate (defensive) and send.
+	if v.totp != "" {
+		if err := validateTOTP(v.totp); err != nil { // Should already be valid, but double-check.
+			return err
+		}
+		msg := &msgs.FEPasswordMsg{PasswordData: v.totp}
+		return v.sendMessage(msg)
+	}
+
+	// Otherwise prompt user for a one-time TOTP.
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter TOTP: ")
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read TOTP input: %v", err)
+	}
+	t := strings.TrimSpace(input)
+	if err := validateTOTP(t); err != nil {
+		return err
+	}
+	v.totp = t
+	msg := &msgs.FEPasswordMsg{PasswordData: v.totp}
+	return v.sendMessage(msg)
+}
+
 func (v *connection) sync() error {
 	err := v.sendMessage(&msgs.FESyncMsg{})
 
@@ -765,6 +835,25 @@ func (v *connection) sync() error {
 	}
 
 	return nil
+}
+
+func (v *connection) drainUntilReady() error {
+	for {
+		bem, err := v.recvMessage()
+		if err != nil {
+			return err
+		}
+
+		if _, ok := bem.(*msgs.BEReadyForQueryMsg); ok {
+			return nil
+		}
+
+		_, _ = v.defaultMessageHandler(bem)
+	}
+}
+
+func (v *connection) LastNotice() string {
+    return v.lastNotice
 }
 
 func (v *connection) lockSessionMutex() {

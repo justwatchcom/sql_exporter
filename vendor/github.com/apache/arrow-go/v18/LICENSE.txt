@@ -205,7 +205,9 @@
 
 This project includes code from the Go project, BSD 3-clause license + PATENTS
 weak patent termination clause
-(https://github.com/golang/go/blob/master/PATENTS).
+(https://github.com/golang/go/blob/master/PATENTS):
+
+   * arrow/flight/cookie_middleware.go
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -234,3 +236,22 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+
+This project includes code from the LLVM project:
+
+* arrow/compute/internal/kernels/_lib/types.h
+
+Apache License v2.0 with LLVM Exceptions.
+See https://llvm.org/LICENSE.txt for license information.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+--------------------------------------------------------------------------------
+
+This project includes code from the brotli project (https://github.com/google/brotli):
+
+* parquet/compress/brotli.go
+
+Copyright: 2013 Google Inc. All Rights Reserved
+Distributed under MIT License.

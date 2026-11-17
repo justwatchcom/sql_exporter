@@ -1,16 +1,32 @@
----
-
+version: "2"
 run:
-  issues-exit-code: 1
   modules-download-mode: readonly
-
+  issues-exit-code: 1
 linters:
-  disable-all: true
-  fast: false
+  default: none
+  enable:
+    - revive
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
   enable:
     - goimports
-    - revive
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/elastic/go-sysinfo
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/elastic/go-sysinfo
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

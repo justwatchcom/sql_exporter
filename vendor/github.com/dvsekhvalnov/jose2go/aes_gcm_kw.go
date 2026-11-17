@@ -94,9 +94,9 @@ func (alg *AesGcmKW) Unwrap(encryptedCek []byte, key interface{}, cekSizeBits in
 		
 		var ivBytes,tagBytes []byte
 		
-	    if ivBytes,err = base64url.Decode(iv);err!=nil {
-	    	return nil,err
-	    }
+		if ivBytes,err = base64url.Decode(iv);err!=nil {
+			return nil,err
+		}
 		
 		if tagBytes,err = base64url.Decode(tag);err!=nil {
 			return nil,err
@@ -114,10 +114,13 @@ func (alg *AesGcmKW) Unwrap(encryptedCek []byte, key interface{}, cekSizeBits in
 			return nil,err
 		}
 
+		if nonceSize := len(ivBytes); nonceSize != aesgcm.NonceSize() {
+			return nil, fmt.Errorf("AesGcmKW.Unwrap(): expected nonce of size %v bits, but was given %v bits.", aesgcm.NonceSize()<<3, nonceSize<<3)
+		}
+
 		cipherAndTag:=append(encryptedCek,tagBytes...)
 		
 		if cek,err = aesgcm.Open(nil, ivBytes,cipherAndTag , nil);err!=nil {
-			fmt.Printf("err = %v\n",err)
 			return nil,err
 		}		
 		

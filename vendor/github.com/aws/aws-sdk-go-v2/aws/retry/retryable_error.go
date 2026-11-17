@@ -2,11 +2,14 @@ package retry
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/smithy-go"
 )
 
 // IsErrorRetryable provides the interface of an implementation to determine if
@@ -115,7 +118,13 @@ func (r RetryableConnectionError) IsErrorRetryable(err error) aws.Ternary {
 	case errors.As(err, &conErr) && conErr.ConnectionError():
 		retryable = true
 
+	case strings.Contains(err.Error(), "use of closed network connection"):
+		fallthrough
 	case strings.Contains(err.Error(), "connection reset"):
+		// The errors "connection reset" and "use of closed network connection"
+		// are effectively the same. It appears to be the difference between
+		// sync and async read of TCP RST in the stdlib's net.Conn read loop.
+		// see #2737
 		retryable = true
 
 	case errors.As(err, &urlErr):
@@ -177,6 +186,28 @@ func (r RetryableHTTPStatusCode) IsErrorRetryable(err error) aws.Ternary {
 	return aws.TrueTernary
 }
 
+// retryableUnmodeledTooManyRequests retries an HTTP 429 response whose error
+// did not deserialize to a modeled error type. A modeled error's own retry
+// rules decide whether it is retried.
+type retryableUnmodeledTooManyRequests struct{}
+
+func (retryableUnmodeledTooManyRequests) IsErrorRetryable(err error) aws.Ternary {
+	if isUnmodeledTooManyRequests(err) {
+		return aws.TrueTernary
+	}
+	return aws.UnknownTernary
+}
+
+// isUnmodeledTooManyRequests returns true if the error is for an HTTP 429
+// response and did not deserialize to a modeled error type.
+func isUnmodeledTooManyRequests(err error) bool {
+	var v interface{ HTTPStatusCode() int }
+	if !errors.As(err, &v) || v.HTTPStatusCode() != http.StatusTooManyRequests {
+		return false
+	}
+	return !isModeledAPIError(err)
+}
+
 // RetryableErrorCode determines if an attempt should be retried based on the
 // API error code.
 type RetryableErrorCode struct {
@@ -198,4 +229,36 @@ func (r RetryableErrorCode) IsErrorRetryable(err error) aws.Ternary {
 	}
 
 	return aws.TrueTernary
+}
+
+// retryableClockSkewError marks errors that can be caused by clock skew
+// (difference between server time and client time).
+// This is returned when there's certain confidence that adjusting the client time
+// could allow a retry to succeed
+type retryableClockSkewError struct{ Err error }
+
+func (e *retryableClockSkewError) Error() string {
+	return fmt.Sprintf("Probable clock skew error: %v", e.Err)
+}
+
+// Unwrap returns the wrapped error.
+func (e *retryableClockSkewError) Unwrap() error {
+	return e.Err
+}
+
+// RetryableError allows the retryer to retry this request
+func (e *retryableClockSkewError) RetryableError() bool {
+	return true
+}
+
+// isModeledAPIError returns true if the error wraps an API error that was
+// deserialized to a modeled error type. An error that deserialized to
+// *smithy.GenericAPIError, or that has no API error, is not modeled.
+func isModeledAPIError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	_, generic := apiErr.(*smithy.GenericAPIError)
+	return !generic
 }

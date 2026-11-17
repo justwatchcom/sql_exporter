@@ -19,6 +19,7 @@ package arrow
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -181,7 +182,7 @@ func FixedSizeListOfField(n int32, f Field) *FixedSizeListType {
 	if f.Type == nil {
 		panic("arrow: nil DataType")
 	}
-	if n <= 0 {
+	if n < 0 {
 		panic("arrow: invalid size")
 	}
 	return &FixedSizeListType{n: n, elem: f}
@@ -191,13 +192,13 @@ func FixedSizeListOfField(n int32, f Field) *FixedSizeListType {
 // For example, if t represents int32, FixedSizeListOf(10, t) represents [10]int32.
 //
 // FixedSizeListOf panics if t is nil or invalid.
-// FixedSizeListOf panics if n is <= 0.
+// FixedSizeListOf panics if n is negative.
 // NullableElem defaults to true
 func FixedSizeListOf(n int32, t DataType) *FixedSizeListType {
 	if t == nil {
 		panic("arrow: nil DataType")
 	}
-	if n <= 0 {
+	if n < 0 {
 		panic("arrow: invalid size")
 	}
 	return &FixedSizeListType{n: n, elem: Field{Name: "item", Type: t, Nullable: true}}
@@ -209,7 +210,7 @@ func FixedSizeListOfNonNullable(n int32, t DataType) *FixedSizeListType {
 	if t == nil {
 		panic("arrow: nil DataType")
 	}
-	if n <= 0 {
+	if n < 0 {
 		panic("arrow: invalid size")
 	}
 	return &FixedSizeListType{n: n, elem: Field{Name: "item", Type: t, Nullable: false}}
@@ -443,7 +444,10 @@ func (t *StructType) String() string {
 		if i > 0 {
 			o.WriteString(", ")
 		}
-		o.WriteString(fmt.Sprintf("%s: %v", f.Name, f.Type))
+		fmt.Fprintf(&o, "%s: %v", f.Name, f.Type)
+		if f.Nullable {
+			o.WriteString(" nullable")
+		}
 	}
 	o.WriteString(">")
 	return o.String()
@@ -498,9 +502,9 @@ func (t *StructType) FieldsByName(n string) ([]Field, bool) {
 	return fields, ok
 }
 
-// FieldIndices returns indices of all fields with the given name, or nil.
+// FieldIndices returns a copy of the indices of all fields with the given name, or nil.
 func (t *StructType) FieldIndices(name string) []int {
-	return t.index[name]
+	return slices.Clone(t.index[name])
 }
 
 func (t *StructType) Fingerprint() string {
@@ -536,6 +540,23 @@ func MapOf(key, item DataType) *MapType {
 	return &MapType{value: ListOf(StructOf(Field{Name: "key", Type: key}, Field{Name: "value", Type: item, Nullable: true}))}
 }
 
+func MapOfFields(key, item Field) *MapType {
+	if key.Type == nil || item.Type == nil {
+		panic("arrow: nil key or item type for MapType")
+	}
+
+	if key.Nullable {
+		panic("arrow: key field must be non-nullable")
+	}
+
+	key.Name = "key"
+	item.Name = "value"
+	return &MapType{value: ListOfField(Field{
+		Name: "entries",
+		Type: StructOf(key, item),
+	})}
+}
+
 func MapOfWithMetadata(key DataType, keyMetadata Metadata, item DataType, itemMetadata Metadata) *MapType {
 	if key == nil || item == nil {
 		panic("arrow: nil key or item type for MapType")
@@ -558,9 +579,9 @@ func (*MapType) Name() string { return "map" }
 
 func (t *MapType) String() string {
 	var o strings.Builder
-	o.WriteString(fmt.Sprintf("map<%s, %s",
+	fmt.Fprintf(&o, "map<%s, %s",
 		t.value.Elem().(*StructType).Field(0).Type,
-		t.value.Elem().(*StructType).Field(1).Type))
+		t.value.Elem().(*StructType).Field(1).Type)
 	if t.KeysSorted {
 		o.WriteString(", keys_sorted")
 	}
@@ -714,10 +735,15 @@ func (t *unionType) validate(fields []Field, typeCodes []UnionTypeCode, _ UnionM
 		return errors.New("arrow: union types should have the same number of fields as type codes")
 	}
 
+	var seen [int(MaxUnionTypeCode) + 1]bool
 	for _, c := range typeCodes {
 		if c < 0 || c > MaxUnionTypeCode {
 			return errors.New("arrow: union type code out of bounds")
 		}
+		if seen[c] {
+			return errors.New("arrow: union type codes must be unique")
+		}
+		seen[c] = true
 	}
 	return nil
 }

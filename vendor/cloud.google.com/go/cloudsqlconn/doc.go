@@ -36,7 +36,7 @@
 //	    "net"
 //
 //	    "cloud.google.com/go/cloudsqlconn"
-//	    "github.com/jackc/pgx/v4/pgxpool"
+//	    "github.com/jackc/pgx/v5/pgxpool"
 //	)
 //
 //	func connect() {
@@ -59,7 +59,7 @@
 //	    }
 //
 //	    // Interact with the driver directly as you normally would
-//	    conn, err := pgxpool.ConnectConfig(context.Background(), config)
+//	    conn, err := pgxpool.NewWithConfig(context.Background(), config)
 //	    if err != nil {
 //		    // handle error
 //	    }
@@ -69,7 +69,7 @@
 //	    // ... etc
 //	}
 //
-// To use [database/sql], call pgxv4.RegisterDriver with any necessary Dialer
+// To use [database/sql], call pgxv5.RegisterDriver with any necessary Dialer
 // configuration.
 //
 // Note: the connection string must use the keyword/value format
@@ -81,12 +81,12 @@
 //	    "database/sql"
 //
 //	    "cloud.google.com/go/cloudsqlconn"
-//	    "cloud.google.com/go/cloudsqlconn/postgres/pgxv4"
+//	    "cloud.google.com/go/cloudsqlconn/postgres/pgxv5"
 //	)
 //
 //	func connect() {
 //	    // adjust options as needed
-//	    cleanup, err := pgxv4.RegisterDriver("cloudsql-postgres", cloudsqlconn.WithIAMAuthN())
+//	    cleanup, err := pgxv5.RegisterDriver("cloudsql-postgres", cloudsqlconn.WithIAMAuthN())
 //	    if err != nil {
 //	    	// ... handle error
 //	    }
@@ -163,5 +163,5 @@
 //
 // [database/sql]: https://pkg.go.dev/database/sql
 // [pgx]: https://github.com/jackc/pgx
-// [pgxpool]: https://pkg.go.dev/github.com/jackc/pgx/v4/pgxpool
+// [pgxpool]: https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool
 package cloudsqlconn

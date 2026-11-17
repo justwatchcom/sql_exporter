@@ -101,12 +101,12 @@ import (
 	"database/sql"
 
 	"cloud.google.com/go/cloudsqlconn"
-	"cloud.google.com/go/cloudsqlconn/postgres/pgxv4"
+	"cloud.google.com/go/cloudsqlconn/postgres/pgxv5"
 )
 
 func connectPostgres() *sql.DB {
 	// Register a driver using whatever name you like.
-	cleanup, err := pgxv4.RegisterDriver(
+	cleanup, err := pgxv5.RegisterDriver(
 		"cloudsql-postgres",
 		// any desired options go here, for example:
 		cloudsqlconn.WithCredentialsFile("key.json"),

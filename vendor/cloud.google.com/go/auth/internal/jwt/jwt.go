@@ -17,13 +17,16 @@ package jwt
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 )
@@ -35,6 +38,8 @@ const (
 	HeaderAlgES256 = "ES256"
 	// HeaderType is the standard [Header.Type].
 	HeaderType = "JWT"
+	// ES256 key size
+	es256KeySize = 32
 )
 
 // Header represents a JWT header.
@@ -68,6 +73,14 @@ type Claims struct {
 	Sub string `json:"sub,omitempty"`
 	// AdditionalClaims contains any additional non-standard JWT claims. Optional.
 	AdditionalClaims map[string]interface{} `json:"-"`
+}
+
+// Expiry returns Exp as a [time.Time], or the zero [time.Time] if Exp <= 0.
+func (c *Claims) Expiry() time.Time {
+	if c.Exp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(c.Exp, 0)
 }
 
 func (c *Claims) encode() (string, error) {
@@ -111,7 +124,7 @@ func (c *Claims) encode() (string, error) {
 }
 
 // EncodeJWS encodes the data using the provided key as a JSON web signature.
-func EncodeJWS(header *Header, c *Claims, key *rsa.PrivateKey) (string, error) {
+func EncodeJWS(header *Header, c *Claims, signer crypto.Signer) (string, error) {
 	head, err := header.encode()
 	if err != nil {
 		return "", err
@@ -123,9 +136,25 @@ func EncodeJWS(header *Header, c *Claims, key *rsa.PrivateKey) (string, error) {
 	ss := fmt.Sprintf("%s.%s", head, claims)
 	h := sha256.New()
 	h.Write([]byte(ss))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h.Sum(nil))
+	sig, err := signer.Sign(rand.Reader, h.Sum(nil), crypto.SHA256)
 	if err != nil {
 		return "", err
+	}
+
+	if header.Algorithm == HeaderAlgES256 {
+		var ecSig struct {
+			R, S *big.Int
+		}
+		if _, err := asn1.Unmarshal(sig, &ecSig); err != nil {
+			return "", err
+		}
+
+		rawSig := make([]byte, es256KeySize*2)
+
+		ecSig.R.FillBytes(rawSig[:es256KeySize])
+		ecSig.S.FillBytes(rawSig[es256KeySize:])
+
+		sig = rawSig
 	}
 	return fmt.Sprintf("%s.%s", ss, base64.RawURLEncoding.EncodeToString(sig)), nil
 }
@@ -134,8 +163,8 @@ func EncodeJWS(header *Header, c *Claims, key *rsa.PrivateKey) (string, error) {
 func DecodeJWS(payload string) (*Claims, error) {
 	// decode returned id token to get expiry
 	s := strings.Split(payload, ".")
-	if len(s) < 2 {
-		return nil, errors.New("invalid token received")
+	if len(s) != 3 {
+		return nil, errors.New("jwt: invalid token received, token must have 3 parts")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(s[1])
 	if err != nil {
@@ -148,12 +177,12 @@ func DecodeJWS(payload string) (*Claims, error) {
 	if err := json.NewDecoder(bytes.NewBuffer(decoded)).Decode(&c.AdditionalClaims); err != nil {
 		return nil, err
 	}
-	return c, err
+	return c, nil
 }
 
 // VerifyJWS tests whether the provided JWT token's signature was produced by
 // the private key associated with the provided public key.
-func VerifyJWS(token string, key *rsa.PublicKey) error {
+func VerifyJWS(token string, key crypto.PublicKey) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return errors.New("jwt: invalid token received, token must have 3 parts")
@@ -167,5 +196,21 @@ func VerifyJWS(token string, key *rsa.PublicKey) error {
 
 	h := sha256.New()
 	h.Write([]byte(signedContent))
-	return rsa.VerifyPKCS1v15(key, crypto.SHA256, h.Sum(nil), signatureString)
+	hashed := h.Sum(nil)
+
+	switch pub := key.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hashed, signatureString)
+	case *ecdsa.PublicKey:
+		if len(signatureString) != 2*32 {
+			return fmt.Errorf("jwt: ecdsa signature size should be 64 bytes, got %d", len(signatureString))
+		}
+		r := new(big.Int).SetBytes(signatureString[:32])
+		s := new(big.Int).SetBytes(signatureString[32:])
+		if !ecdsa.Verify(pub, hashed, r, s) {
+			return errors.New("jwt: ecdsa signature verification failed")
+		}
+		return nil
+	}
+	return fmt.Errorf("jwt: unsupported public key type: %T", key)
 }

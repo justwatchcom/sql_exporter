@@ -4,29 +4,71 @@ package s3
 
 import (
 	"context"
-	"fmt"
-	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3cust "github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations"
 	"github.com/aws/smithy-go/middleware"
 	"github.com/aws/smithy-go/ptr"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
-// This operation is not supported by directory buckets. Deletes the lifecycle
-// configuration from the specified bucket. Amazon S3 removes all the lifecycle
-// configuration rules in the lifecycle subresource associated with the bucket.
-// Your objects never expire, and Amazon S3 no longer automatically deletes any
-// objects on the basis of rules contained in the deleted lifecycle configuration.
-// To use this operation, you must have permission to perform the
-// s3:PutLifecycleConfiguration action. By default, the bucket owner has this
-// permission and the bucket owner can grant this permission to others. There is
-// usually some time lag before lifecycle configuration deletion is fully
-// propagated to all the Amazon S3 systems. For more information about the object
-// expiration, see Elements to Describe Lifecycle Actions (https://docs.aws.amazon.com/AmazonS3/latest/dev/intro-lifecycle-rules.html#intro-lifecycle-rules-actions)
-// . Related actions include:
-//   - PutBucketLifecycleConfiguration (https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html)
-//   - GetBucketLifecycleConfiguration (https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketLifecycleConfiguration.html)
+// Deletes the lifecycle configuration from the specified bucket. Amazon S3
+// removes all the lifecycle configuration rules in the lifecycle subresource
+// associated with the bucket. Your objects never expire, and Amazon S3 no longer
+// automatically deletes any objects on the basis of rules contained in the deleted
+// lifecycle configuration.
+//
+// Permissions
+//   - General purpose bucket permissions - By default, all Amazon S3 resources
+//     are private, including buckets, objects, and related subresources (for example,
+//     lifecycle configuration and website configuration). Only the resource owner
+//     (that is, the Amazon Web Services account that created it) can access the
+//     resource. The resource owner can optionally grant access permissions to others
+//     by writing an access policy. For this operation, a user must have the
+//     s3:PutLifecycleConfiguration permission.
+//
+// For more information about permissions, see [Managing Access Permissions to Your Amazon S3 Resources].
+//
+//   - Directory bucket permissions - You must have the
+//     s3express:PutLifecycleConfiguration permission in an IAM identity-based policy
+//     to use this operation. Cross-account access to this API operation isn't
+//     supported. The resource owner can optionally grant access permissions to others
+//     by creating a role or user for them as long as they are within the same account
+//     as the owner and resource.
+//
+// For more information about directory bucket policies and permissions, see [Authorizing Regional endpoint APIs with IAM]in
+//
+//	the Amazon S3 User Guide.
+//
+// Directory buckets - For directory buckets, you must make requests for this API
+//
+//	operation to the Regional endpoint. These endpoints support path-style requests
+//	in the format https://s3express-control.region-code.amazonaws.com/bucket-name
+//	. Virtual-hosted-style requests aren't supported. For more information about
+//	endpoints in Availability Zones, see [Regional and Zonal endpoints for directory buckets in Availability Zones]in the Amazon S3 User Guide. For more
+//	information about endpoints in Local Zones, see [Concepts for directory buckets in Local Zones]in the Amazon S3 User Guide.
+//
+// HTTP Host header syntax  Directory buckets - The HTTP Host header syntax is
+// s3express-control.region.amazonaws.com .
+//
+// For more information about the object expiration, see [Elements to Describe Lifecycle Actions].
+//
+// Related actions include:
+//
+// [PutBucketLifecycleConfiguration]
+//
+// [GetBucketLifecycleConfiguration]
+//
+// You must URL encode any signed header values that contain spaces. For example,
+// if your header value is my file.txt , containing two spaces after my , you must
+// URL encode this value to my%20%20file.txt .
+//
+// [PutBucketLifecycleConfiguration]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html
+// [Elements to Describe Lifecycle Actions]: https://docs.aws.amazon.com/AmazonS3/latest/dev/intro-lifecycle-rules.html#intro-lifecycle-rules-actions
+// [GetBucketLifecycleConfiguration]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketLifecycleConfiguration.html
+// [Authorizing Regional endpoint APIs with IAM]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-security-iam.html
+// [Managing Access Permissions to Your Amazon S3 Resources]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-access-control.html
+//
+// [Concepts for directory buckets in Local Zones]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-lzs-for-directory-buckets.html
+// [Regional and Zonal endpoints for directory buckets in Availability Zones]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/endpoint-directory-buckets-AZ.html
 func (c *Client) DeleteBucketLifecycle(ctx context.Context, params *DeleteBucketLifecycleInput, optFns ...func(*Options)) (*DeleteBucketLifecycleOutput, error) {
 	if params == nil {
 		params = &DeleteBucketLifecycleInput{}
@@ -52,12 +94,16 @@ type DeleteBucketLifecycleInput struct {
 	// The account ID of the expected bucket owner. If the account ID that you provide
 	// does not match the actual owner of the bucket, the request fails with the HTTP
 	// status code 403 Forbidden (access denied).
+	//
+	// This parameter applies to general purpose buckets only. It is not supported for
+	// directory bucket lifecycle configurations.
 	ExpectedBucketOwner *string
 
 	noSmithyDocumentSerde
 }
 
 func (in *DeleteBucketLifecycleInput) bindEndpointParams(p *EndpointParameters) {
+
 	p.Bucket = in.Bucket
 	p.UseS3ExpressControlEndpoint = ptr.Bool(true)
 }
@@ -70,9 +116,6 @@ type DeleteBucketLifecycleOutput struct {
 }
 
 func (c *Client) addOperationDeleteBucketLifecycleMiddlewares(stack *middleware.Stack, options Options) (err error) {
-	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
-		return err
-	}
 	err = stack.Serialize.Add(&awsRestxml_serializeOpDeleteBucketLifecycle{}, middleware.After)
 	if err != nil {
 		return err
@@ -81,62 +124,29 @@ func (c *Client) addOperationDeleteBucketLifecycleMiddlewares(stack *middleware.
 	if err != nil {
 		return err
 	}
-	if err := addProtocolFinalizerMiddlewares(stack, options, "DeleteBucketLifecycle"); err != nil {
-		return fmt.Errorf("add protocol finalizers: %v", err)
-	}
 
-	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
-		return err
-	}
-	if err = addSetLoggerMiddleware(stack, options); err != nil {
-		return err
-	}
-	if err = addClientRequestID(stack); err != nil {
-		return err
-	}
-	if err = addComputeContentLength(stack); err != nil {
-		return err
-	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
-		return err
-	}
-	if err = addRawResponseToMetadata(stack); err != nil {
-		return err
-	}
-	if err = addRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+	if err = addRecordResponseTiming(stack, options); err != nil {
 		return err
 	}
 	if err = addPutBucketContextMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addIsExpressUserAgent(stack); err != nil {
+		return err
+	}
+	if err = addCredentialSource(stack, options); err != nil {
+		return err
+	}
 	if err = addOpDeleteBucketLifecycleValidationMiddleware(stack); err != nil {
 		return err
 	}
-	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opDeleteBucketLifecycle(options.Region), middleware.Before); err != nil {
-		return err
-	}
 	if err = addMetadataRetrieverMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addDeleteBucketLifecycleUpdateEndpoint(stack, options); err != nil {
@@ -151,6 +161,9 @@ func (c *Client) addOperationDeleteBucketLifecycleMiddlewares(stack *middleware.
 	if err = disableAcceptEncodingGzip(stack); err != nil {
 		return err
 	}
+	if err = s3cust.HandleResponseErrorWith200Status(stack); err != nil {
+		return err
+	}
 	if err = addRequestResponseLogging(stack, options); err != nil {
 		return err
 	}
@@ -158,6 +171,9 @@ func (c *Client) addOperationDeleteBucketLifecycleMiddlewares(stack *middleware.
 		return err
 	}
 	if err = addSerializeImmutableHostnameBucketMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -168,14 +184,6 @@ func (v *DeleteBucketLifecycleInput) bucket() (string, bool) {
 		return "", false
 	}
 	return *v.Bucket, true
-}
-
-func newServiceMetadataMiddleware_opDeleteBucketLifecycle(region string) *awsmiddleware.RegisterServiceMetadata {
-	return &awsmiddleware.RegisterServiceMetadata{
-		Region:        region,
-		ServiceID:     ServiceID,
-		OperationName: "DeleteBucketLifecycle",
-	}
 }
 
 // getDeleteBucketLifecycleBucketMember returns a pointer to string denoting a

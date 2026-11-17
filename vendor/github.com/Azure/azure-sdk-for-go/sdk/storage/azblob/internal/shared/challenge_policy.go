@@ -1,6 +1,3 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
@@ -8,11 +5,12 @@ package shared
 
 import (
 	"errors"
+	"net/http"
+	"strings"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
-	"net/http"
-	"strings"
 )
 
 type storageAuthorizer struct {
@@ -20,13 +18,30 @@ type storageAuthorizer struct {
 	tenantID string
 }
 
-func NewStorageChallengePolicy(cred azcore.TokenCredential) policy.Policy {
-	s := storageAuthorizer{scopes: []string{TokenScope}}
-	return runtime.NewBearerTokenPolicy(cred, []string{TokenScope}, &policy.BearerTokenOptions{
+type policyFunc func(*policy.Request) (*http.Response, error)
+
+func (pf policyFunc) Do(req *policy.Request) (*http.Response, error) {
+	return pf(req)
+}
+
+func NewRangePolicy() policy.Policy {
+	return policyFunc(func(req *policy.Request) (*http.Response, error) {
+		if headerValue := req.Raw().Header.Get("Range"); headerValue != "" {
+			req.Raw().Header.Del("Range")
+			req.Raw().Header["x-ms-range"] = []string{headerValue}
+		}
+		return req.Next()
+	})
+}
+
+func NewStorageChallengePolicy(cred azcore.TokenCredential, audience string, allowHTTP bool) policy.Policy {
+	s := storageAuthorizer{scopes: []string{audience}}
+	return runtime.NewBearerTokenPolicy(cred, []string{audience}, &policy.BearerTokenOptions{
 		AuthorizationHandler: policy.AuthorizationHandler{
 			OnRequest:   s.onRequest,
 			OnChallenge: s.onChallenge,
 		},
+		InsecureAllowCredentialWithHTTP: allowHTTP,
 	})
 }
 

@@ -19,20 +19,19 @@ package mallocator
 
 // #include <stdlib.h>
 // #include <string.h>
-//
-// void* realloc_and_initialize(void* ptr, size_t old_len, size_t new_len) {
-//   void* new_ptr = realloc(ptr, new_len);
-//   if (new_ptr && new_len > old_len) {
-//     memset(new_ptr + old_len, 0, new_len - old_len);
-//   }
-//   return new_ptr;
-// }
 import "C"
 
 import (
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
+
+func roundToPowerOf2(v, round uintptr) uintptr {
+	forceCarry := round - 1
+	truncateMask := ^forceCarry
+	return (v + forceCarry) & truncateMask
+}
 
 // Mallocator is an allocator which defers to libc malloc.
 //
@@ -45,9 +44,22 @@ import (
 // The build tag 'mallocator' will also make this the default allocator.
 type Mallocator struct {
 	allocatedBytes uint64
+	// We want to align allocations, but since we only get/return []byte,
+	// we need to remember the "real" address for Free somehow
+	realAllocations sync.Map
+	alignment       int
 }
 
-func NewMallocator() *Mallocator { return &Mallocator{} }
+func NewMallocator() *Mallocator { return &Mallocator{alignment: 64} }
+
+func NewMallocatorWithAlignment(alignment int) *Mallocator {
+	if alignment < 1 {
+		panic("mallocator: invalid alignment (must be positive)")
+	} else if alignment > 1 && (alignment&(alignment-1)) != 0 {
+		panic("mallocator: invalid alignment (must be power of 2)")
+	}
+	return &Mallocator{alignment: alignment}
+}
 
 func (alloc *Mallocator) Allocate(size int) []byte {
 	// Use calloc to zero-initialize memory.
@@ -58,28 +70,51 @@ func (alloc *Mallocator) Allocate(size int) []byte {
 	if size < 0 {
 		panic("mallocator: negative size")
 	}
-	ptr, err := C.calloc(C.size_t(size), 1)
+	paddedSize := C.size_t(size + alloc.alignment)
+	ptr, err := C.calloc(paddedSize, 1)
 	if err != nil {
 		// under some circumstances and allocation patterns, we can end up in a scenario
 		// where for some reason calloc return ENOMEM even though there is definitely memory
 		// available for use. So we attempt to fallback to simply doing malloc + memset in
 		// this case. If malloc returns a nil pointer, then we know we're out of memory
 		// and will surface the error.
-		if ptr = C.malloc(C.size_t(size)); ptr == nil {
+		if ptr = C.malloc(paddedSize); ptr == nil {
 			panic(err)
 		}
-		C.memset(ptr, 0, C.size_t(size))
+		C.memset(ptr, 0, paddedSize)
 	} else if ptr == nil {
 		panic("mallocator: out of memory")
 	}
 
+	buf := unsafe.Slice((*byte)(ptr), paddedSize)
+	aligned := roundToPowerOf2(uintptr(ptr), uintptr(alloc.alignment))
+	if size == 0 {
+		// if we return a zero-sized slice, we need to store the actual ptr
+		// as the key in the map, since the returned slice will have the actual
+		// pointer value instead of the aligned pointer.
+		alloc.realAllocations.Store(uintptr(ptr), uintptr(ptr))
+	} else {
+		alloc.realAllocations.Store(aligned, uintptr(ptr))
+	}
 	atomic.AddUint64(&alloc.allocatedBytes, uint64(size))
-	return unsafe.Slice((*byte)(ptr), size)
+
+	if uintptr(ptr) != aligned {
+		shift := aligned - uintptr(ptr)
+		return buf[shift : uintptr(size)+shift : uintptr(size)+shift]
+	}
+	return buf[:size:size]
 }
 
 func (alloc *Mallocator) Free(b []byte) {
 	sz := len(b)
-	C.free(getPtr(b))
+	ptr := getPtr(b)
+	realAddr, loaded := alloc.realAllocations.LoadAndDelete(uintptr(ptr))
+	if !loaded {
+		// double-free?
+		return
+	}
+	realPtr := unsafe.Pointer(realAddr.(uintptr))
+	C.free(realPtr)
 	// Subtract sh.Len via two's complement (since atomic doesn't offer subtract)
 	atomic.AddUint64(&alloc.allocatedBytes, ^(uint64(sz) - 1))
 }
@@ -88,20 +123,16 @@ func (alloc *Mallocator) Reallocate(size int, b []byte) []byte {
 	if size < 0 {
 		panic("mallocator: negative size")
 	}
-	cp := cap(b)
-	ptr, err := C.realloc_and_initialize(getPtr(b), C.size_t(cp), C.size_t(size))
-	if err != nil {
-		panic(err)
-	} else if ptr == nil && size != 0 {
-		panic("mallocator: out of memory")
+
+	if cap(b) >= size {
+		diff := size - len(b)
+		atomic.AddUint64(&alloc.allocatedBytes, uint64(diff))
+		return b[:size]
 	}
-	delta := size - len(b)
-	if delta >= 0 {
-		atomic.AddUint64(&alloc.allocatedBytes, uint64(delta))
-	} else {
-		atomic.AddUint64(&alloc.allocatedBytes, ^(uint64(-delta) - 1))
-	}
-	return unsafe.Slice((*byte)(ptr), size)
+	newBuf := alloc.Allocate(size)
+	copy(newBuf, b)
+	alloc.Free(b)
+	return newBuf
 }
 
 func (alloc *Mallocator) AllocatedBytes() int64 {

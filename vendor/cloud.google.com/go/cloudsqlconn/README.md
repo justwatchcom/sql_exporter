@@ -39,7 +39,21 @@ guide](./migration-guide.md).
 
 For a quick example, try out the Go Connector in a [Codelab][codelab].
 
+
+> [!WARNING]
+> **Go versions 1.25.2 and 1.24.8 are NOT compatible with Cloud SQL Go Connector.**
+>
+> A recent update to the Go version 1.25.2 and Go 1.24.8 breaks SAN verificaton in Go Connector. This is because Cloud SQL includes a trailing dot in the DNS name within the certificate's Subject Alternative Name (SAN), which the above Go versions reject as a malformed DNS name.
+>
+> For more details, please see the related Go issue: [crypto/x509: quadratic complexity when checking name constraints ](https://github.com/golang/go/issues/75715).
+
 ## Installation
+
+> [!IMPORTANT]
+> **The Cloud SQL Go Connector requires Go 1.26 or later.** Go 1.25 is no
+> longer supported, because required security fixes in `golang.org/x/crypto`
+> (v0.56.0+) and other dependencies need Go 1.26. See [Supported Go
+> Versions](#supported-go-versions).
 
 You can install this repo with `go get`:
 ```sh
@@ -149,6 +163,13 @@ with host set to the instance connection name. The returned `cleanup` func
 will stop the dialer's background refresh goroutine and so should only be called
 when you're done with the `Dialer`.
 
+> [!NOTE]
+>
+> Keyword/value connection strings follow PostgreSQL `libpq` escaping rules
+> (`pgx` `v5.11.0+`). If your password or other values contain spaces, single
+> quotes (`'`), or backslashes (`\`), wrap the value in single quotes and escape
+> `'` as `\'` and `\` as `\\`.
+
 ``` go
 import (
     "database/sql"
@@ -169,6 +190,12 @@ func connect() {
         "cloudsql-postgres",
         "host=project:region:instance user=myuser password=mypass dbname=mydb sslmode=disable",
     )
+    if err != nil {
+        // ... handle error
+    }
+    // close the pool before cleanup() so that connection-close metrics are
+    // recorded by the Dialer before it shuts down
+    defer db.Close()
     // ... etc
 }
 ```
@@ -234,13 +261,27 @@ func connect() {
     // ... etc
 }
 ```
-### Using DNS to identify an instance
 
-The connector can be configured to use DNS to look up an instance. This would
-allow you to configure your application to connect to a database instance, and
-centrally configure which instance in your DNS zone.
+### Using Advanced Disaster Recovery and DNS domain names to identify instances
+
+The connector can be configured to use DNS to look up an instance.
+Use a DNS name managed by Cloud SQL [Advanced Disaster Recovery](https://docs.cloud.google.com/sql/docs/mysql/use-advanced-disaster-recovery),
+or a domain name that you manage.
+
+#### Using Advanced Recovery Write Endpoint DNS Name
+
+[Advanced Disaster Recovery](https://docs.cloud.google.com/sql/docs/mysql/use-advanced-disaster-recovery)
+creates geographically distributed replicas of your Cloud SQL database instance. When you perform
+switchover or failover on the database instance, the connector will gracefully disconnect from the
+old primary instance and reconnect to the new primary instance.
+
+Follow the instructions in [Connect using Write Endpoint](https://docs.cloud.google.com/sql/docs/mysql/connect-to-instance-using-write-endpoint)
+to get the write endpoint DNS name for your primary instance. Then, use this write endpoint DNS
+name to configure the connector.
 
 #### Configure your DNS Records
+
+The connector may be configured to use DNS that you define as well.
 
 Add a DNS TXT record for the Cloud SQL instance to a **private** DNS server 
 or a private Google Cloud DNS Zone used by your application. 
@@ -259,7 +300,7 @@ For example: suppose you wanted to use the domain name
 
 #### Configure the connector
 
-Configure the connector as described above, replacing the conenctor ID with
+Configure the connector as described above, replacing the connector ID with
 the DNS name. 
 
 Adapting the MySQL + database/sql example above:
@@ -276,8 +317,7 @@ import (
 
 func connect() {
 	cleanup, err := mysql.RegisterDriver("cloudsql-mysql",
-		cloudsqlconn.WithDNSResolver(),
-		cloudsqlconn.WithCredentialsFile("key.json"))
+		cloudsqlconn.WithDNSResolver())
 	if err != nil {
 		// ... handle error
 	}
@@ -291,6 +331,40 @@ func connect() {
 	// ... etc
 }
 ```
+
+### Automatic fail-over using DNS domain names
+
+When the connector is configured using a domain name, the connector will 
+periodically check if the DNS record for an instance changes. When the connector 
+detects that the domain name refers to a different instance, the connector will
+close all open connections to the old instance. Subsequent connection attempts
+will be directed to the new instance. 
+
+For example: suppose application is configured to connect using the
+domain name `prod-db.mycompany.example.com`. Initially the corporate DNS 
+zone has a TXT record with the value `my-project:region:my-instance`. The
+application establishes connections to the `my-project:region:my-instance` 
+Cloud SQL instance. 
+
+Then, to reconfigure the application to use a different database
+instance, change the value of the `prod-db.mycompany.example.com` DNS record
+from `my-project:region:my-instance` to `my-project:other-region:my-instance-2`
+
+The connector inside the application detects the change to this
+DNS record. Now, when the application connects to its database using the 
+domain name `prod-db.mycompany.example.com`, it will connect to the
+`my-project:other-region:my-instance-2` Cloud SQL instance. 
+
+The connector will automatically close all existing connections to
+`my-project:region:my-instance`. This will force the connection pools to 
+establish new connections. Also, it may cause database queries in progress 
+to fail. 
+
+The connector will poll for changes to the DNS name every 30 seconds by default.
+You may configure the frequency of the connections using the option 
+`WithFailoverPeriod(d time.Duration)`. When this is set to 0, the connector will
+disable polling and only check if the DNS record changed when it is
+creating a new connection. 
 
 
 ### Using Options
@@ -383,6 +457,104 @@ dsn := "user=test-sa dbname=mydb sslmode=disable"
 [Automatic IAM database authentication]: https://cloud.google.com/sql/docs/postgres/authentication#automatic
 [configure-iam-authn]: https://cloud.google.com/sql/docs/postgres/create-edit-iam-instances#configure-iam-db-instance
 [add-iam-user]: https://cloud.google.com/sql/docs/postgres/create-manage-iam-users#creating-a-database-user
+
+### Post-Quantum Cryptography (PQC)
+
+The Cloud SQL Go Connector uses Go's standard `crypto/tls` package with default
+curve preferences for TLS 1.3 mTLS connections—it does not implement custom TLS
+or post-quantum cryptography logic. As a result, PQC behavior comes directly
+from the Go standard library:
+
+- **Default behavior (Go 1.24+):** When built with Go 1.24+ and `go >= 1.24` in
+  your application's main `go.mod` (required by `cloudsqlconn` `v1.19.0+`;
+  `v1.25.3+` requires `go >= 1.26.0`), `crypto/tls` automatically offers hybrid
+  `X25519MLKEM768` alongside classical `X25519` key shares in the TLS 1.3
+  `ClientHello` (Go 1.26+ also advertises `SecP256r1MLKEM768` and
+  `SecP384r1MLKEM1024` in `supported_groups`). If a Cloud SQL instance does not
+  yet support hybrid ML-KEM groups, the TLS 1.3 handshake falls back to
+  classical `X25519` automatically.
+- **Older `go.mod` directives:** If an application pins an older connector
+  release with `go 1.23` or earlier in its main `go.mod`, Go defaults to
+  `tlsmlkem=0` even when compiled with Go 1.24+; update the `go` directive to
+  `1.24+` or set `godebug tlsmlkem=1` to enable it.
+- **Opting out:** To disable all ML-KEM hybrid groups (`X25519MLKEM768`,
+  `SecP256r1MLKEM768`, and `SecP384r1MLKEM1024`) and restrict TLS handshakes to
+  classical curves, set `GODEBUG=tlsmlkem=0` at runtime (or `godebug tlsmlkem=0`
+  in `go.mod` / `//go:debug tlsmlkem=0` in `package main`).
+
+### Built-in Client Metrics (BETA)
+
+The connector reports client-side connection metrics to [Cloud Monitoring][]
+under the `cloudsql.googleapis.com/client/connector/` prefix, using the
+`cloudsql.googleapis.com/InstanceClient` monitored resource. These metrics
+help you (and Cloud SQL) spot connectivity regressions, for example a rise in
+failed dial attempts or in dial latency. **They are enabled by default.**
+
+| Metric | Description |
+| --- | --- |
+| `open_connection_count` | Dial attempts, labelled with `status` and `connection_part` |
+| `connect_latencies` | Dial latency distribution (ms) |
+| `open_connections` | Currently open connections |
+| `closed_connection_count` | Closed connections |
+| `connection_durations` | Connection lifetime distribution (s) |
+
+Metrics are written to the **Cloud SQL instance's project** using the same
+identity the connector uses for the Cloud SQL Admin API. That identity needs
+the `roles/monitoring.metricWriter` role on that project. If you pass your own
+token source or credentials (`WithTokenSource`, `WithCredentials`, or an
+impersonated credential), they must also carry the
+`https://www.googleapis.com/auth/monitoring.write` (or `cloud-platform`)
+scope; credentials the connector detects itself are scoped automatically.
+Export is strictly fail-open: it never affects connectivity. If the identity
+lacks the role or the scope, the connector logs one line per process
+explaining what to fix and retries with exponential backoff (up to once per
+hour); all further diagnostics go to the [debug logger](#debug-logging) only.
+
+In a non-default Cloud universe (a universe domain other than
+`googleapis.com`), built-in metrics are off unless you pass
+`WithBuiltInMetrics(true)`.
+
+The export is billed to the caller's project (for a service account, the
+project it belongs to), which must have the Cloud Monitoring API enabled.
+`WithQuotaProject` changes the billed project, as it does for the Cloud SQL
+Admin API.
+
+Hermetic tests that construct a `Dialer` against a mock Admin API
+(`WithAdminAPIEndpoint`, `WithHTTPClient`) should pass
+`WithBuiltInMetrics(false)` so the test does not try to reach Cloud
+Monitoring.
+
+To turn built-in metrics off:
+
+```go
+d, err := cloudsqlconn.NewDialer(ctx, cloudsqlconn.WithBuiltInMetrics(false))
+```
+
+Two optional labels can be set by the application:
+
+```go
+d, err := cloudsqlconn.NewDialer(ctx,
+    cloudsqlconn.WithApplicationName("my-service"),                      // application_name
+    cloudsqlconn.WithComputePlatform(cloudsqlconn.ComputePlatformCloudRun), // overrides auto-detection
+)
+```
+
+`application_name` identifies your application and groups its metrics across
+all of its instances. It is only ever the value you set here and is left empty
+otherwise; the connector does not infer it from the environment (instances are
+already told apart by `client_uid`, and `compute_platform` is auto-detected).
+
+`WithComputePlatform` accepts only the `ComputePlatform*` constants. To take
+the platform from a string such as a flag value, use
+`cloudsqlconn.ParseComputePlatform(s)`; `cloudsqlconn.ComputePlatforms()` lists
+the valid values for help text.
+
+Metrics are exported every 60 seconds and flushed when `Dialer.Close()` is
+called, so short-lived processes should close the Dialer before exiting.
+
+These metrics are in **BETA**: label values are documented in the metric
+descriptors and pinned by tests, but the feature is subject to the Cloud SQL
+pre-GA terms.
 
 ### Enabling Metrics and Tracing
 
@@ -543,6 +715,8 @@ considered unsupported.
 
 We follow the [Go Version Support Policy][go-policy] used by Google Cloud
 Libraries for Go.
+
+The minimum supported Go version is **Go 1.26**, as declared in `go.mod`.
 
 [go-policy]: https://github.com/googleapis/google-cloud-go#go-versions-supported
 

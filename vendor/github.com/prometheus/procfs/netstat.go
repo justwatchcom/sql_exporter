@@ -1,4 +1,4 @@
-// Copyright 2020 The Prometheus Authors
+// Copyright The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -61,7 +61,12 @@ func parseNetstat(filePath string) (NetStat, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Scan()
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return NetStat{}, err
+		}
+		return netStat, nil
+	}
 
 	// First string is always a header for stats
 	var headers []string
@@ -76,6 +81,10 @@ func parseNetstat(filePath string) (NetStat, error) {
 			}
 			netStat.Stats[headers[num]] = append(netStat.Stats[headers[num]], value)
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return NetStat{}, err
 	}
 
 	return netStat, nil

@@ -1,6 +1,6 @@
 package msgs
 
-// Copyright (c) 2019-2023 Open Text.
+// Copyright (c) 2019-2024 Open Text.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,6 +55,7 @@ type FEStartupMsg struct {
 	OAuthAccessToken string
 	ClientOSHostname string
 	Workload         string
+	Totp         	 string
 }
 
 // Flatten docs
@@ -109,6 +110,7 @@ func (m *FEStartupMsg) Flatten() ([]byte, byte) {
 	buf.appendLabeledString("protocol_compat", "VER")
 	buf.appendLabeledString("client_os_hostname", m.ClientOSHostname)
 	buf.appendLabeledString("workload", m.Workload)
+	buf.appendLabeledString("totp",m.Totp)
 	buf.appendBytes([]byte{0})
 
 	return buf.bytes(), 0
@@ -116,7 +118,7 @@ func (m *FEStartupMsg) Flatten() ([]byte, byte) {
 
 func (m *FEStartupMsg) String() string {
 	return fmt.Sprintf(
-		"Startup (packet): ProtocolVersion:%08X, DriverName='%s', DriverVersion='%s', UserName='%s', Database='%s', SessionID='%s', ClientPID=%d, ClientOS='%s', ClientOSUserName='%s', ClientOSHostname='%s', Autocommit='%s', OAuthAccessToken=<length:%d>, Workload='%s'",
+		"Startup (packet): ProtocolVersion:%08X, DriverName='%s', DriverVersion='%s', UserName='%s', Database='%s', SessionID='%s', ClientPID=%d, ClientOS='%s', ClientOSUserName='%s', ClientOSHostname='%s', Autocommit='%s', OAuthAccessToken=<length:%d>, Workload='%s', Totp='%s'",
 		m.ProtocolVersion,
 		m.DriverName,
 		m.DriverVersion,
@@ -129,5 +131,6 @@ func (m *FEStartupMsg) String() string {
 		m.ClientOSHostname,
 		m.Autocommit,
 		len(m.OAuthAccessToken),
-		m.Workload)
+		m.Workload,
+		m.Totp)
 }

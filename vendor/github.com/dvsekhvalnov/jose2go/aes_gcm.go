@@ -36,7 +36,7 @@ func (alg *AesGcm) Encrypt(aad, plainText, cek []byte) (iv, cipherText, authTag 
 	cekSizeBits := len(cek)<<3
 	
 	if cekSizeBits != alg.keySizeBits {
-		return nil,nil,nil, errors.New(fmt.Sprintf("AesGcm.Encrypt(): expected key of size %v bits, but was given %v bits.",alg.keySizeBits, cekSizeBits))
+		return nil,nil,nil, fmt.Errorf("AesGcm.Encrypt(): expected key of size %v bits, but was given %v bits.",alg.keySizeBits, cekSizeBits)
 	}			
 		
 	if iv,err = arrays.Random(12);err!=nil {

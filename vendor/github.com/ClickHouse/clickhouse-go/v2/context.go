@@ -1,29 +1,14 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package clickhouse
 
 import (
 	"context"
 	"maps"
+	"slices"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2/ext"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/ClickHouse/clickhouse-go/v2/ext"
 )
 
 var _contextOptionKey = &QueryOptions{
@@ -41,6 +26,12 @@ type CustomSetting struct {
 	Value string
 }
 
+// ColumnNameAndType represents a column name and type
+type ColumnNameAndType struct {
+	Name string
+	Type string
+}
+
 type Parameters map[string]string
 type (
 	QueryOption  func(*QueryOptions) error
@@ -49,21 +40,25 @@ type (
 		wait bool
 	}
 	QueryOptions struct {
-		span     trace.SpanContext
-		async    AsyncOptions
-		queryID  string
-		quotaKey string
-		events   struct {
+		span        trace.SpanContext
+		async       AsyncOptions
+		queryID     string
+		quotaKey    string
+		jwt         string
+		initialUser string
+		events      struct {
 			logs          func(*Log)
 			progress      func(*Progress)
 			profileInfo   func(*ProfileInfo)
 			profileEvents func([]ProfileEvent)
 		}
-		settings        Settings
-		parameters      Parameters
-		external        []*ext.Table
-		blockBufferSize uint8
-		userLocation    *time.Location
+		settings            Settings
+		parameters          Parameters
+		external            []*ext.Table
+		blockBufferSize     uint8
+		userLocation        *time.Location
+		columnNamesAndTypes []ColumnNameAndType
+		clientInfo          ClientInfo
 	}
 )
 
@@ -91,6 +86,41 @@ func WithBlockBufferSize(size uint8) QueryOption {
 func WithQuotaKey(quotaKey string) QueryOption {
 	return func(o *QueryOptions) error {
 		o.quotaKey = quotaKey
+		return nil
+	}
+}
+
+// WithJWT overrides the existing authentication with the given JWT.
+// This only applies for clients connected with HTTPS to ClickHouse Cloud.
+func WithJWT(jwt string) QueryOption {
+	return func(o *QueryOptions) error {
+		o.jwt = jwt
+		return nil
+	}
+}
+
+// WithInitialUser sets the user for interserver-secret queries.
+func WithInitialUser(user string) QueryOption {
+	return func(o *QueryOptions) error {
+		o.initialUser = user
+		return nil
+	}
+}
+
+// WithColumnNamesAndTypes supplies metadata for HTTP inserts.
+func WithColumnNamesAndTypes(columnNamesAndTypes []ColumnNameAndType) QueryOption {
+	return func(o *QueryOptions) error {
+		o.columnNamesAndTypes = columnNamesAndTypes
+		return nil
+	}
+}
+
+// WithClientInfo appends client info data to the query, visible in the system.query_log table.
+// This does not replace the client info provided in the connection options, it appends to it.
+// Can be called multiple times to append more info.
+func WithClientInfo(ci ClientInfo) QueryOption {
+	return func(o *QueryOptions) error {
+		o.clientInfo = o.clientInfo.Append(ci)
 		return nil
 	}
 }
@@ -144,6 +174,25 @@ func WithExternalTable(t ...*ext.Table) QueryOption {
 	}
 }
 
+// WithAsync enables async inserts. It sets `async_insert` to 1. When wait is true,
+// it sets `wait_for_async_insert` to 1, and the insert returns after the server
+// writes the data. When wait is false, it sets `wait_for_async_insert` to 0, and the
+// insert returns after the server receives the data.
+//
+// WithAsync applies to Exec and to batches from PrepareBatch, on the Native and HTTP
+// protocols. It overrides the same settings from WithSettings.
+//
+// A batch uses only the context that you give to PrepareBatch. With database/sql, a
+// batch uses only the context that you give to PrepareContext. The context that you
+// give to Stmt.ExecContext has no effect on the batch.
+func WithAsync(wait bool) QueryOption {
+	return func(o *QueryOptions) error {
+		o.async.ok, o.async.wait = true, wait
+		return nil
+	}
+}
+
+// Deprecated: use `WithAsync` instead.
 func WithStdAsync(wait bool) QueryOption {
 	return func(o *QueryOptions) error {
 		o.async.ok, o.async.wait = true, wait
@@ -220,6 +269,24 @@ func queryOptionsAsync(ctx context.Context) AsyncOptions {
 	return AsyncOptions{}
 }
 
+// applyAsyncInsertSettings adds the settings that make the server run an INSERT as an
+// async insert. wait selects if the server replies only after the data is flushed.
+func (q *QueryOptions) applyAsyncInsertSettings(wait bool) {
+	q.settings["async_insert"] = 1
+	q.settings["wait_for_async_insert"] = 0
+	if wait {
+		q.settings["wait_for_async_insert"] = 1
+	}
+}
+
+// applyBatchAsyncInsertSettings adds the async insert settings to a batch INSERT when
+// the context asks for an async insert with WithAsync.
+func (q *QueryOptions) applyBatchAsyncInsertSettings() {
+	if q.async.ok {
+		q.applyAsyncInsertSettings(q.async.wait)
+	}
+}
+
 // queryOptionsUserLocation returns the *time.Location within the given context's QueryOptions.
 func queryOptionsUserLocation(ctx context.Context) *time.Location {
 	if opt, ok := ctx.Value(_contextOptionKey).(QueryOptions); ok {
@@ -229,8 +296,21 @@ func queryOptionsUserLocation(ctx context.Context) *time.Location {
 	return nil
 }
 
+// WithoutProfileEvents instructs the server not to send profile events for this query.
+// This is a performance optimization for servers >= 25.11 that support the send_profile_events setting.
+// On older servers, the setting is unknown and the server will return an error.
+func WithoutProfileEvents() QueryOption {
+	return func(o *QueryOptions) error {
+		if o.settings == nil {
+			o.settings = make(Settings)
+		}
+		o.settings["send_profile_events"] = 0
+		return nil
+	}
+}
+
 func (q *QueryOptions) onProcess() *onProcess {
-	return &onProcess{
+	onProcess := &onProcess{
 		logs: func(logs []Log) {
 			if q.events.logs != nil {
 				for _, l := range logs {
@@ -248,37 +328,50 @@ func (q *QueryOptions) onProcess() *onProcess {
 				q.events.profileInfo(p)
 			}
 		},
-		profileEvents: func(events []ProfileEvent) {
-			if q.events.profileEvents != nil {
-				q.events.profileEvents(events)
-			}
-		},
 	}
+
+	profileEventsHandler := q.events.profileEvents
+	if profileEventsHandler != nil {
+		onProcess.profileEvents = func(events []ProfileEvent) {
+			profileEventsHandler(events)
+		}
+	}
+
+	return onProcess
 }
 
 // clone returns a copy of QueryOptions where Settings and Parameters are safely mutable.
 func (q *QueryOptions) clone() QueryOptions {
 	c := QueryOptions{
-		span:            q.span,
-		async:           q.async,
-		queryID:         q.queryID,
-		quotaKey:        q.quotaKey,
-		events:          q.events,
-		settings:        nil,
-		parameters:      nil,
-		external:        q.external,
-		blockBufferSize: q.blockBufferSize,
-		userLocation:    q.userLocation,
+		span:                q.span,
+		async:               q.async,
+		queryID:             q.queryID,
+		quotaKey:            q.quotaKey,
+		initialUser:         q.initialUser,
+		jwt:                 q.jwt,
+		events:              q.events,
+		settings:            nil,
+		parameters:          nil,
+		external:            q.external,
+		blockBufferSize:     q.blockBufferSize,
+		userLocation:        q.userLocation,
+		columnNamesAndTypes: nil,
 	}
 
 	if q.settings != nil {
-		c.settings = make(Settings, len(q.settings))
-		maps.Copy(c.settings, q.settings)
+		c.settings = maps.Clone(q.settings)
 	}
 
 	if q.parameters != nil {
-		c.parameters = make(Parameters, len(q.parameters))
-		maps.Copy(c.parameters, q.parameters)
+		c.parameters = maps.Clone(q.parameters)
+	}
+
+	if q.columnNamesAndTypes != nil {
+		c.columnNamesAndTypes = slices.Clone(q.columnNamesAndTypes)
+	}
+
+	if q.clientInfo.Products != nil || q.clientInfo.Comment != nil {
+		c.clientInfo = q.clientInfo.Append(ClientInfo{})
 	}
 
 	return c

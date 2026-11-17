@@ -1,35 +1,15 @@
-// Licensed to ClickHouse, Inc. under one or more contributor
-// license agreements. See the NOTICE file distributed with
-// this work for additional information regarding copyright
-// ownership. ClickHouse, Inc. licenses this file to you under
-// the Apache License, Version 2.0 (the "License"); you may
-// not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 package column
 
 import (
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
-	"regexp"
 	"strings"
+	"time"
+
+	"github.com/ClickHouse/ch-go/proto"
 )
 
-// column names which match this must be escaped - see https://clickhouse.com/docs/en/sql-reference/syntax/#identifiers
-var escapeColRegex = regexp.MustCompile("^[a-zA-Z_][0-9a-zA-Z_]*$")
-
 // to escape and unescape special chars
-var colEscape = strings.NewReplacer("`", "\\`", "\\", "\\\\")
 var colUnEscape = strings.NewReplacer("\\`", "`", "\\\\", "\\")
 
 type Type string
@@ -91,4 +71,12 @@ type Interface interface {
 type CustomSerialization interface {
 	ReadStatePrefix(*proto.Reader) error
 	WriteStatePrefix(*proto.Buffer) error
+}
+
+type ServerContext struct {
+	Revision     uint64
+	VersionMajor uint64
+	VersionMinor uint64
+	VersionPatch uint64
+	Timezone     *time.Location
 }

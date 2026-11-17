@@ -1,5 +1,313 @@
 # Changelog
 
+## [1.27.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.26.0...v1.27.0) (2026-11-11)
+
+
+### Features
+
+* add WithConnectTunnel dial option and Auto IAM support for SqlDataService ([#1208](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1208)) ([d7d5ff5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/d7d5ff5c45338483cf4c87eb3466e1343b47ac34))
+
+
+### Bug Fixes
+
+* **metrics:** classify resource_exhausted and api_call_failed dial errors ([#1222](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1222)) ([707f788](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/707f78898fd58bf26c304835a36a3edfc8dd85c6))
+* release lazy lock during probe, preserve per-dial IP type, and cap EOF drain ([#1210](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1210)) ([e549842](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/e5498420ee902086d4155b8dc61ad978d6bf4f1c))
+* send PostgreSQL v3 StartupMessage in proactive IAM refresh probe for MCP ([#1167](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1167)) ([90c4164](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/90c4164764aaeebaf77c86a315c1c95dfe09bc03))
+* update dependencies to latest ([#1220](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1220)) ([46bea00](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/46bea00dfe332ca27b902df8bbe853ff31ccda21))
+
+## [1.26.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.25.4...v1.26.0) (2026-10-29)
+
+
+### Features
+
+* add built-in client metrics exported to Cloud Monitoring, on by default (BETA) ([#1123](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1123)) ([a814420](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/a814420e08ecc14a9daa665583bc60038a737b26))
+
+## [1.25.4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.25.3...v1.25.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* Update dependencies ([#1171](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1171)) ([d6088c5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/d6088c54219bde77914df974e1e631bf3977fa51))
+* update all dependencies to latest ([#1170](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/pull/1170)) ([3414344](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/34143442345d4715fbc5bc3b94a863b7ad781878))
+
+### Security / CVE Fixes
+
+Updates `golang.org/x/net` from `v0.59.0` to `v0.61.0`, resolving the following HTTP/2 vulnerabilities:
+
+| Advisory | CVE | Description | Affected Package | Fixed Version |
+| --- | --- | --- | --- | --- |
+| [GO-2026-6603](https://pkg.go.dev/vuln/GO-2026-6603) | [CVE-2026-78659](https://nvd.nist.gov/vuln/detail/CVE-2026-78659) | HTTP/2 server memory exhaustion due to Trailer headers | `golang.org/x/net` | `v0.61.0` |
+| [GO-2026-6610](https://pkg.go.dev/vuln/GO-2026-6610) | [CVE-2026-78660](https://nvd.nist.gov/vuln/detail/CVE-2026-78660) | HTTP/2 transport accepts malformed framing-related headers | `golang.org/x/net` | `v0.61.0` |
+| [GO-2026-6611](https://pkg.go.dev/vuln/GO-2026-6611) | [CVE-2026-78669](https://nvd.nist.gov/vuln/detail/CVE-2026-78669) | Excessive CPU consumption from repeated initial window changes | `golang.org/x/net` | `v0.61.0` |
+| [GO-2026-6612](https://pkg.go.dev/vuln/GO-2026-6612) | [CVE-2026-78663](https://nvd.nist.gov/vuln/detail/CVE-2026-78663) | Double flow control refund on HTTP/2 server streams | `golang.org/x/net` | `v0.61.0` |
+| [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) | [CVE-2026-97032](https://nvd.nist.gov/vuln/detail/CVE-2026-97032) | HTTP/2 server crash due to HPACK encoder race | `golang.org/x/net` | `v0.61.0` |
+
+## [1.25.3](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.25.2...v1.25.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* update dependencies to the latest and require Go 1.26 ([#1163](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1163)) ([b8b6256](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/b8b6256256f0ff86e501a1a052d899d91ba5ceb5))
+
+## [1.25.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.25.1...v1.25.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* prioritize PSC auto-DNS names (.sql-psc.goog) and aggregate dial errors ([#1153](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1153)) ([390df16](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/390df1666d770be5ccc50ece29eeea9d45f88875))
+
+## [1.25.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.25.0...v1.25.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* Ensure that the SqlDataEndpoint includes the default port :443 ([#1148](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1148)) ([a399bd5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/a399bd587f4fd1ade5586b39a52f0d6d26b1c77d))
+
+## [1.25.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.24.0...v1.25.0) (2026-08-13)
+
+
+### Features
+
+* replace local generated gRPC client with GAPIC client library ([#1145](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1145)) ([5203f19](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/5203f19f378c5297a0112bd654fbd842b7f98489))
+
+
+### Bug Fixes
+
+* Optimize DNS resolution logic ([#1143](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1143)) ([ca3c760](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/ca3c760bd6b2a0b6da4116355656276ba1d98084))
+
+## [1.24.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.23.0...v1.24.0) (2026-08-07)
+
+
+### Features
+
+* implement cooldown on ResourceExhausted errors ([#1141](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1141)) ([5de0cf4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/5de0cf4e848173a30212ad7b582780b4e513e3c3))
+
+
+### Bug Fixes
+
+* Address code review comments on PSC DNS error handling ([#1140](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1140)) ([57703a5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/57703a50d85390a2fe36c51929b85397d1b03fa0))
+
+## [1.23.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.22.1...v1.23.0) (2026-07-23)
+
+
+### Features
+
+* Add PSC DNS and Global Write Endpoint support to Go Connector ([#1106](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1106)) ([7061e54](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/7061e54131545b26728f6b13455e7145f8a44a14))
+
+
+### Bug Fixes
+
+* Correctly identify unsupported instance edition error. ([#1130](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1130)) ([8e7ec2f](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/8e7ec2f75f3b9311f88b970ab1bb117fe61ac7c5))
+* update go dependencies ([#1134](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1134)) ([028e616](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/028e6166ffe72257db2e1ea34a205972b635e1d1))
+* use generated XML in integration tests workflow ([#1136](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1136)) ([87db30d](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/87db30df846a58e577707c1e1facd89bbcc8bfe3))
+
+## [1.22.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.22.0...v1.22.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* update dependencies to latest ([#1117](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1117)) ([92b91e3](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/92b91e34404eeb1191c11c4b2d1b6c1e709d54a2))
+
+## [1.22.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.21.2...v1.22.0) (2026-06-11)
+
+
+### Features
+
+* Support AI Developer Edition connections through the Cloud SQL Auth Proxy ([#1108](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1108)) ([116b2e5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/116b2e54fd2b5c521eac20de20af35228e41829a))
+
+## [1.21.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.21.1...v1.21.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#1111](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1111)) ([171276d](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/171276d5b4a47a470fb8203660e4bdc5b507c418))
+
+## [1.21.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.21.0...v1.21.1) (2026-05-20)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#1102](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1102)) ([728e01f](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/728e01f3f05505d672b7a7f43086e2a26fe9378a))
+
+## [1.21.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.20.2...v1.21.0) (2026-04-16)
+
+
+### Features
+
+* upgrade example go version to match minimum ([#1087](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1087)) ([c950a6c](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/c950a6c61b08c0c945b6604c2cb7ca0d4399c02d))
+
+### Bug Fixes
+
+* drop support for EOL pgxv4 driver ([#1085](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1085)) ([c950a6c](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/dbabe68264ff55e8cb2ae701dc6c18c3c37cc3e4))
+
+## [1.20.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.20.1...v1.20.2) (2026-03-17)
+
+
+### Bug Fixes
+
+* update dependencies to latest ([#1075](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1075)) ([cd61b59](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/cd61b599369c812e186add6a65bbca011332e04d))
+* Deprecate support for pgx v4. The pgx v4 library was declared end life by its maintainer as of July 2025. We will remove support for the Cloud SQL Connector in July 2026
+
+## [1.20.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.20.0...v1.20.1) (2026-02-17)
+
+
+### Bug Fixes
+
+* bump golang.org/x/crypto in /examples/cloudrun/sqlserver ([#1046](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1046)) ([2191390](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/219139070bd2f0fac6b3b051d6f876f42c311bfb))
+
+## [1.20.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.19.1...v1.20.0) (2026-01-12)
+
+
+### Features
+
+* Use configured DNS name to lookup instance IP address ([#1054](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1054)) ([976120e](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/976120e83581578423ffcb817b2a1b5244ced3d8)), closes [#1053](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1053)
+
+## [1.19.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.19.0...v1.19.1) (2025-12-09)
+
+
+### Bug Fixes
+
+* Update dependency versions. ([#1049](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1049)) ([15d6f5c](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/15d6f5c30c9e4ca6626163d1efb906a5c5ce7acb))
+
+## [1.19.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.18.1...v1.19.0) (2025-10-23)
+
+
+### Features
+
+* Add support for the Metadata Exchange protocol ([#1011](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1011)) ([cea84c1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/cea84c150b10f49cdd3deca4eb940654e307d119))
+
+
+### Bug Fixes
+
+* add important message to readme that show incompatibility with c… ([#1028](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1028)) ([6b1d73a](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/6b1d73a9d9cdb3d2a1fd0ed1866fcf65123de620))
+* fix deps on go.mod and go.sum ([#1035](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1035)) ([b8d7eea](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/b8d7eea4a02fdd20efa298e0111d9039e1ed3749))
+* fix logmessage for usage with domain names ([#1006](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1006)) ([2832e33](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/2832e3357804a93b11036f002737694ee500bc7a))
+* update go and toolchain to 1.25.x ([#1036](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1036)) ([bd772ba](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/bd772ba2d45b600d30d759f967433c89aac91b53))
+* update renovate go contraint from 1.23 to 1.24 ([#1033](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1033)) ([de9d0e2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/de9d0e2e9515f263914bce5ec3b968dfc6ecc376))
+
+## [1.18.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.18.0...v1.18.1) (2025-08-27)
+
+
+### Bug Fixes
+
+* Use a new context for the domain name check loop. ([#1007](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/1007)) ([908d0cf](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/908d0cf6a69fc37d56aea4823ff5b9dfc673dc42))
+
+## [1.18.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.17.3...v1.18.0) (2025-08-12)
+
+
+### Features
+
+* Configure the connector with Google Auth Credentials. ([#997](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/997)) ([594e083](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/594e0834437e9541d61d10d7b137ae3d6d5210e5))
+
+## [1.17.3](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.17.2...v1.17.3) (2025-07-10)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#993](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/993)) ([c0e5f9c](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/c0e5f9cad6d7b01c465435e9ca113fc693135106))
+
+## [1.17.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.17.1...v1.17.2) (2025-06-10)
+
+
+### Bug Fixes
+
+* reduce the number of memory allocations and the latency overhead. ([#983](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/983)) ([cb641f2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/cb641f223ebfe408d7162e8f50b0ac1e439dfe18))
+
+## [1.17.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.17.0...v1.17.1) (2025-05-21)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#985](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/985)) ([865b93a](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/865b93ac994b8996b56f20840abc7084502cc4a3))
+
+## [1.17.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.16.1...v1.17.0) (2025-04-24)
+
+
+### Features
+
+* Update TLS validation to use both SAN and CN fields. ([#979](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/979)) ([df60a20](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/df60a2061dbfd78ce30a87319be8d8e027957d86))
+
+## [1.16.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.16.0...v1.16.1) (2025-04-16)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#968](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/968)) ([bb3c9f4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/bb3c9f4cb37fbb86a396fc716992c2ac82dcbcff))
+
+## [1.16.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.15.0...v1.16.0) (2025-03-19)
+
+
+### Features
+
+* add domain name validation ([#925](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/925)) ([986152f](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/986152ff1b733ad70b43bad1d22a450376ce5021))
+* Use standard TLS hostname validation for instances with DNS names ([#954](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/954)) ([d733a16](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/d733a161c5020a1013151a11ec385eba5ea50ce5))
+
+## [1.15.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.14.2...v1.15.0) (2025-02-12)
+
+
+### Features
+
+* add support for Go 1.24 and drop Go 1.22 ([#942](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/942)) ([e10fbd2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/e10fbd2f790bc17fc7eb72ea785b11efddfb451f))
+
+
+### Bug Fixes
+
+* Refresh client cert when CA rotation ([#934](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/934)) ([c22e2d4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/c22e2d4e861df7cf317af16c1015d40811dae3d8)), closes [#932](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/932)
+
+## [1.14.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.14.1...v1.14.2) (2025-01-30)
+
+
+### Bug Fixes
+
+* pass headers to transport ([#928](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/928)) ([08be3ab](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/08be3aba5c5d2a6a69c370e1a2772b2f73435a1f))
+
+## [1.14.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.14.0...v1.14.1) (2025-01-23)
+
+
+### Bug Fixes
+
+* correct default usage for `WithQuotaProject` and `WithUserAgent` ([#920](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/920)) ([8520c3d](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/8520c3d938e5011eb77ff5b5dc08c4e94e691a16))
+
+## [1.14.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.13.2...v1.14.0) (2025-01-14)
+
+
+### Features
+
+* Custom SAN Support ([#911](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/911)) ([772fae4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/772fae4ffdf19c3f4fb8e024845c976008e1e30f))
+* drop support for Go 1.21 ([#906](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/906)) ([12c1618](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/12c1618f3c29aad0d32f16dcf445b57422380137))
+* Support server certificates from a private CA ([#899](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/pull/899)) ([a8ed925](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/a8ed9259825912f78b2c111d9c38f7b00b6eee94))
+
+
+### Bug Fixes
+
+* use auth DetectDefault over oauth2 FindDefaultCredentials ([#909](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/909)) ([52fef27](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/52fef27f82bb4c47c3ee96a06a2046da99d77225))
+
+## [1.13.2](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.13.1...v1.13.2) (2024-12-10)
+
+
+### Bug Fixes
+
+* bump dependencies to latest ([#893](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/893)) ([4467ed4](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/4467ed4e8456c453fd5b616d02eeaeed41d5d921))
+
+## [1.13.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.13.0...v1.13.1) (2024-11-20)
+
+
+### Bug Fixes
+
+* update dependencies to latest ([#884](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/884)) ([dc85de5](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/dc85de51bda5eb7d5c28b691dd847a4d1e5ef953))
+
+## [1.13.0](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.12.1...v1.13.0) (2024-10-23)
+
+
+### Features
+
+* Automatically reset connection when the DNS record changes. ([#868](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/868)) ([4d7abd8](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/4d7abd877edf5fba3173b69e14181b6ddf911b24))
+
+
+### Bug Fixes
+
+* update bytes_sent and bytes_received to use Sum ([#874](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/issues/874)) ([73b6f38](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/commit/73b6f3860ef28dedd995a41b74b5f12168d3ff06))
+
 ## [1.12.1](https://github.com/GoogleCloudPlatform/cloud-sql-go-connector/compare/v1.12.0...v1.12.1) (2024-09-19)
 
 

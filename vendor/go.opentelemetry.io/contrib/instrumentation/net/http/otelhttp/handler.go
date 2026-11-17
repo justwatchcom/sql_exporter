@@ -1,19 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otelhttp // import "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+package otelhttp
 
 import (
 	"net/http"
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/request"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/semconv"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // middleware is an http middleware which wraps the next handler in a span.
@@ -21,21 +22,17 @@ type middleware struct {
 	operation string
 	server    string
 
-	tracer            trace.Tracer
-	propagators       propagation.TextMapPropagator
-	spanStartOptions  []trace.SpanStartOption
-	readEvent         bool
-	writeEvent        bool
-	filters           []Filter
-	spanNameFormatter func(string, *http.Request) string
-	publicEndpoint    bool
-	publicEndpointFn  func(*http.Request) bool
+	tracer             trace.Tracer
+	propagators        propagation.TextMapPropagator
+	spanStartOptions   []trace.SpanStartOption
+	readEvent          bool
+	writeEvent         bool
+	filters            []Filter
+	spanNameFormatter  func(string, *http.Request) string
+	publicEndpointFn   func(*http.Request) bool
+	metricAttributesFn func(*http.Request) []attribute.KeyValue
 
 	semconv semconv.HTTPServer
-}
-
-func defaultHandlerFormatter(operation string, _ *http.Request) string {
-	return operation
 }
 
 // NewHandler wraps the passed handler in a span named after the operation and
@@ -54,11 +51,16 @@ func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Han
 
 	defaultOpts := []Option{
 		WithSpanOptions(trace.WithSpanKind(trace.SpanKindServer)),
-		WithSpanNameFormatter(defaultHandlerFormatter),
 	}
 
 	c := newConfig(append(defaultOpts, opts...)...)
 	h.configure(c)
+
+	if h.spanNameFormatter == nil {
+		h.spanNameFormatter = func(_ string, r *http.Request) string {
+			return h.semconv.SpanName(r)
+		}
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,16 +77,10 @@ func (h *middleware) configure(c *config) {
 	h.writeEvent = c.WriteEvent
 	h.filters = c.Filters
 	h.spanNameFormatter = c.SpanNameFormatter
-	h.publicEndpoint = c.PublicEndpoint
 	h.publicEndpointFn = c.PublicEndpointFn
 	h.server = c.ServerName
 	h.semconv = semconv.NewHTTPServer(c.Meter)
-}
-
-func handleErr(err error) {
-	if err != nil {
-		otel.Handle(err)
-	}
+	h.metricAttributesFn = c.MetricAttributesFn
 }
 
 // serveHTTP sets up tracing and calls the given next http.Handler with the span
@@ -101,11 +97,11 @@ func (h *middleware) serveHTTP(w http.ResponseWriter, r *http.Request, next http
 
 	ctx := h.propagators.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 	opts := []trace.SpanStartOption{
-		trace.WithAttributes(h.semconv.RequestTraceAttrs(h.server, r)...),
+		trace.WithAttributes(h.semconv.RequestTraceAttrs(h.server, r, semconv.RequestTraceAttrsOpts{})...),
 	}
 
 	opts = append(opts, h.spanStartOptions...)
-	if h.publicEndpoint || (h.publicEndpointFn != nil && h.publicEndpointFn(r.WithContext(ctx))) {
+	if h.publicEndpointFn != nil && h.publicEndpointFn(r.WithContext(ctx)) {
 		opts = append(opts, trace.WithNewRoot())
 		// Linking incoming span context if any for public endpoint.
 		if s := trace.SpanContextFromContext(ctx); s.IsValid() && s.IsRemote() {
@@ -123,13 +119,18 @@ func (h *middleware) serveHTTP(w http.ResponseWriter, r *http.Request, next http
 		}
 	}
 
+	if startTime := StartTimeFromContext(ctx); !startTime.IsZero() {
+		opts = append(opts, trace.WithTimestamp(startTime))
+		requestStartTime = startTime
+	}
+
 	ctx, span := tracer.Start(ctx, h.spanNameFormatter(h.operation, r), opts...)
 	defer span.End()
 
 	readRecordFunc := func(int64) {}
 	if h.readEvent {
-		readRecordFunc = func(n int64) {
-			span.AddEvent("read", trace.WithAttributes(ReadBytesKey.Int64(n)))
+		readRecordFunc = func(int64) {
+			span.AddEvent("read")
 		}
 	}
 
@@ -138,13 +139,19 @@ func (h *middleware) serveHTTP(w http.ResponseWriter, r *http.Request, next http
 	// ReadCloser fulfills a certain interface and it is indeed nil or NoBody.
 	bw := request.NewBodyWrapper(r.Body, readRecordFunc)
 	if r.Body != nil && r.Body != http.NoBody {
+		origReq := r
+		prevBody := r.Body
 		r.Body = bw
+
+		// Restore the original body after the request is processed to avoid issues
+		// with extra wrapper since `http/server.go` later checks type of `r.Body`.
+		defer func() { origReq.Body = prevBody }()
 	}
 
 	writeRecordFunc := func(int64) {}
 	if h.writeEvent {
-		writeRecordFunc = func(n int64) {
-			span.AddEvent("write", trace.WithAttributes(WroteBytesKey.Int64(n)))
+		writeRecordFunc = func(int64) {
+			span.AddEvent("write")
 		}
 	}
 
@@ -173,45 +180,54 @@ func (h *middleware) serveHTTP(w http.ResponseWriter, r *http.Request, next http
 	if !found {
 		ctx = ContextWithLabeler(ctx, labeler)
 	}
+	rCtx := r.WithContext(ctx)
+	defer func() {
+		// Copy MultipartForm back to the original request so net/http can
+		// find and remove any temp files ParseMultipartForm created on the
+		// copy. Deferred so the copy-back also runs during panic unwinding,
+		// letting net/http cleanup paths that still run (HTTP/2 handler
+		// recovery, outer recovery middleware) find the form.
+		if rCtx.MultipartForm != nil {
+			r.MultipartForm = rCtx.MultipartForm
+		}
+	}()
+	next.ServeHTTP(w, rCtx)
 
-	next.ServeHTTP(w, r.WithContext(ctx))
+	if rCtx.Pattern != "" {
+		span.SetName(h.spanNameFormatter(h.operation, rCtx))
+	}
 
 	statusCode := rww.StatusCode()
 	bytesWritten := rww.BytesWritten()
 	span.SetStatus(h.semconv.Status(statusCode))
+	bytesRead := bw.BytesRead()
 	span.SetAttributes(h.semconv.ResponseTraceAttrs(semconv.ResponseTelemetry{
 		StatusCode: statusCode,
-		ReadBytes:  bw.BytesRead(),
+		ReadBytes:  bytesRead,
 		ReadError:  bw.Error(),
 		WriteBytes: bytesWritten,
 		WriteError: rww.Error(),
 	})...)
 
-	// Use floating point division here for higher precision (instead of Millisecond method).
-	elapsedTime := float64(time.Since(requestStartTime)) / float64(time.Millisecond)
-
-	h.semconv.RecordMetrics(ctx, semconv.MetricData{
-		ServerName:           h.server,
-		Req:                  r,
-		StatusCode:           statusCode,
-		AdditionalAttributes: labeler.Get(),
-		RequestSize:          bw.BytesRead(),
-		ResponseSize:         bytesWritten,
-		ElapsedTime:          elapsedTime,
+	h.semconv.RecordMetrics(ctx, semconv.ServerMetricData{
+		ServerName:   h.server,
+		ResponseSize: bytesWritten,
+		MetricAttributes: semconv.MetricAttributes{
+			Req:                  rCtx,
+			StatusCode:           statusCode,
+			AdditionalAttributes: append(labeler.Get(), h.metricAttributesFromRequest(rCtx)...),
+		},
+		MetricData: semconv.MetricData{
+			RequestSize:     bytesRead,
+			RequestDuration: time.Since(requestStartTime),
+		},
 	})
 }
 
-// WithRouteTag annotates spans and metrics with the provided route name
-// with HTTP route attribute.
-func WithRouteTag(route string, h http.Handler) http.Handler {
-	attr := semconv.NewHTTPServer(nil).Route(route)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		span := trace.SpanFromContext(r.Context())
-		span.SetAttributes(attr)
-
-		labeler, _ := LabelerFromContext(r.Context())
-		labeler.Add(attr)
-
-		h.ServeHTTP(w, r)
-	})
+func (h *middleware) metricAttributesFromRequest(r *http.Request) []attribute.KeyValue {
+	var attributeForRequest []attribute.KeyValue
+	if h.metricAttributesFn != nil {
+		attributeForRequest = h.metricAttributesFn(r)
+	}
+	return attributeForRequest
 }

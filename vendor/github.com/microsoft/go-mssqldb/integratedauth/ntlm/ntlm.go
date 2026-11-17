@@ -57,11 +57,24 @@ const _NEGOTIATE_FLAGS = _NEGOTIATE_UNICODE |
 	_NEGOTIATE_ALWAYS_SIGN |
 	_NEGOTIATE_EXTENDED_SESSIONSECURITY
 
+const (
+	AV_PAIR_MsvAvChannelBindings = 0x000A
+)
+
 type Auth struct {
-	Domain      string
-	UserName    string
-	Password    string
-	Workstation string
+	Domain         string
+	UserName       string
+	Password       string
+	Workstation    string
+	ChannelBinding []byte
+}
+
+func (auth *Auth) SetChannelBinding(channelBinding *integratedauth.ChannelBindings) {
+	if channelBinding.Type == integratedauth.ChannelBindingsTypeTLSExporter {
+		auth.ChannelBinding = channelBinding.ApplicationData
+	} else {
+		auth.ChannelBinding = channelBinding.Md5Hash()
+	}
 }
 
 // getAuth returns an authentication handle Auth to provide authentication content
@@ -72,10 +85,11 @@ func getAuth(config msdsn.Config) (integratedauth.IntegratedAuthenticator, error
 	}
 	domainUser := strings.SplitN(config.User, "\\", 2)
 	return &Auth{
-		Domain:      domainUser[0],
-		UserName:    domainUser[1],
-		Password:    config.Password,
-		Workstation: config.Workstation,
+		Domain:         domainUser[0],
+		UserName:       domainUser[1],
+		Password:       config.Password,
+		Workstation:    config.Workstation,
+		ChannelBinding: []byte{},
 	}, nil
 }
 
@@ -243,7 +257,7 @@ func getNTLMv2AndLMv2ResponsePayloads(userDomain, username, password string, cha
 	return
 }
 
-func negotiateExtendedSessionSecurity(flags uint32, message []byte, challenge [8]byte, username, password, userDom string) (lm, nt []byte, err error) {
+func negotiateExtendedSessionSecurity(flags uint32, message []byte, challenge [8]byte, username, password, userDom string, channelBinding []byte) (lm, nt []byte, err error) {
 	nonce := clientChallenge()
 
 	// Official specification: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/b38c36ed-2804-4868-a9ff-8dd3182128e4
@@ -252,6 +266,19 @@ func negotiateExtendedSessionSecurity(flags uint32, message []byte, challenge [8
 		targetInfoFields, err := getNTLMv2TargetInfoFields(message)
 		if err != nil {
 			return lm, nt, err
+		}
+
+		if len(channelBinding) > 0 {
+			av_pair_cb := make([]byte, 4)
+			// Create the AV_PAIR structure for channel bindings as specified in MS-NLMP.
+			// Set AvId to MsvAvChannelBindings and AvLen to the length of the channel binding data.
+			// See: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e
+			binary.LittleEndian.PutUint16(av_pair_cb[0:2], AV_PAIR_MsvAvChannelBindings)
+			binary.LittleEndian.PutUint16(av_pair_cb[2:4], uint16(len(channelBinding)))
+			av_pair_cb = append(av_pair_cb, channelBinding...)
+
+			targetInfoFields = append(targetInfoFields[:len(targetInfoFields)-4], av_pair_cb...)
+			targetInfoFields = append(targetInfoFields, 0, 0, 0, 0)
 		}
 
 		nt, lm = getNTLMv2AndLMv2ResponsePayloads(userDom, username, password, challenge, nonce, targetInfoFields, time.Now())
@@ -277,15 +304,32 @@ func getNTLMv2TargetInfoFields(type2Message []byte) (info []byte, err error) {
 
 	targetNameAllocated := binary.LittleEndian.Uint16(type2Message[14:16])
 	targetNameOffset := binary.LittleEndian.Uint32(type2Message[16:20])
-	endOfOffset := int(targetNameOffset + uint32(targetNameAllocated))
-	if type2MessageLength < endOfOffset {
+	// Use 64-bit arithmetic so a server-controlled offset near the uint32
+	// maximum cannot overflow and bypass the bounds check below.
+	endOfOffset := int64(targetNameOffset) + int64(targetNameAllocated)
+	if int64(type2MessageLength) < endOfOffset {
 		return nil, fmt.Errorf(type2MessageError, type2MessageLength, endOfOffset)
 	}
 
+	// The target information header fields live at offsets 42-48. A malformed
+	// or truncated challenge message may be long enough to pass the checks
+	// above but too short to contain these fields, so validate before reading
+	// to avoid an out-of-bounds slice read.
+	if type2MessageLength < 48 {
+		return nil, fmt.Errorf(type2MessageError, type2MessageLength, 48)
+	}
+
 	targetInformationAllocated := binary.LittleEndian.Uint16(type2Message[42:44])
+	// A well-formed target information block is an AV_PAIR list terminated by
+	// the 4-byte MsvAvEOL pair. The channel-binding path assumes those final
+	// 4 bytes exist (it slices targetInfoFields[:len-4]), so a block shorter
+	// than 4 bytes is malformed and would cause a negative slice index panic.
+	if targetInformationAllocated < 4 {
+		return nil, fmt.Errorf("mssql: NTLMv2 type 2 message target information length %d too small, minimum 4", targetInformationAllocated)
+	}
 	targetInformationDataOffset := binary.LittleEndian.Uint32(type2Message[44:48])
-	endOfOffset = int(targetInformationDataOffset + uint32(targetInformationAllocated))
-	if type2MessageLength < endOfOffset {
+	endOfOffset = int64(targetInformationDataOffset) + int64(targetInformationAllocated)
+	if int64(type2MessageLength) < endOfOffset {
 		return nil, fmt.Errorf(type2MessageError, type2MessageLength, endOfOffset)
 	}
 
@@ -361,7 +405,20 @@ func buildNTLMResponsePayload(lm, nt []byte, flags uint32, domain, workstation, 
 	return msg, nil
 }
 
+// minChallengeMessageSize is the minimum size in bytes of a well-formed
+// NTLM Type 2 (CHALLENGE) message. NextBytes reads the signature (0:8),
+// message type (8:12), flags (20:24) and server challenge (24:32) fields
+// directly, so a shorter buffer would cause an out-of-bounds slice panic.
+const minChallengeMessageSize = 32
+
 func (auth *Auth) NextBytes(bytes []byte) ([]byte, error) {
+	// A malicious or on-path server can send a truncated challenge message.
+	// Validate the length before slicing to avoid an out-of-bounds panic
+	// (Denial of Service).
+	if len(bytes) < minChallengeMessageSize {
+		return nil, errorNTLM
+	}
+
 	signature := string(bytes[0:8])
 	if signature != "NTLMSSP\x00" {
 		return nil, errorNTLM
@@ -376,7 +433,7 @@ func (auth *Auth) NextBytes(bytes []byte) ([]byte, error) {
 	copy(challenge[:], bytes[24:32])
 	flags := binary.LittleEndian.Uint32(bytes[20:24])
 	if (flags & _NEGOTIATE_EXTENDED_SESSIONSECURITY) != 0 {
-		lm, nt, err := negotiateExtendedSessionSecurity(flags, bytes, challenge, auth.UserName, auth.Password, auth.Domain)
+		lm, nt, err := negotiateExtendedSessionSecurity(flags, bytes, challenge, auth.UserName, auth.Password, auth.Domain, auth.ChannelBinding)
 		if err != nil {
 			return nil, err
 		}

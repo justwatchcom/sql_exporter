@@ -1,4 +1,4 @@
-// Copyright 2023 Prometheus Team
+// Copyright The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -32,9 +32,9 @@ type TLSStat struct {
 	TLSCurrTxDevice int
 	// number of RX sessions currently installed where NIC handles cryptography
 	TLSCurrRxDevice int
-	//number of TX sessions opened with host cryptography
+	// number of TX sessions opened with host cryptography
 	TLSTxSw int
-	//number of RX sessions opened with host cryptography
+	// number of RX sessions opened with host cryptography
 	TLSRxSw int
 	// number of TX sessions opened with NIC cryptography
 	TLSTxDevice int

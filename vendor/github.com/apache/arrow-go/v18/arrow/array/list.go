@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/bitutil"
@@ -51,7 +50,7 @@ var _ ListLike = (*List)(nil)
 // NewListData returns a new List array value, from data.
 func NewListData(data arrow.ArrayData) *List {
 	a := &List{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -113,6 +112,13 @@ func (a *List) GetOneForMarshal(i int) interface{} {
 	return json.RawMessage(v)
 }
 
+func (a *List) ValueAsAny(i int) any {
+	return valueAsAnyFromListLike(a, i)
+}
+
+func (a *List) Validate() error     { return validateListArray(a, false) }
+func (a *List) ValidateFull() error { return validateListArray(a, true) }
+
 func (a *List) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -131,22 +137,8 @@ func (a *List) MarshalJSON() ([]byte, error) {
 }
 
 func arrayEqualList(left, right *List) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		o := func() bool {
-			l := left.newListValue(i)
-			defer l.Release()
-			r := right.newListValue(i)
-			defer r.Release()
-			return Equal(l, r)
-		}()
-		if !o {
-			return false
-		}
-	}
-	return true
+	return arrayEqualListOffsets(left.values, right.values, left.offsets, right.offsets,
+		left.data.offset, right.data.offset, left.Len(), left.NullBitmapBytes())
 }
 
 // Len returns the number of elements in the array.
@@ -165,8 +157,8 @@ func (a *List) Release() {
 }
 
 func (a *List) ValueOffsets(i int) (start, end int64) {
-	debug.Assert(i >= 0 && i < a.array.data.length, "index out of range")
-	j := i + a.array.data.offset
+	debug.Assert(i >= 0 && i < a.data.length, "index out of range")
+	j := i + a.data.offset
 	start, end = int64(a.offsets[j]), int64(a.offsets[j+1])
 	return
 }
@@ -183,7 +175,7 @@ var _ ListLike = (*LargeList)(nil)
 // NewLargeListData returns a new LargeList array value, from data.
 func NewLargeListData(data arrow.ArrayData) *LargeList {
 	a := new(LargeList)
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -245,6 +237,13 @@ func (a *LargeList) GetOneForMarshal(i int) interface{} {
 	return json.RawMessage(v)
 }
 
+func (a *LargeList) ValueAsAny(i int) any {
+	return valueAsAnyFromListLike(a, i)
+}
+
+func (a *LargeList) Validate() error     { return validateLargeListArray(a, false) }
+func (a *LargeList) ValidateFull() error { return validateLargeListArray(a, true) }
+
 func (a *LargeList) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -263,22 +262,8 @@ func (a *LargeList) MarshalJSON() ([]byte, error) {
 }
 
 func arrayEqualLargeList(left, right *LargeList) bool {
-	for i := 0; i < left.Len(); i++ {
-		if left.IsNull(i) {
-			continue
-		}
-		o := func() bool {
-			l := left.newListValue(i)
-			defer l.Release()
-			r := right.newListValue(i)
-			defer r.Release()
-			return Equal(l, r)
-		}()
-		if !o {
-			return false
-		}
-	}
-	return true
+	return arrayEqualListOffsets(left.values, right.values, left.offsets, right.offsets,
+		left.data.offset, right.data.offset, left.Len(), left.NullBitmapBytes())
 }
 
 // Len returns the number of elements in the array.
@@ -287,8 +272,8 @@ func (a *LargeList) Len() int { return a.array.Len() }
 func (a *LargeList) Offsets() []int64 { return a.offsets }
 
 func (a *LargeList) ValueOffsets(i int) (start, end int64) {
-	debug.Assert(i >= 0 && i < a.array.data.length, "index out of range")
-	j := i + a.array.data.offset
+	debug.Assert(i >= 0 && i < a.data.length, "index out of range")
+	j := i + a.data.offset
 	start, end = a.offsets[j], a.offsets[j+1]
 	return
 }
@@ -337,30 +322,34 @@ type LargeListBuilder struct {
 // The created list builder will create a list whose elements will be of type etype.
 func NewListBuilder(mem memory.Allocator, etype arrow.DataType) *ListBuilder {
 	offsetBldr := NewInt32Builder(mem)
-	return &ListBuilder{
+	lb := &ListBuilder{
 		baseListBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, etype),
 			offsets:         offsetBldr,
 			dt:              arrow.ListOf(etype),
 			appendOffsetVal: func(o int) { offsetBldr.Append(int32(o)) },
 		},
 	}
+	lb.refCount.Add(1)
+	return lb
 }
 
 // NewListBuilderWithField takes a field to use for the child rather than just
 // a datatype to allow for more customization.
 func NewListBuilderWithField(mem memory.Allocator, field arrow.Field) *ListBuilder {
 	offsetBldr := NewInt32Builder(mem)
-	return &ListBuilder{
+	lb := &ListBuilder{
 		baseListBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, field.Type),
 			offsets:         offsetBldr,
 			dt:              arrow.ListOfField(field),
 			appendOffsetVal: func(o int) { offsetBldr.Append(int32(o)) },
 		},
 	}
+	lb.refCount.Add(1)
+	return lb
 }
 
 func (b *baseListBuilder) Type() arrow.DataType {
@@ -381,38 +370,42 @@ func (b *baseListBuilder) Type() arrow.DataType {
 // The created list builder will create a list whose elements will be of type etype.
 func NewLargeListBuilder(mem memory.Allocator, etype arrow.DataType) *LargeListBuilder {
 	offsetBldr := NewInt64Builder(mem)
-	return &LargeListBuilder{
+	llb := &LargeListBuilder{
 		baseListBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, etype),
 			offsets:         offsetBldr,
 			dt:              arrow.LargeListOf(etype),
 			appendOffsetVal: func(o int) { offsetBldr.Append(int64(o)) },
 		},
 	}
+	llb.refCount.Add(1)
+	return llb
 }
 
 // NewLargeListBuilderWithField takes a field rather than just an element type
 // to allow for more customization of the final type of the LargeList Array
 func NewLargeListBuilderWithField(mem memory.Allocator, field arrow.Field) *LargeListBuilder {
 	offsetBldr := NewInt64Builder(mem)
-	return &LargeListBuilder{
+	llb := &LargeListBuilder{
 		baseListBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, field.Type),
 			offsets:         offsetBldr,
 			dt:              arrow.LargeListOfField(field),
 			appendOffsetVal: func(o int) { offsetBldr.Append(int64(o)) },
 		},
 	}
+	llb.refCount.Add(1)
+	return llb
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *baseListBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -420,11 +413,29 @@ func (b *baseListBuilder) Release() {
 		b.values.Release()
 		b.offsets.Release()
 	}
-
 }
 
 func (b *baseListBuilder) appendNextOffset() {
 	b.appendOffsetVal(b.values.Len())
+}
+
+func unsafeAppendRepeatedInt(builder Builder, value, n int) {
+	switch builder := builder.(type) {
+	case *Int32Builder:
+		end := builder.length + n
+		for i := builder.length; i < end; i++ {
+			builder.rawData[i] = int32(value)
+		}
+		builder.unsafeAppendBoolsToBitmap(nil, n)
+	case *Int64Builder:
+		end := builder.length + n
+		for i := builder.length; i < end; i++ {
+			builder.rawData[i] = int64(value)
+		}
+		builder.unsafeAppendBoolsToBitmap(nil, n)
+	default:
+		panic(fmt.Sprintf("arrow/array: unsupported list dimension builder %T", builder))
+	}
 }
 
 func (b *baseListBuilder) Append(v bool) {
@@ -444,9 +455,15 @@ func (b *baseListBuilder) AppendNull() {
 }
 
 func (b *baseListBuilder) AppendNulls(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendNull()
+	if n <= 0 {
+		return
 	}
+
+	b.Reserve(n)
+	bitutil.SetBitsTo(b.nullBitmap.Bytes(), int64(b.length), int64(n), false)
+	b.length += n
+	b.nulls += n
+	unsafeAppendRepeatedInt(b.offsets, b.values.Len(), n)
 }
 
 func (b *baseListBuilder) AppendEmptyValue() {
@@ -454,21 +471,25 @@ func (b *baseListBuilder) AppendEmptyValue() {
 }
 
 func (b *baseListBuilder) AppendEmptyValues(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendEmptyValue()
+	if n <= 0 {
+		return
 	}
+
+	b.Reserve(n)
+	b.unsafeAppendBoolsToBitmap(nil, n)
+	unsafeAppendRepeatedInt(b.offsets, b.values.Len(), n)
 }
 
 func (b *ListBuilder) AppendValues(offsets []int32, valid []bool) {
 	b.Reserve(len(valid))
 	b.offsets.(*Int32Builder).AppendValues(offsets, nil)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(valid))
+	b.unsafeAppendBoolsToBitmap(valid, len(valid))
 }
 
 func (b *LargeListBuilder) AppendValues(offsets []int64, valid []bool) {
 	b.Reserve(len(valid))
 	b.offsets.(*Int64Builder).AppendValues(offsets, nil)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(valid))
+	b.unsafeAppendBoolsToBitmap(valid, len(valid))
 }
 
 func (b *baseListBuilder) unsafeAppendBoolToBitmap(isValid bool) {
@@ -488,7 +509,7 @@ func (b *baseListBuilder) init(capacity int) {
 // Reserve ensures there is enough space for appending n elements
 // by checking the capacity and calling Resize if necessary.
 func (b *baseListBuilder) Reserve(n int) {
-	b.builder.reserve(n, b.resizeHelper)
+	b.reserve(n, b.resizeHelper)
 	b.offsets.Reserve(n)
 }
 
@@ -499,6 +520,13 @@ func (b *baseListBuilder) Resize(n int) {
 	b.offsets.Resize(n)
 }
 
+func (b *baseListBuilder) truncate(n int) {
+	b.builder.truncate(n)
+	if b.offsets != nil {
+		b.offsets.truncate(n)
+	}
+}
+
 func (b *baseListBuilder) resizeHelper(n int) {
 	if n < minBuilderCapacity {
 		n = minBuilderCapacity
@@ -507,7 +535,7 @@ func (b *baseListBuilder) resizeHelper(n int) {
 	if b.capacity == 0 {
 		b.init(n)
 	} else {
-		b.builder.resize(n, b.builder.init)
+		b.resize(n, b.builder.init)
 	}
 }
 
@@ -621,6 +649,7 @@ func (b *baseListBuilder) Unmarshal(dec *json.Decoder) error {
 
 func (b *baseListBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err
@@ -646,7 +675,7 @@ var _ VarLenListLike = (*ListView)(nil)
 
 func NewListViewData(data arrow.ArrayData) *ListView {
 	a := &ListView{}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -712,6 +741,10 @@ func (a *ListView) GetOneForMarshal(i int) interface{} {
 	return json.RawMessage(v)
 }
 
+func (a *ListView) ValueAsAny(i int) any {
+	return valueAsAnyFromListLike(a, i)
+}
+
 func (a *ListView) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -766,8 +799,8 @@ func (a *ListView) Release() {
 }
 
 func (a *ListView) ValueOffsets(i int) (start, end int64) {
-	debug.Assert(i >= 0 && i < a.array.data.length, "index out of range")
-	j := i + a.array.data.offset
+	debug.Assert(i >= 0 && i < a.data.length, "index out of range")
+	j := i + a.data.offset
 	size := int64(a.sizes[j])
 	// If size is 0, skip accessing offsets.
 	if size == 0 {
@@ -793,7 +826,7 @@ var _ VarLenListLike = (*LargeListView)(nil)
 // NewLargeListViewData returns a new LargeListView array value, from data.
 func NewLargeListViewData(data arrow.ArrayData) *LargeListView {
 	a := new(LargeListView)
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
@@ -859,6 +892,10 @@ func (a *LargeListView) GetOneForMarshal(i int) interface{} {
 	return json.RawMessage(v)
 }
 
+func (a *LargeListView) ValueAsAny(i int) any {
+	return valueAsAnyFromListLike(a, i)
+}
+
 func (a *LargeListView) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -903,8 +940,8 @@ func (a *LargeListView) Offsets() []int64 { return a.offsets }
 func (a *LargeListView) Sizes() []int64 { return a.sizes }
 
 func (a *LargeListView) ValueOffsets(i int) (start, end int64) {
-	debug.Assert(i >= 0 && i < a.array.data.length, "index out of range")
-	j := i + a.array.data.offset
+	debug.Assert(i >= 0 && i < a.data.length, "index out of range")
+	j := i + a.data.offset
 	size := a.sizes[j]
 	// If size is 0, skip accessing offsets.
 	if size == 0 {
@@ -931,8 +968,10 @@ type offsetsAndSizes interface {
 	sizeAt(slot int64) int64
 }
 
-var _ offsetsAndSizes = (*ListView)(nil)
-var _ offsetsAndSizes = (*LargeListView)(nil)
+var (
+	_ offsetsAndSizes = (*ListView)(nil)
+	_ offsetsAndSizes = (*LargeListView)(nil)
+)
 
 func (a *ListView) offsetAt(slot int64) int64 { return int64(a.offsets[int64(a.data.offset)+slot]) }
 
@@ -1027,9 +1066,9 @@ func (a *array) validateOffsetsAndMaybeSizes(l offsetsAndSizes, offsetByteWidth 
 }
 
 func (a *ListView) validate(fullValidation bool) error {
-	values := a.array.data.childData[0]
+	values := a.data.childData[0]
 	offsetLimit := values.Len()
-	return a.array.validateOffsetsAndMaybeSizes(a, 4, true, int64(offsetLimit), fullValidation)
+	return a.validateOffsetsAndMaybeSizes(a, 4, true, int64(offsetLimit), fullValidation)
 }
 
 func (a *ListView) Validate() error {
@@ -1041,9 +1080,9 @@ func (a *ListView) ValidateFull() error {
 }
 
 func (a *LargeListView) validate(fullValidation bool) error {
-	values := a.array.data.childData[0]
+	values := a.data.childData[0]
 	offsetLimit := values.Len()
-	return a.array.validateOffsetsAndMaybeSizes(a, 8, true, int64(offsetLimit), fullValidation)
+	return a.validateOffsetsAndMaybeSizes(a, 8, true, int64(offsetLimit), fullValidation)
 }
 
 func (a *LargeListView) Validate() error {
@@ -1081,9 +1120,9 @@ type LargeListViewBuilder struct {
 func NewListViewBuilder(mem memory.Allocator, etype arrow.DataType) *ListViewBuilder {
 	offsetBldr := NewInt32Builder(mem)
 	sizeBldr := NewInt32Builder(mem)
-	return &ListViewBuilder{
+	lvb := &ListViewBuilder{
 		baseListViewBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, etype),
 			offsets:         offsetBldr,
 			sizes:           sizeBldr,
@@ -1092,6 +1131,8 @@ func NewListViewBuilder(mem memory.Allocator, etype arrow.DataType) *ListViewBui
 			appendSizeVal:   func(s int) { sizeBldr.Append(int32(s)) },
 		},
 	}
+	lvb.refCount.Add(1)
+	return lvb
 }
 
 // NewListViewBuilderWithField takes a field to use for the child rather than just
@@ -1099,9 +1140,9 @@ func NewListViewBuilder(mem memory.Allocator, etype arrow.DataType) *ListViewBui
 func NewListViewBuilderWithField(mem memory.Allocator, field arrow.Field) *ListViewBuilder {
 	offsetBldr := NewInt32Builder(mem)
 	sizeBldr := NewInt32Builder(mem)
-	return &ListViewBuilder{
+	lvb := &ListViewBuilder{
 		baseListViewBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, field.Type),
 			offsets:         offsetBldr,
 			sizes:           sizeBldr,
@@ -1110,6 +1151,8 @@ func NewListViewBuilderWithField(mem memory.Allocator, field arrow.Field) *ListV
 			appendSizeVal:   func(s int) { sizeBldr.Append(int32(s)) },
 		},
 	}
+	lvb.refCount.Add(1)
+	return lvb
 }
 
 func (b *baseListViewBuilder) Type() arrow.DataType {
@@ -1131,9 +1174,9 @@ func (b *baseListViewBuilder) Type() arrow.DataType {
 func NewLargeListViewBuilder(mem memory.Allocator, etype arrow.DataType) *LargeListViewBuilder {
 	offsetBldr := NewInt64Builder(mem)
 	sizeBldr := NewInt64Builder(mem)
-	return &LargeListViewBuilder{
+	llvb := &LargeListViewBuilder{
 		baseListViewBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, etype),
 			offsets:         offsetBldr,
 			sizes:           sizeBldr,
@@ -1142,6 +1185,8 @@ func NewLargeListViewBuilder(mem memory.Allocator, etype arrow.DataType) *LargeL
 			appendSizeVal:   func(s int) { sizeBldr.Append(int64(s)) },
 		},
 	}
+	llvb.refCount.Add(1)
+	return llvb
 }
 
 // NewLargeListViewBuilderWithField takes a field rather than just an element type
@@ -1149,9 +1194,9 @@ func NewLargeListViewBuilder(mem memory.Allocator, etype arrow.DataType) *LargeL
 func NewLargeListViewBuilderWithField(mem memory.Allocator, field arrow.Field) *LargeListViewBuilder {
 	offsetBldr := NewInt64Builder(mem)
 	sizeBldr := NewInt64Builder(mem)
-	return &LargeListViewBuilder{
+	llvb := &LargeListViewBuilder{
 		baseListViewBuilder{
-			builder:         builder{refCount: 1, mem: mem},
+			builder:         builder{mem: mem},
 			values:          NewBuilder(mem, field.Type),
 			offsets:         offsetBldr,
 			sizes:           sizeBldr,
@@ -1160,14 +1205,17 @@ func NewLargeListViewBuilderWithField(mem memory.Allocator, field arrow.Field) *
 			appendSizeVal:   func(o int) { sizeBldr.Append(int64(o)) },
 		},
 	}
+
+	llvb.refCount.Add(1)
+	return llvb
 }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *baseListViewBuilder) Release() {
-	debug.Assert(atomic.LoadInt64(&b.refCount) > 0, "too many releases")
+	debug.Assert(b.refCount.Load() > 0, "too many releases")
 
-	if atomic.AddInt64(&b.refCount, -1) == 0 {
+	if b.refCount.Add(-1) == 0 {
 		if b.nullBitmap != nil {
 			b.nullBitmap.Release()
 			b.nullBitmap = nil
@@ -1202,9 +1250,15 @@ func (b *baseListViewBuilder) AppendNull() {
 }
 
 func (b *baseListViewBuilder) AppendNulls(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendNull()
+	if n <= 0 {
+		return
 	}
+
+	b.Reserve(n)
+	bitutil.SetBitsTo(b.nullBitmap.Bytes(), int64(b.length), int64(n), false)
+	b.length += n
+	b.nulls += n
+	b.unsafeAppendEmptyDimensions(n)
 }
 
 func (b *baseListViewBuilder) AppendEmptyValue() {
@@ -1212,23 +1266,32 @@ func (b *baseListViewBuilder) AppendEmptyValue() {
 }
 
 func (b *baseListViewBuilder) AppendEmptyValues(n int) {
-	for i := 0; i < n; i++ {
-		b.AppendEmptyValue()
+	if n <= 0 {
+		return
 	}
+
+	b.Reserve(n)
+	b.unsafeAppendBoolsToBitmap(nil, n)
+	b.unsafeAppendEmptyDimensions(n)
+}
+
+func (b *baseListViewBuilder) unsafeAppendEmptyDimensions(n int) {
+	unsafeAppendRepeatedInt(b.offsets, b.values.Len(), n)
+	unsafeAppendRepeatedInt(b.sizes, 0, n)
 }
 
 func (b *ListViewBuilder) AppendValuesWithSizes(offsets []int32, sizes []int32, valid []bool) {
 	b.Reserve(len(valid))
 	b.offsets.(*Int32Builder).AppendValues(offsets, nil)
 	b.sizes.(*Int32Builder).AppendValues(sizes, nil)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(valid))
+	b.unsafeAppendBoolsToBitmap(valid, len(valid))
 }
 
 func (b *LargeListViewBuilder) AppendValuesWithSizes(offsets []int64, sizes []int64, valid []bool) {
 	b.Reserve(len(valid))
 	b.offsets.(*Int64Builder).AppendValues(offsets, nil)
 	b.sizes.(*Int64Builder).AppendValues(sizes, nil)
-	b.builder.unsafeAppendBoolsToBitmap(valid, len(valid))
+	b.unsafeAppendBoolsToBitmap(valid, len(valid))
 }
 
 func (b *baseListViewBuilder) unsafeAppendBoolToBitmap(isValid bool) {
@@ -1249,7 +1312,7 @@ func (b *baseListViewBuilder) init(capacity int) {
 // Reserve ensures there is enough space for appending n elements
 // by checking the capacity and calling Resize if necessary.
 func (b *baseListViewBuilder) Reserve(n int) {
-	b.builder.reserve(n, b.resizeHelper)
+	b.reserve(n, b.resizeHelper)
 	b.offsets.Reserve(n)
 	b.sizes.Reserve(n)
 }
@@ -1262,6 +1325,12 @@ func (b *baseListViewBuilder) Resize(n int) {
 	b.sizes.Resize(n)
 }
 
+func (b *baseListViewBuilder) truncate(n int) {
+	b.builder.truncate(n)
+	b.offsets.truncate(n)
+	b.sizes.truncate(n)
+}
+
 func (b *baseListViewBuilder) resizeHelper(n int) {
 	if n < minBuilderCapacity {
 		n = minBuilderCapacity
@@ -1270,7 +1339,7 @@ func (b *baseListViewBuilder) resizeHelper(n int) {
 	if b.capacity == 0 {
 		b.init(n)
 	} else {
-		b.builder.resize(n, b.builder.init)
+		b.resize(n, b.builder.init)
 	}
 }
 
@@ -1398,6 +1467,7 @@ func (b *baseListViewBuilder) Unmarshal(dec *json.Decoder) error {
 
 func (b *baseListViewBuilder) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	t, err := dec.Token()
 	if err != nil {
 		return err

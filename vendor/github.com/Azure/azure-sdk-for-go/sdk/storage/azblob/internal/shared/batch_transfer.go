@@ -1,6 +1,3 @@
-//go:build go1.18
-// +build go1.18
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
@@ -9,17 +6,43 @@ package shared
 import (
 	"context"
 	"errors"
+	"os"
+	"runtime"
+	"strings"
 )
 
 const (
+	// DefaultConcurrency is the legacy default concurrency value.
+	//
+	// Deprecated: Use DefaultConcurrencyValue() instead, which returns a value based on CPU core count.
 	DefaultConcurrency = 5
 )
+
+// DefaultConcurrencyValue returns the default concurrency based on CPU count,
+// clamped between 8 and 96. Set the AZURE_STORAGE_USE_LEGACY_DEFAULT_CONCURRENCY
+// environment variable to "true" to revert to the previous default of 5.
+func DefaultConcurrencyValue() uint16 {
+	if strings.EqualFold(os.Getenv("AZURE_STORAGE_USE_LEGACY_DEFAULT_CONCURRENCY"), "true") {
+		return DefaultConcurrency
+	}
+	return uint16(max(8, min(96, runtime.NumCPU())))
+}
+
+// DefaultStreamConcurrencyValue returns the default concurrency for streaming
+// uploads. Set the AZURE_STORAGE_USE_LEGACY_DEFAULT_CONCURRENCY environment
+// variable to "true" to revert to the previous default of 1.
+func DefaultStreamConcurrencyValue() uint16 {
+	if strings.EqualFold(os.Getenv("AZURE_STORAGE_USE_LEGACY_DEFAULT_CONCURRENCY"), "true") {
+		return 1
+	}
+	return uint16(max(8, min(96, runtime.NumCPU())))
+}
 
 // BatchTransferOptions identifies options used by doBatchTransfer.
 type BatchTransferOptions struct {
 	TransferSize  int64
 	ChunkSize     int64
-	NumChunks     uint16
+	NumChunks     uint64
 	Concurrency   uint16
 	Operation     func(ctx context.Context, offset int64, chunkSize int64) error
 	OperationName string
@@ -33,7 +56,7 @@ func DoBatchTransfer(ctx context.Context, o *BatchTransferOptions) error {
 	}
 
 	if o.Concurrency == 0 {
-		o.Concurrency = DefaultConcurrency // default concurrency
+		o.Concurrency = DefaultConcurrencyValue()
 	}
 
 	// Prepare and do parallel operations.
@@ -44,7 +67,6 @@ func DoBatchTransfer(ctx context.Context, o *BatchTransferOptions) error {
 
 	// Create the goroutines that process each operation (in parallel).
 	for g := uint16(0); g < o.Concurrency; g++ {
-		//grIndex := g
 		go func() {
 			for f := range operationChannel {
 				err := f()
@@ -54,7 +76,7 @@ func DoBatchTransfer(ctx context.Context, o *BatchTransferOptions) error {
 	}
 
 	// Add each chunk's operation to the channel.
-	for chunkNum := uint16(0); chunkNum < o.NumChunks; chunkNum++ {
+	for chunkNum := uint64(0); chunkNum < o.NumChunks; chunkNum++ {
 		curChunkSize := o.ChunkSize
 
 		if chunkNum == o.NumChunks-1 { // Last chunk
@@ -69,7 +91,7 @@ func DoBatchTransfer(ctx context.Context, o *BatchTransferOptions) error {
 
 	// Wait for the operations to complete.
 	var firstErr error = nil
-	for chunkNum := uint16(0); chunkNum < o.NumChunks; chunkNum++ {
+	for chunkNum := uint64(0); chunkNum < o.NumChunks; chunkNum++ {
 		responseError := <-operationResponseChannel
 		// record the first error (the original error which should cause the other chunks to fail with canceled context)
 		if responseError != nil && firstErr == nil {

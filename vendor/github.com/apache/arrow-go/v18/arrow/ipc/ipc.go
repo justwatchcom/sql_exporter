@@ -29,6 +29,7 @@ const (
 	errNotArrowFile             = errString("arrow/ipc: not an Arrow file")
 	errInconsistentFileMetadata = errString("arrow/ipc: file is smaller than indicated metadata size")
 	errInconsistentSchema       = errString("arrow/ipc: tried to write record batch with different schema")
+	errFileWriterClosed         = errString("arrow/ipc: file writer is already closed")
 	errMaxRecursion             = errString("arrow/ipc: max recursion depth reached")
 	errBigArray                 = errString("arrow/ipc: array larger than 2^31-1 in length")
 
@@ -67,11 +68,30 @@ type config struct {
 		offset int64
 	}
 	codec              flatbuf.CompressionType
+	zstdLevel          int
 	compressNP         int
 	ensureNativeEndian bool
 	noAutoSchema       bool
 	emitDictDeltas     bool
-	minSpaceSavings    *float64
+	minSpaceSavings    float64
+	maxMetadataSize    int64
+	maxBodySize        int64
+	compressors        []compressor
+}
+
+const (
+	defaultMaxMetadataSize int64 = 64 * 1024 * 1024
+	defaultMaxBodySize     int64 = 256 * 1024 * 1024
+)
+
+// Option is a functional option to configure opening or creating Arrow files
+// and streams.
+type Option func(*config)
+
+func withCompressors(compressors ...compressor) Option {
+	return func(cfg *config) {
+		cfg.compressors = compressors
+	}
 }
 
 func newConfig(opts ...Option) *config {
@@ -80,6 +100,8 @@ func newConfig(opts ...Option) *config {
 		codec:              -1, // uncompressed
 		ensureNativeEndian: true,
 		compressNP:         1,
+		maxMetadataSize:    defaultMaxMetadataSize,
+		maxBodySize:        defaultMaxBodySize,
 	}
 
 	for _, opt := range opts {
@@ -89,9 +111,23 @@ func newConfig(opts ...Option) *config {
 	return cfg
 }
 
-// Option is a functional option to configure opening or creating Arrow files
-// and streams.
-type Option func(*config)
+// WithMetadataSizeLimit sets the largest IPC message metadata size readers
+// will accept. The default is 64 MiB. Values less than or equal to zero disable
+// the limit.
+func WithMetadataSizeLimit(size int64) Option {
+	return func(cfg *config) {
+		cfg.maxMetadataSize = size
+	}
+}
+
+// WithBodySizeLimit sets the largest IPC message body size readers will
+// accept. The default is 256 MiB. Values less than or equal to zero disable
+// the limit.
+func WithBodySizeLimit(size int64) Option {
+	return func(cfg *config) {
+		cfg.maxBodySize = size
+	}
+}
 
 // WithFooterOffset specifies the Arrow footer position in bytes.
 func WithFooterOffset(offset int64) Option {
@@ -127,6 +163,28 @@ func WithLZ4() Option {
 func WithZstd() Option {
 	return func(cfg *config) {
 		cfg.codec = flatbuf.CompressionTypeZSTD
+	}
+}
+
+// WithZstdLevel tells the writer to use ZSTD compression with a given
+// compression level and implicitly enables ZSTD compression (equivalent to
+// calling WithZstd). The specified value is passed to the underlying
+// klauspost/compress/zstd encoder via EncoderLevelFromZstd, which collapses
+// the full Zstandard level range (1-22) into four encoder speed presets:
+//
+//	level <= 0     -> default (same as WithZstd alone)
+//	1-2            -> SpeedFastest
+//	3-5            -> SpeedDefault
+//	6-9            -> SpeedBetterCompression
+//	>=10           -> SpeedBestCompression
+//
+// Because the underlying encoder exposes only four discrete speed presets,
+// setting any level within the same range above produces identical
+// compression behaviour.
+func WithZstdLevel(level int) Option {
+	return func(cfg *config) {
+		cfg.codec = flatbuf.CompressionTypeZSTD
+		cfg.zstdLevel = level
 	}
 }
 
@@ -189,7 +247,7 @@ func WithDictionaryDeltas(v bool) Option {
 // Go and C++ versions prior to 12.0.0.
 func WithMinSpaceSavings(savings float64) Option {
 	return func(cfg *config) {
-		cfg.minSpaceSavings = &savings
+		cfg.minSpaceSavings = savings
 	}
 }
 

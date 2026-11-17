@@ -1,0 +1,122 @@
+// Dedicated Codecov upload for snowflakedb/gosnowflake (SNOW-4248610).
+// GitHub-hosted runners cannot reach snowflake.codecov.io (WAF 403). This job
+// does not run tests: GHA Build and Test produces coverage.txt per matrix cell,
+// Jenkins downloads those artifacts and codecovcli uploads them. Codecov merges
+// reports for the same commit SHA; do not gocovmerge across jobs.
+
+@Library('pipeline-utils')
+import com.snowflake.DevEnvUtils
+
+def pythonVersion = '3.11.9'
+def codecovCliVersion = '11.2.6'
+
+// FUSE ciphertext for jenkins/dev/common/codecov_token_gosnowflake (not the raw token).
+def codecovFuseSecret = 'sf-crypt://universes/prod/services/jenkins/locations/sfc-or-dev-ci-k8s-ci1/secrets/jenkins/dev/common/codecov_token_gosnowflake/0d71e072-3ed5-4562-acd3-28f68fbb56d1:AQAAAVcKOnNmYy1vci1kZXYtY2ktazhzLWNpMS84ZTg4NDkzZi01YWM3LTQyMzktOTNkNC05YzU5OGEzMjFiYzcS1AEgVz06Pp1dh0rooVezgXGar-gQIvVdsU2OlZf2r9ZECqGwXBwciDyIrVUUnrYjotcHwFliBwmYdUB5YKIXqGRz5m03mkNEc37eo2wS2JqVqt_Tp-JInz2nWDKCq83HL-oMq9bIIFe8tKwEchZnMJ3mFsT3ZTVgqjFJXu3N9w_YuxXpJR1w6RKj2JtQevFLc_I0pL3FzE9SRGW22CI87f-2oAJG-KtJGRNYrSRoD6eglQflBgzH6IqrqGT3soqleBTSH5o0Fdd0BK5aKd_IVlzqykSi9Bg0IkCdg8mKKtL_Seo_juv_6TGZF9l0a4j1zLGJ9gqWI75D1k3YgycO5OdAZryP3wdxwvdUuP5HbIG0haFBdd3SbYdbHQj4CIBmKCtd9kRWT_IsrKW_JgIsdPTWRVfyHQfo-HAv1yIZK-EAt27hxAWsUqd8T4Ooo18zAjUAGGLel3KxR86BFPk='
+
+pipeline {
+  agent { label 'high-memory-node-snowos' }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds(abortPrevious: true)
+    disableResume()
+    timeout(time: 4, unit: 'HOURS')
+  }
+
+  stages {
+    stage('Authenticate Artifactory') {
+      steps {
+        script {
+          new DevEnvUtils().withSfCli {
+            sh 'sf artifact oci auth'
+          }
+        }
+      }
+    }
+
+    stage('Download GHA coverage artifacts') {
+      steps {
+        script {
+          // GitHub App installation tokens last ~1h. Poll inside Python for
+          // 40 minutes per bind, then re-bind and continue. Exit 2 = still
+          // waiting (or a dropped GitHub API read); do not fail the build.
+          timeout(time: 3, unit: 'HOURS') {
+            waitUntil {
+              withCredentials([usernamePassword(
+                credentialsId: 'jenkins-snowdrivers-github-app-emu',
+                usernameVariable: 'GITHUB_APP',
+                passwordVariable: 'GITHUB_TOKEN'
+              )]) {
+                def rc = sh(
+                  returnStatus: true,
+                  script: 'PYTHONUNBUFFERED=1 GHA_COVERAGE_MAX_WAIT_SECONDS=2400 python3 ci/scripts/fetch_gha_coverage.py'
+                )
+                if (rc == 0) {
+                  return true
+                }
+                if (rc == 2) {
+                  echo 'GHA coverage artifacts not ready yet; refreshing GitHub App token'
+                  return false
+                }
+                error("fetch_gha_coverage.py failed with exit code ${rc}")
+              }
+            }
+          }
+        }
+      }
+    }
+
+    stage('Upload coverage to Codecov') {
+      agent {
+        docker {
+          image 'artifactory.int.snowflakecomputing.com/development-docker-virtual/python:' + pythonVersion
+          args '''
+            -e HOME=/tmp
+            -e PIP_CERT=/usr/local/share/ca-certificates/ca-bundle.crt
+            -v /etc/ssl/certs/ca-bundle.crt:/usr/local/share/ca-certificates/ca-bundle.crt
+          '''
+          reuseNode true
+        }
+      }
+      steps {
+        script {
+          withCredentials([fuseString(variable: 'CODECOV_TOKEN', encryptedSecret: codecovFuseSecret)]) {
+            sh """
+              set -euo pipefail
+              test -s gha-coverage/COMMIT_SHA
+              COMMIT_SHA=\$(tr -d '[:space:]' < gha-coverage/COMMIT_SHA)
+              FILE_ARGS=
+              for f in \$(find gha-coverage -type f -name coverage.txt); do
+                if [ -s "\$f" ]; then
+                  echo "will upload \$f"
+                  FILE_ARGS="\$FILE_ARGS --file \$f"
+                fi
+              done
+              if [ -z "\$FILE_ARGS" ]; then
+                echo "no non-empty coverage.txt files under gha-coverage" >&2
+                exit 1
+              fi
+              export PATH=/tmp/.local/bin:\$PATH
+              pip config set global.index-url https://artifactory.int.snowflakecomputing.com/artifactory/api/pypi/development-pypi-virtual/simple
+              pip install --user codecov-cli==${codecovCliVersion}
+              codecovcli --url https://snowflake.codecov.io upload-process \\
+                --git-service github \\
+                --commit-sha "\$COMMIT_SHA" \\
+                --slug snowflakedb/gosnowflake \\
+                \$FILE_ARGS \\
+                --fail-on-error \\
+                --disable-file-fixes \\
+                --disable-search
+            """
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs()
+    }
+  }
+}

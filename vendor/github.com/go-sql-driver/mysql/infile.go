@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	fileRegister       map[string]bool
+	fileRegister       map[string]struct{}
 	fileRegisterLock   sync.RWMutex
 	readerRegister     map[string]func() io.Reader
 	readerRegisterLock sync.RWMutex
@@ -37,10 +37,10 @@ func RegisterLocalFile(filePath string) {
 	fileRegisterLock.Lock()
 	// lazy map init
 	if fileRegister == nil {
-		fileRegister = make(map[string]bool)
+		fileRegister = make(map[string]struct{})
 	}
 
-	fileRegister[strings.Trim(filePath, `"`)] = true
+	fileRegister[strings.Trim(filePath, `"`)] = struct{}{}
 	fileRegisterLock.Unlock()
 }
 
@@ -94,12 +94,22 @@ func deferredClose(err *error, closer io.Closer) {
 const defaultPacketSize = 16 * 1024 // 16KB is small enough for disk readahead and large enough for TCP
 
 func (mc *okHandler) handleInFileRequest(name string) (err error) {
+	// Run after the deferred reader/file Close, which can turn a successful
+	// upload into an error. The rest of a multi-statement batch may still be
+	// pending, even when no bytes have arrived in our read buffers yet.
+	defer func() {
+		if err != nil {
+			mc.conn().close()
+			// The query has already been sent. A failed upload write must not
+			// cause database/sql to retry the whole batch.
+			if err == errBadConnNoWrite {
+				err = ErrInvalidConn
+			}
+		}
+	}()
+
 	var rdr io.Reader
-	var data []byte
-	packetSize := defaultPacketSize
-	if mc.maxWriteSize < packetSize {
-		packetSize = mc.maxWriteSize
-	}
+	packetSize := min(mc.maxWriteSize, defaultPacketSize)
 
 	if idx := strings.Index(name, "Reader::"); idx == 0 || (idx > 0 && name[idx-1] == '/') { // io.Reader
 		// The server might return an an absolute path. See issue #355.
@@ -124,9 +134,9 @@ func (mc *okHandler) handleInFileRequest(name string) (err error) {
 	} else { // File
 		name = strings.Trim(name, `"`)
 		fileRegisterLock.RLock()
-		fr := fileRegister[name]
+		_, exists := fileRegister[name]
 		fileRegisterLock.RUnlock()
-		if mc.cfg.AllowAllFiles || fr {
+		if mc.cfg.AllowAllFiles || exists {
 			var file *os.File
 			var fi os.FileInfo
 
@@ -147,9 +157,11 @@ func (mc *okHandler) handleInFileRequest(name string) (err error) {
 	}
 
 	// send content packets
+	var data []byte
+
 	// if packetSize == 0, the Reader contains no data
 	if err == nil && packetSize > 0 {
-		data := make([]byte, 4+packetSize)
+		data = make([]byte, 4+packetSize)
 		var n int
 		for err == nil {
 			n, err = rdr.Read(data[4:])
@@ -171,12 +183,12 @@ func (mc *okHandler) handleInFileRequest(name string) (err error) {
 	if ioErr := mc.conn().writePacket(data[:4]); ioErr != nil {
 		return ioErr
 	}
+	mc.conn().syncSequence()
 
-	// read OK packet
-	if err == nil {
-		return mc.readResultOK()
+	// Process the response even after a local error so status flags, including
+	// SERVER_MORE_RESULTS_EXISTS, are not lost. Preserve the upload error.
+	if readErr := mc.readResultOK(); err == nil {
+		err = readErr
 	}
-
-	mc.conn().readPacket()
 	return err
 }

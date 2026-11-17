@@ -23,6 +23,8 @@ import (
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
+	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/internal/json"
 )
 
@@ -37,14 +39,17 @@ type FixedSizeBinary struct {
 // NewFixedSizeBinaryData constructs a new fixed-size binary array from data.
 func NewFixedSizeBinaryData(data arrow.ArrayData) *FixedSizeBinary {
 	a := &FixedSizeBinary{bytewidth: int32(data.DataType().(arrow.FixedWidthDataType).BitWidth() / 8)}
-	a.refCount = 1
+	a.refCount.Add(1)
 	a.setData(data.(*Data))
 	return a
 }
 
 // Value returns the fixed-size slice at index i. This value should not be mutated.
 func (a *FixedSizeBinary) Value(i int) []byte {
-	i += a.array.data.offset
+	if i < 0 || i >= a.Len() {
+		panic("arrow/array: index out of range")
+	}
+	i += a.data.offset
 	var (
 		bw  = int(a.bytewidth)
 		beg = i * bw
@@ -52,6 +57,7 @@ func (a *FixedSizeBinary) Value(i int) []byte {
 	)
 	return a.valueBytes[beg:end]
 }
+
 func (a *FixedSizeBinary) ValueStr(i int) string {
 	if a.IsNull(i) {
 		return NullValueStr
@@ -83,7 +89,6 @@ func (a *FixedSizeBinary) setData(data *Data) {
 	if vals != nil {
 		a.valueBytes = vals.Bytes()
 	}
-
 }
 
 func (a *FixedSizeBinary) GetOneForMarshal(i int) interface{} {
@@ -91,6 +96,13 @@ func (a *FixedSizeBinary) GetOneForMarshal(i int) interface{} {
 		return nil
 	}
 
+	return a.Value(i)
+}
+
+func (a *FixedSizeBinary) ValueAsAny(i int) any {
+	if a.IsNull(i) {
+		return nil
+	}
 	return a.Value(i)
 }
 
@@ -107,6 +119,49 @@ func (a *FixedSizeBinary) MarshalJSON() ([]byte, error) {
 }
 
 func arrayEqualFixedSizeBinary(left, right *FixedSizeBinary) bool {
+	if left.Len() < 8 {
+		return arrayEqualFixedSizeBinaryScalar(left, right)
+	}
+
+	width := int(left.bytewidth)
+	leftStart := left.Offset() * width
+	leftEnd := leftStart + left.Len()*width
+	rightStart := right.Offset() * width
+	rightEnd := rightStart + right.Len()*width
+	leftBitmap := left.NullBitmapBytes()
+	if len(leftBitmap) == 0 ||
+		(left.NullN() == 0 && bitutil.CountSetBits(leftBitmap, left.Offset(), left.Len()) == left.Len()) {
+		return bytes.Equal(left.valueBytes[leftStart:leftEnd], right.valueBytes[rightStart:rightEnd])
+	}
+	if useScalarEqualityForValidityRuns(left) {
+		return arrayEqualFixedSizeBinaryScalar(left, right)
+	}
+
+	runs := bitutils.NewSetBitRunReader(
+		leftBitmap, int64(left.Offset()), int64(left.Len()),
+	)
+	for {
+		run := runs.NextRun()
+		if run.Length == 0 {
+			return true
+		}
+
+		start := int(run.Pos)
+		end := start + int(run.Length)
+		leftRunStart := (left.Offset() + start) * width
+		leftRunEnd := (left.Offset() + end) * width
+		rightRunStart := (right.Offset() + start) * width
+		rightRunEnd := (right.Offset() + end) * width
+		if !bytes.Equal(
+			left.valueBytes[leftRunStart:leftRunEnd],
+			right.valueBytes[rightRunStart:rightRunEnd],
+		) {
+			return false
+		}
+	}
+}
+
+func arrayEqualFixedSizeBinaryScalar(left, right *FixedSizeBinary) bool {
 	for i := 0; i < left.Len(); i++ {
 		if left.IsNull(i) {
 			continue
@@ -118,6 +173,4 @@ func arrayEqualFixedSizeBinary(left, right *FixedSizeBinary) bool {
 	return true
 }
 
-var (
-	_ arrow.Array = (*FixedSizeBinary)(nil)
-)
+var _ arrow.Array = (*FixedSizeBinary)(nil)

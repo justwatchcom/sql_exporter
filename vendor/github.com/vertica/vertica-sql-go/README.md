@@ -8,7 +8,8 @@ vertica-sql-go is a native Go adapter for the Vertica (http://www.vertica.com) d
 
 Please check out [release notes](https://github.com/vertica/vertica-sql-go/releases) to learn about the latest improvements.
 
-vertica-sql-go has been tested with Vertica 23.3.0 and Go 1.16/1.17/1.18/1.19/1.20.
+vertica-sql-go has been tested with Vertica 24.4.0. The minimum supported Go version is 1.18.
+CI currently tests Go 1.18/1.19/1.20/1.21/1.22/1.26. The latest validated patch version is Go 1.26.5.
 
 ## Installation
 
@@ -96,7 +97,7 @@ Currently supported query arguments are:
 |----------------|-------------|--------|
 | use_prepared_statements    | Whether to use client-side query interpolation or server-side argument binding. | 1 = (default) use server-side bindings <br>0 = user client side interpolation **(LESS SECURE)** |
 | connection_load_balance    | Whether to enable connection load balancing on the client side. | 0 = (default) disable load balancing <br>1 = enable load balancing |
-| tlsmode            | The ssl/tls policy for this connection. | <li>'none' (default) = don't use SSL/TLS for this connection</li><li>'server' = server must support SSL/TLS, but skip verification **(INSECURE!)**</li><li>'server-strict' = server must support SSL/TLS</li><li>{customName} = use custom registered `tls.Config` (see "Using custom TLS config" section below)</li> |
+| tlsmode            | The ssl/tls policy for this connection. | <li>'none' = don't use SSL/TLS for this connection</li><li>'prefer' (default) = checks for SSL/TLS server support; if unsupported, SSL/TLS is not used for this connection. </li><li>'server' = server must support SSL/TLS, but skip verification **(INSECURE!)**</li><li>'server-strict' = server must support SSL/TLS</li><li>{customName} = use custom registered `tls.Config` (see "Using custom TLS config" section below)</li> |
 | backup_server_node    | A list of backup hosts for the client to try to connect if the primary host is unreachable. | a comma-seperated list of backup host-port pairs. E.g.<br> 'host1:port1,host2:port2,host3:port3'  |
 | client_label   | Sets a label for the connection on the server. This value appears in the `client_label` column of the SESSIONS system table. | (default) vertica-sql-go-{version}-{pid}-{timestamp} |
 | autocommit     | Controls whether the connection automatically commits transactions. | 1 = (default) on <br>0 = off|
@@ -161,7 +162,9 @@ defer rows.Close()
 
 ### Performing a query with arguments
 
-This is done in a similar manner on the client side.
+**Prerequisites**: Only SQL literals (i.e. query values) should be bound as arguments: they shouldn’t be used to merge table or field names to the query (_vertica-sql-go_ will try quoting the table name as a string value, generating invalid SQL as it is actually a SQL Identifier). If you need to generate dynamically SQL queries (for instance choosing dynamically a table name) you have to construct the full query yourself.
+
+
 
 ```Go
 rows, err := connDB.QueryContext(ctx, "SELECT name FROM MyTable WHERE id=?", 21)
@@ -316,6 +319,31 @@ The following transaction isolation levels are supported:
 
  <b>&#8224;</b> Although Vertica supports the grammars for these transaction isolation levels, they are internally promoted to stronger isolation levels.
 
+## UDSF Statements Supported
+
+vertica-sql-go supports executing Vertica user-defined SQL function statements as atomic units without splitting the function body.
+For UDSF syntax and server-side behavior, see the Vertica documentation: [User-defined SQL functions](https://docs.vertica.com/26.2.x/en/extending/user-defined-sql-functions/).
+
+Supported statement forms:
+
+* `CREATE FUNCTION ...`
+* `ALTER FUNCTION ...`
+* `DROP FUNCTION ...`
+* `GRANT EXECUTE ON FUNCTION ...`
+* `REVOKE EXECUTE ON FUNCTION ...`
+
+Example:
+
+```go
+createSQL := `CREATE FUNCTION test_simple_func()
+    RETURN INT AS
+    BEGIN
+        RETURN 42;
+    END`
+
+_, err = connDB.ExecContext(ctx, createSQL)
+```
+
 ## COPY modes Supported
 
 ### COPY FROM STDIN
@@ -388,7 +416,7 @@ func main() {
     }
 
     // Query a standard metric table in Vertica.
-    rows, err := connDB.QueryContext(ctx, "SELECT * FROM v_monitor.cpu_usage LIMIT 5")
+    rows, err := connDB.QueryContext(ctx, "SELECT node_name, start_time, end_time, average_cpu_usage_percent FROM v_monitor.cpu_usage LIMIT 5")
 
     if err != nil {
         testLogger.Fatal(err.Error())

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,9 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register the ClickHouse driver
 	"github.com/cenkalti/backoff"
@@ -25,12 +25,12 @@ import (
 	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register integrated auth for MS-SQL
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/segmentio/go-athena" // register the AWS Athena driver
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 	_ "github.com/vertica/vertica-sql-go" // register the Vertica driver
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 )
 
 var (
@@ -41,6 +41,19 @@ var (
 	CloudSQLPrefix = "cloudsql+"
 )
 
+// buildRDSAuthToken builds an RDS IAM authentication token for the given endpoint (host:port) and database user.
+func buildRDSAuthToken(endpoint, user string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	return auth.BuildAuthToken(ctx, endpoint, cfg.Region, user, cfg.Credentials)
+}
+
 func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 	dsn := strings.TrimPrefix(conn, "rds-mysql://")
 	config, err := mysql.ParseDSN(dsn)
@@ -48,11 +61,7 @@ func handleRDSMySQLIAMAuth(conn string) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("failed to parse MySQL DSN: %v", err)
 	}
 
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-	}))
-
-	token, err := rdsutils.BuildAuthToken(config.Addr, os.Getenv("AWS_REGION"), config.User, sess.Config.Credentials)
+	token, err := buildRDSAuthToken(config.Addr, config.User)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to build RDS auth token: %v", err)
 	}
@@ -293,10 +302,7 @@ func (j *Job) updateConnections() {
 					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
 					continue
 				}
-				sess := session.Must(session.NewSessionWithOptions(session.Options{
-					SharedConfigState: session.SharedConfigEnable,
-				}))
-				token, err := rdsutils.BuildAuthToken(u.Host, os.Getenv("AWS_REGION"), u.User.Username(), sess.Config.Credentials)
+				token, err := buildRDSAuthToken(u.Host, u.User.Username())
 				if err != nil {
 					level.Error(j.log).Log("msg", "failed to parse connection url", "url", conn, "err", err)
 					continue
@@ -401,10 +407,10 @@ func (j *Job) updateConnections() {
 					level.Error(j.log).Log("msg", "Failed to parse Snowflake URL", "url", conn, "err", err)
 					continue
 				}
-			
+
 				queryParams := u.Query()
 				privateKeyPath := os.ExpandEnv(queryParams.Get("private_key_file"))
-			
+
 				cfg := &gosnowflake.Config{
 					Account:  u.Host,
 					User:     u.User.Username(),
@@ -412,7 +418,7 @@ func (j *Job) updateConnections() {
 					Database: queryParams.Get("database"),
 					Schema:   queryParams.Get("schema"),
 				}
-			
+
 				if privateKeyPath != "" {
 					// RSA key auth
 					keyBytes, err := os.ReadFile(privateKeyPath)
@@ -420,13 +426,13 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to read private key file", "path", privateKeyPath, "err", err)
 						continue
 					}
-			
+
 					keyBlock, _ := pem.Decode(keyBytes)
 					if keyBlock == nil {
 						level.Error(j.log).Log("msg", "Failed to decode PEM block", "path", privateKeyPath)
 						continue
 					}
-			
+
 					var privateKey *rsa.PrivateKey
 					if parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); err == nil {
 						privateKey, _ = parsedKey.(*rsa.PrivateKey)
@@ -436,16 +442,16 @@ func (j *Job) updateConnections() {
 						level.Error(j.log).Log("msg", "Failed to parse private key", "err", err)
 						continue
 					}
-			
+
 					cfg.Authenticator = gosnowflake.AuthTypeJwt
 					cfg.PrivateKey = privateKey
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with RSA", "err", err)
 						continue
 					}
-			
+
 					newConn.snowflakeConfig = cfg
 					newConn.snowflakeDSN = dsn
 					newConn.host = u.Host
@@ -460,20 +466,20 @@ func (j *Job) updateConnections() {
 							cfg.Port = port
 						}
 					}
-			
+
 					dsn, err := gosnowflake.DSN(cfg)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to create Snowflake DSN with password", "err", err)
 						continue
 					}
-			
+
 					newConn.conn, err = sqlx.Open("snowflake", dsn)
 					if err != nil {
 						level.Error(j.log).Log("msg", "Failed to open Snowflake connection", "err", err)
 						continue
 					}
 				}
-			
+
 				j.conns = append(j.conns, newConn)
 				continue
 			}
@@ -651,21 +657,21 @@ func (c *connection) connect(job *Job) error {
 				}
 				c.tokenExpirationTime = time.Now().Add(time.Hour)
 			}
-	
+
 			db, err := sqlx.Open("snowflake", c.snowflakeDSN)
 			if err != nil {
 				return fmt.Errorf("failed to open Snowflake connection: %w (host: %s)", err, c.host)
 			}
-	
+
 			db.SetMaxOpenConns(1)
 			db.SetMaxIdleConns(0)
 			db.SetConnMaxLifetime(30 * time.Minute)
-	
+
 			if err := db.Ping(); err != nil {
 				db.Close()
 				return fmt.Errorf("failed to ping Snowflake: %w (host: %s)", err, c.host)
 			}
-	
+
 			c.conn = db
 			return nil
 		}

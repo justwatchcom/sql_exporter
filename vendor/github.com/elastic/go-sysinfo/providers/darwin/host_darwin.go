@@ -20,13 +20,11 @@
 package darwin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
-
-	"github.com/joeshaw/multierror"
 
 	"github.com/elastic/go-sysinfo/internal/registry"
 	"github.com/elastic/go-sysinfo/providers/shared"
@@ -139,8 +137,12 @@ func (h *host) Memory() (*types.HostMemoryInfo, error) {
 	return &mem, nil
 }
 
+func (h *host) FQDNWithContext(ctx context.Context) (string, error) {
+	return shared.FQDNWithContext(ctx)
+}
+
 func (h *host) FQDN() (string, error) {
-	return shared.FQDN()
+	return h.FQDNWithContext(context.Background())
 }
 
 func (h *host) LoadAverage() (*types.LoadAverageInfo, error) {
@@ -162,6 +164,7 @@ func newHost() (*host, error) {
 	h := &host{}
 	r := &reader{}
 	r.architecture(h)
+	r.nativeArchitecture(h)
 	r.bootTime(h)
 	r.hostname(h)
 	r.network(h)
@@ -188,7 +191,7 @@ func (r *reader) addErr(err error) bool {
 
 func (r *reader) Err() error {
 	if len(r.errs) > 0 {
-		return &multierror.MultiError{Errors: r.errs}
+		return errors.Join(r.errs...)
 	}
 	return nil
 }
@@ -199,6 +202,14 @@ func (r *reader) architecture(h *host) {
 		return
 	}
 	h.info.Architecture = v
+}
+
+func (r *reader) nativeArchitecture(h *host) {
+	v, err := NativeArchitecture()
+	if r.addErr(err) {
+		return
+	}
+	h.info.NativeArchitecture = v
 }
 
 func (r *reader) bootTime(h *host) {
@@ -214,7 +225,7 @@ func (r *reader) hostname(h *host) {
 	if r.addErr(err) {
 		return
 	}
-	h.info.Hostname = strings.ToLower(v)
+	h.info.Hostname = v
 }
 
 func (r *reader) network(h *host) {

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 )
 
 const (
@@ -16,7 +16,7 @@ const (
 	DateLayout                  = "2006-01-02"
 )
 
-func convertRow(columns []*athena.ColumnInfo, in []*athena.Datum, ret []driver.Value) error {
+func convertRow(columns []types.ColumnInfo, in []types.Datum, ret []driver.Value) error {
 	for i, val := range in {
 		coerced, err := convertValue(*columns[i].Type, val.VarCharValue)
 		if err != nil {
